@@ -117,4 +117,4 @@ spec:
         # serve /metrics endpoint at different port.
         # make sure to set prometheus' annotation to scrape the port value.
         - --listen-metrics=:3031
-        - --git-poll-interval=60s
+        - --git-poll-interval=2m
