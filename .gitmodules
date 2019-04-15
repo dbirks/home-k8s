@@ -1,3 +1,0 @@
-[submodule "flux"]
-	path = flux
-	url = git@github.com:dbirks/flux.git
