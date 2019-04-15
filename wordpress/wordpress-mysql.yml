@@ -65,9 +65,9 @@ spec:
           name: mysql-persistent-storage
       volumes:
       - name: mysql-persistent-storage
-        emptyDir: {}
-        #persistentVolumeClaim:
-        #  claimName: mysql-pv-claim
+        nfs:
+          server: 10.1.1.2
+          path: /mnt/tetons/kubernetes/wordpress/mysql
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -108,9 +108,9 @@ spec:
           name: wordpress-persistent-storage
       volumes:
       - name: wordpress-persistent-storage
-        emptyDir: {}
-        #persistentVolumeClaim:
-        #  claimName: wp-pv-claim
+        nfs:
+          server: 10.1.1.2
+          path: /mnt/tetons/kubernetes/wordpress/wordpress
 #---
 #apiVersion: v1
 #kind: PersistentVolumeClaim
