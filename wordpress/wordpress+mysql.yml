@@ -98,7 +98,7 @@ spec:
             secretKeyRef:
               key: password
               name: mysql-pass
-        image: wordpress:4.8-apache
+        image: wordpress:5-apache
         name: wordpress
         ports:
         - containerPort: 80
