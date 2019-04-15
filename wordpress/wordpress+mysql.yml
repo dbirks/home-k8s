@@ -98,7 +98,7 @@ spec:
             secretKeyRef:
               key: password
               name: mysql-pass
-        image: wordpress:4.8-apache
+        image: wordpress:5-apache
         name: wordpress
         ports:
         - containerPort: 80
@@ -111,31 +111,3 @@ spec:
         nfs:
           server: 10.1.1.2
           path: /mnt/tetons/kubernetes/wordpress/wordpress
-#---
-#apiVersion: v1
-#kind: PersistentVolumeClaim
-#metadata:
-#  labels:
-#    app: wordpress
-#  name: mysql-pv-claim
-#  namespace: wordpress
-#spec:
-#  accessModes:
-#  - ReadWriteOnce
-#  resources:
-#    requests:
-#      storage: 20Gi
-#---
-#apiVersion: v1
-#kind: PersistentVolumeClaim
-#metadata:
-#  labels:
-#    app: wordpress
-#  name: wp-pv-claim
-#  namespace: wordpress
-#spec:
-#  accessModes:
-#  - ReadWriteOnce
-#  resources:
-#    requests:
-#      storage: 20Gi
