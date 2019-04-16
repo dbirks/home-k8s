@@ -11,11 +11,13 @@ Kubernetes
 
 Istio
 
+Flux
+
 ### Install Containerd
 
 Instructions [here](https://kubernetes.io/docs/setup/cri/#containerd).
 
-In short:
+In short (copy-pasta):
 ```
 modprobe overlay
 modprobe br_netfilter
@@ -69,13 +71,3 @@ Or more generally:
 ```
 kubectl taint nodes --all node-role.kubernetes.io/master-
 ```
-
-
-
-
-
-
-
-### Start Flux
-
-scp the flux 
