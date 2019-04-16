@@ -1,17 +1,17 @@
 # home-k8s 🏡☸
 
 ## Current setup
-Ubuntu
+Ubuntu as OS
 
-Containerd
+Containerd as container runtime
 
-Calico
+Cilium as CNI network plugin
 
-Kubernetes
+Kubernetes as orchestrator
 
-Istio
+Istio for service mesh
 
-Flux
+Flux for continuous deployment
 
 ### Install Containerd
 
@@ -67,7 +67,11 @@ If single-master setup, allow scheduling on the master node:
 kubectl taint nodes <node-name> node-role.kubernetes.io/master:NoSchedule-
 ```
 
-Or more generally:
+### Install Cilium
+
+(Using cillium-containerd.yml)
 ```
-kubectl taint nodes --all node-role.kubernetes.io/master-
+curl -LO https://raw.githubusercontent.com/cilium/cilium/master/examples/kubernetes/1.14/cilium-containerd.yaml
 ```
+
+
