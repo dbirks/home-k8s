@@ -2,9 +2,13 @@
 
 ## Current setup
 Ubuntu
+
 Containerd
+
 Calico
+
 Kubernetes ☸
+
 Istio
 
 ### Install Containerd
