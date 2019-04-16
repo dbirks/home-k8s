@@ -1,7 +1,10 @@
 For istio-cni:
 
+https://preliminary.istio.io/docs/setup/kubernetes/additional-setup/cni/
+
 ```
-helm template cni-1.1.3/deployments/kubernetes/install/helm/istio-cni/ --name=istio-cni --namespace=istio-system > istio-cni.yml
+helm fetch istio.io/istio-cni --untar --untardir istio-fetch
+helm  template istio-fetch/istio-cni/ --name=istio-cni --namespace=istio-system > istio-cni.yml
 ```
 
 For istio:
