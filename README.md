@@ -1,4 +1,4 @@
-# home-k8s
+# home-k8s 🏡☸
 
 ## Current setup
 Ubuntu
@@ -7,7 +7,7 @@ Containerd
 
 Calico
 
-Kubernetes ☸
+Kubernetes
 
 Istio
 
