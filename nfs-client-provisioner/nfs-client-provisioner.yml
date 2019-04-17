@@ -7,8 +7,8 @@ metadata:
     app: nfs-client-provisioner
     chart: nfs-client-provisioner-1.2.5
     heritage: Tiller
-    release: release-name
-  name: nfs-share
+    release: ostrich
+  name: nfs
   annotations:
     storageclass.kubernetes.io/is-default-class: "true"
 provisioner: ostrich
@@ -27,8 +27,8 @@ metadata:
     app: nfs-client-provisioner
     chart: nfs-client-provisioner-1.2.5
     heritage: Tiller
-    release: release-name
-  name: release-name-nfs-client-provisioner
+    release: ostrich
+  name: ostrich-nfs-client-provisioner
 ---
 # Source: nfs-client-provisioner/templates/clusterrole.yaml
 
@@ -39,8 +39,8 @@ metadata:
     app: nfs-client-provisioner
     chart: nfs-client-provisioner-1.2.5
     heritage: Tiller
-    release: release-name
-  name: release-name-nfs-client-provisioner-runner
+    release: ostrich
+  name: ostrich-nfs-client-provisioner-runner
 rules:
   - apiGroups: [""]
     resources: ["persistentvolumes"]
@@ -65,15 +65,15 @@ metadata:
     app: nfs-client-provisioner
     chart: nfs-client-provisioner-1.2.5
     heritage: Tiller
-    release: release-name
-  name: run-release-name-nfs-client-provisioner
+    release: ostrich
+  name: run-ostrich-nfs-client-provisioner
 subjects:
   - kind: ServiceAccount
-    name: release-name-nfs-client-provisioner
+    name: ostrich-nfs-client-provisioner
     namespace: default
 roleRef:
   kind: ClusterRole
-  name: release-name-nfs-client-provisioner-runner
+  name: ostrich-nfs-client-provisioner-runner
   apiGroup: rbac.authorization.k8s.io
 
 ---
@@ -86,8 +86,8 @@ metadata:
     app: nfs-client-provisioner
     chart: nfs-client-provisioner-1.2.5
     heritage: Tiller
-    release: release-name
-  name: leader-locking-release-name-nfs-client-provisioner
+    release: ostrich
+  name: leader-locking-ostrich-nfs-client-provisioner
 rules:
   - apiGroups: [""]
     resources: ["endpoints"]
@@ -103,15 +103,15 @@ metadata:
     app: nfs-client-provisioner
     chart: nfs-client-provisioner-1.2.5
     heritage: Tiller
-    release: release-name
-  name: leader-locking-release-name-nfs-client-provisioner
+    release: ostrich
+  name: leader-locking-ostrich-nfs-client-provisioner
 subjects:
   - kind: ServiceAccount
-    name: release-name-nfs-client-provisioner
+    name: ostrich-nfs-client-provisioner
     namespace: default
 roleRef:
   kind: Role
-  name: leader-locking-release-name-nfs-client-provisioner
+  name: leader-locking-ostrich-nfs-client-provisioner
   apiGroup: rbac.authorization.k8s.io
 
 ---
@@ -119,12 +119,12 @@ roleRef:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: release-name-nfs-client-provisioner
+  name: ostrich-nfs-client-provisioner
   labels:
     app: nfs-client-provisioner
     chart: nfs-client-provisioner-1.2.5
     heritage: Tiller
-    release: release-name
+    release: ostrich
 spec:
   replicas: 1
   strategy:
@@ -132,15 +132,15 @@ spec:
   selector:
     matchLabels:
       app: nfs-client-provisioner
-      release: release-name
+      release: ostrich
   template:
     metadata:
       annotations:
       labels:
         app: nfs-client-provisioner
-        release: release-name
+        release: ostrich
     spec:
-      serviceAccountName: release-name-nfs-client-provisioner
+      serviceAccountName: ostrich-nfs-client-provisioner
       containers:
         - name: nfs-client-provisioner
           image: "quay.io/external_storage/nfs-client-provisioner:v3.1.0-k8s1.11"
