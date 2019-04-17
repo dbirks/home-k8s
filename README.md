@@ -11,6 +11,8 @@ Kubernetes as orchestrator
 
 Flux for continuous deployment
 
+[nfs-client-provisioner](https://github.com/kubernetes-incubator/external-storage/tree/master/nfs-client) for dynamically provisioning PersistentVolumes from a NFS server
+
 ### Install Containerd
 
 Instructions [here](https://kubernetes.io/docs/setup/cri/#containerd).
