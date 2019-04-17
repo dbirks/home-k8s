@@ -4,11 +4,11 @@
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
-  name: unifi
+  name: unifi-controller
   labels:
-    app: unifi
+    app: unifi-controller
     chart: "unifi-0.4.0"
-    release: "unifi"
+    release: "unifi-controller"
     heritage: "Tiller"
 spec:
   accessModes:
@@ -22,11 +22,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: unifi-controller
+  name: unifi-controller-controller
   labels:
     app.kubernetes.io/name: unifi
     helm.sh/chart: unifi-0.4.0
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
     app.kubernetes.io/managed-by: Tiller
 spec:
   type: NodePort
@@ -38,7 +38,7 @@ spec:
 
   selector:
     app.kubernetes.io/name: unifi
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
 
 
 ---
@@ -47,11 +47,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: unifi-discovery
+  name: unifi-controller-discovery
   labels:
     app.kubernetes.io/name: unifi
     helm.sh/chart: unifi-0.4.0
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
     app.kubernetes.io/managed-by: Tiller
 spec:
   type: NodePort
@@ -63,7 +63,7 @@ spec:
 
   selector:
     app.kubernetes.io/name: unifi
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
 
 
 ---
@@ -72,11 +72,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: unifi-gui
+  name: unifi-controller-gui
   labels:
     app.kubernetes.io/name: unifi
     helm.sh/chart: unifi-0.4.0
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
     app.kubernetes.io/managed-by: Tiller
 spec:
   type: ClusterIP
@@ -88,7 +88,7 @@ spec:
 
   selector:
     app.kubernetes.io/name: unifi
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
 
 
 ---
@@ -97,11 +97,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: unifi-stun
+  name: unifi-controller-stun
   labels:
     app.kubernetes.io/name: unifi
     helm.sh/chart: unifi-0.4.0
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
     app.kubernetes.io/managed-by: Tiller
 spec:
   type: NodePort
@@ -113,7 +113,7 @@ spec:
 
   selector:
     app.kubernetes.io/name: unifi
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
 
 
 ---
@@ -121,11 +121,11 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: unifi
+  name: unifi-controller
   labels:
     app.kubernetes.io/name: unifi
     helm.sh/chart: unifi-0.4.0
-    app.kubernetes.io/instance: unifi
+    app.kubernetes.io/instance: unifi-controller
     app.kubernetes.io/managed-by: Tiller
 spec:
   replicas: 1
@@ -134,12 +134,12 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: unifi
-      app.kubernetes.io/instance: unifi
+      app.kubernetes.io/instance: unifi-controller
   template:
     metadata:
       labels:
         app.kubernetes.io/name: unifi
-        app.kubernetes.io/instance: unifi
+        app.kubernetes.io/instance: unifi-controller
     spec:
       containers:
         - name: unifi
@@ -202,7 +202,7 @@ spec:
       volumes:
         - name: unifi-data
           persistentVolumeClaim:
-            claimName: unifi
+            claimName: unifi-controller
 
 ---
 # Source: unifi/templates/ingress.yaml
