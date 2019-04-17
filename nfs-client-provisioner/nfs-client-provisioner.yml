@@ -11,7 +11,7 @@ metadata:
   name: nfs-share
   annotations:
     storageclass.kubernetes.io/is-default-class: "true"
-provisioner: cluster.local/release-name-nfs-client-provisioner
+provisioner: ostrich
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 parameters:
@@ -150,7 +150,7 @@ spec:
               mountPath: /persistentvolumes
           env:
             - name: PROVISIONER_NAME
-              value: cluster.local/release-name-nfs-client-provisioner
+              value: ostrich
             - name: NFS_SERVER
               value: 10.1.1.2
             - name: NFS_PATH
