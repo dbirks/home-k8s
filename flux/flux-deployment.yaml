@@ -118,3 +118,4 @@ spec:
         # make sure to set prometheus' annotation to scrape the port value.
         - --listen-metrics=:3031
         - --git-poll-interval=2m
+        - --sync-garbage-collection
