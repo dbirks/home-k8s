@@ -9,8 +9,6 @@ Cilium as CNI network plugin
 
 Kubernetes as orchestrator
 
-Istio for service mesh
-
 Flux for continuous deployment
 
 ### Install Containerd
@@ -69,9 +67,6 @@ kubectl taint nodes <node-name> node-role.kubernetes.io/master:NoSchedule-
 
 ### Install Cilium
 
-(Using cillium-containerd.yml)
-```
-curl -LO https://raw.githubusercontent.com/cilium/cilium/master/examples/kubernetes/1.14/cilium-containerd.yaml
-```
+### Install Flux
 
 
