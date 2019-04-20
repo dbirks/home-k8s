@@ -1,5 +1,5 @@
 REVISION: 1
-RELEASED: Fri Apr 19 20:49:41 2019
+RELEASED: Fri Apr 19 21:03:29 2019
 CHART: flux-0.9.1
 USER-SUPPLIED VALUES:
 git:
@@ -145,7 +145,7 @@ kube:
     contexts:
     - context:
         cluster: ""
-        namespace: default
+        namespace: kube-system
         user: ""
       name: default
     current-context: default
@@ -264,7 +264,7 @@ data:
     contexts:
     - context:
         cluster: ""
-        namespace: default
+        namespace: kube-system
         user: ""
       name: default
     current-context: default
