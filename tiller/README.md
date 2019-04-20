@@ -14,5 +14,6 @@ Helm client:
 
 ```
 kubectl create secret tls helm-client --dry-run -o yaml --cert=tls/flux-helm-operator.pem --key=tls/flux-helm-operator-key.pem --namespace=kube-system | kubeseal --cert ~/home-k8s-public-key.pem --format yaml > secret_helm-client.yml
-helm template --debug ~/dev/flux/chart/flux/ --name flux --set git.url=git@github.com:dbirks/home-k8s.git --set git.pollInterval=2m --set helmOperator.create=true --set helmOperator.tls.enable=true --set helmOperator.tls.verify=true --set helmOperator.tls.secretName=helm-client --set helmOperator.tls.caContent="$(cat ./tls/ca.pem)" > deploy_flux.yml
+
+helm template --debug ~/dev/flux/chart/flux/ --name flux --namespace=kube-system --set git.url=git@github.com:dbirks/home-k8s.git --set git.pollInterval=2m --set helmOperator.create=true --set helmOperator.tls.enable=true --set helmOperator.tls.verify=true --set helmOperator.tls.secretName=helm-client --set helmOperator.tls.caContent="$(cat ./tls/ca.pem)" > deploy_flux.yml
 ```

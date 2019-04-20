@@ -1,5 +1,5 @@
 REVISION: 1
-RELEASED: Fri Apr 19 19:58:53 2019
+RELEASED: Fri Apr 19 20:49:41 2019
 CHART: flux-0.9.1
 USER-SUPPLIED VALUES:
 git:
@@ -498,7 +498,7 @@ roleRef:
   name: flux
 subjects:
   - name: flux
-    namespace: "default"
+    namespace: "kube-system"
     kind: ServiceAccount
 ---
 # Source: flux/templates/service.yaml
