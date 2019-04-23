@@ -3,8 +3,9 @@ apiVersion: flux.weave.works/v1beta1
 kind: HelmRelease
 metadata:
   name: unifi
-  namespace: default
+  namespace: unifi
 spec:
+  releaseName: unifi
   chart:
     repository: https://kubernetes-charts.storage.googleapis.com
     name: unifi
