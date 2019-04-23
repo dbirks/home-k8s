@@ -10,4 +10,5 @@ spec:
     repository: https://kubernetes-charts.storage.googleapis.com
     name: drone
     version: 2.0.0-rc.10
-  values: {}
+  values:
+    sourceControl.provider: github
