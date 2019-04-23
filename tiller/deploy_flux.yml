@@ -55,7 +55,7 @@ data:
     contexts:
     - context:
         cluster: ""
-        namespace: default
+        namespace: kube-system
         user: ""
       name: default
     current-context: default
