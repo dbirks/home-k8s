@@ -379,9 +379,9 @@ spec:
           - --git-user=Weave Flux
           - --git-email=support@weave.works
           - --git-set-author=false
-          - --git-poll-interval=2m
+          - --git-poll-interval=1m
           - --git-timeout=20s
-          - --sync-interval=2m
+          - --sync-interval=1m
           - --git-ci-skip=false
           - --registry-poll-interval=5m
           - --registry-rps=200
@@ -450,7 +450,7 @@ spec:
           readOnly: true
         args:
         - --git-timeout=20s
-        - --git-poll-interval=2m
+        - --git-poll-interval=1m
         - --charts-sync-interval=3m
         - --update-chart-deps=true
         - --log-release-diffs=false
