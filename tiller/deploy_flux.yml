@@ -319,6 +319,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: flux
+  namespace: kube-system
   labels:
     app: flux
     chart: flux-0.9.1
@@ -399,6 +400,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: flux-helm-operator
+  namespace: kube-system
   labels:
     app: flux-helm-operator
     chart: flux-0.9.1
@@ -471,6 +473,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: flux-memcached
+  namespace: kube-system
   labels:
     app: flux-memcached
     chart: flux-0.9.1
