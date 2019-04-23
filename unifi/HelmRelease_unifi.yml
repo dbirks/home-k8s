@@ -6,7 +6,7 @@ metadata:
   namespace: default
 spec:
   chart:
-    repository: stable
+    repository: https://kubernetes-charts.storage.googleapis.com
     name: unifi
     version: 5.10.19
   values: {}
