@@ -4,6 +4,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: flux-git-deploy
+  namespace: kube-system
 type: Opaque
 ---
 # Source: flux/templates/helm-tls.yaml
@@ -11,6 +12,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: flux-helm-tls-ca-config
+  namespace: kube-system
 data:
   ca.crt: |
     -----BEGIN CERTIFICATE-----
@@ -48,6 +50,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: flux-kube-config
+  namespace: kube-system
 data:
   config: |
     apiVersion: v1
@@ -258,6 +261,7 @@ apiVersion: rbac.authorization.k8s.io/v1beta1
 kind: ClusterRole
 metadata:
   name: flux
+  namespace: kube-system
   labels:
     app: flux
     chart: flux-0.9.1
@@ -279,6 +283,7 @@ apiVersion: rbac.authorization.k8s.io/v1beta1
 kind: ClusterRoleBinding
 metadata:
   name: flux
+  namespace: kube-system
   labels:
     app: flux
     chart: flux-0.9.1
@@ -298,6 +303,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: flux
+  namespace: kube-system
   labels:
     app: flux
     chart: flux-0.9.1
@@ -513,6 +519,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: flux-memcached
+  namespace: kube-system
   labels:
     app: flux-memcached
     chart: flux-0.9.1
