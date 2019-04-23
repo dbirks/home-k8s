@@ -8,7 +8,7 @@ spec:
   releaseName: unifi
   chart:
     repository: https://kubernetes-charts.storage.googleapis.com
-    name: unifi
+    name: stable/unifi
     version: 5.10.19
   values:
     replicas: 1
