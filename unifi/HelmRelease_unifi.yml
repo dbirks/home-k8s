@@ -5,10 +5,8 @@ metadata:
   name: unifi
   namespace: unifi
 spec:
-  releaseName: unifi
   chart:
     repository: https://kubernetes-charts.storage.googleapis.com/
     name: unifi
     version: 5.10.19
-  values:
-    replicas: 1
+  values: {}
