@@ -395,6 +395,7 @@ spec:
           - --registry-rps=200
           - --registry-burst=125
           - --registry-trace=false
+          - --sync-garbage-collection
           resources:
             requests:
               cpu: 50m
