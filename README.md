@@ -9,9 +9,15 @@ Cilium as CNI network plugin
 
 Kubernetes as orchestrator
 
+Sealed-secrets for encrypting secrets for version control
+
 Flux for continuous deployment
 
 [nfs-client-provisioner](https://github.com/kubernetes-incubator/external-storage/tree/master/nfs-client) for dynamically provisioning PersistentVolumes from a NFS server
+
+MetalLB as LoadBalancer
+
+Tiller (with TLS enabled)
 
 ### Install Containerd
 
