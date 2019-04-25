@@ -9,5 +9,8 @@ spec:
   chart:
     repository: https://kubernetes-charts.storage.googleapis.com
     name: unifi
-    version: 0.3.3
-  values: {}
+    version: 0.4.1
+  values:
+    - timezone: America/New York
+    - ingress.enabled: true
+    - ingress.hosts: unifi.tellus.space
