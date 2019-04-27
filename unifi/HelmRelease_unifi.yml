@@ -14,5 +14,6 @@ spec:
     timezone: "America/New York"
     ingress.enabled: true
     ingress.hosts: unifi.tellus.space
+    ingress.annotations: kubernetes.io/ingress.class: "nginx"
     unifiedService.enabled: true
     runAsRoot: true
