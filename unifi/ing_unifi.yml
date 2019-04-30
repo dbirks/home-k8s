@@ -13,4 +13,3 @@ spec:
         backend:
           serviceName: unifi-gui
           servicePort: 8443
-          containerPort: 8443
