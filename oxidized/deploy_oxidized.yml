@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oxidized
+  namespace: oxidized
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - env:
+        - name: CONFIG_RELOAD_INTERVAL
+          value: "600"
+        image: oxidized/oxidized:0.25.1
+        name: oxidized
+        ports:
+        - containerPort: 8888
+        volumeMounts:
+        - mountPath: /root/.config/oxidized
+          name: pv_oxidized
+      restartPolicy: Always
+      volumes:
+      - name: pv_oxidized
+        persistentVolumeClaim:
+          claimName: pvc_oxidized
