@@ -21,6 +21,10 @@ spec:
       port: 8443
       targetPort: 8443
       protocol: TCP
+    - name: tcp-8080
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
   selector:
     app.kubernetes.io/name: ingress-nginx
     app.kubernetes.io/part-of: ingress-nginx
