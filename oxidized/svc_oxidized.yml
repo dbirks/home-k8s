@@ -13,4 +13,4 @@ spec:
     targetPort: 8888
   selector:
     app: oxidized
-  type: ClusterIP
+  type: LoadBalancer
