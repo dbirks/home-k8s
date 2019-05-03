@@ -22,9 +22,9 @@ spec:
         - containerPort: 8888
         volumeMounts:
         - mountPath: /root/.config/oxidized
-          name: pv_oxidized
+          name: pv-oxidized
       restartPolicy: Always
       volumes:
-      - name: pv_oxidized
+      - name: pv-oxidized
         persistentVolumeClaim:
-          claimName: pvc_oxidized
+          claimName: pvc-oxidized
