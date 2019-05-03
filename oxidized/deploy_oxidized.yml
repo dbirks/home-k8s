@@ -11,6 +11,9 @@ spec:
     matchLabels:
       app: oxidized
   template:
+    metadata:
+      labels:
+        app: oxidized
     spec:
       containers:
       - env:
