@@ -3,8 +3,13 @@ kind: Deployment
 metadata:
   name: oxidized
   namespace: oxidized
+  labels:
+    app: oxidized
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: oxidized
   template:
     spec:
       containers:
