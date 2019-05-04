@@ -1,0 +1,29 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: mariadb
+  namespace: matomo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      containers:
+      - env:
+        - name: ALLOW_EMPTY_PASSWORD
+          value: "yes"
+        - name: MARIADB_DATABASE
+          value: bitnami_matomo
+        - name: MARIADB_USER
+          value: bn_matomo
+        image: bitnami/mariadb:latest
+        name: mariadb
+        volumeMounts:
+        - mountPath: /bitnami
+          name: matomo-mariadb-data
+      restartPolicy: Always
+      volumes:
+      - name: matomo-mariadb-data
+        persistentVolumeClaim:
+          claimName: matomo-mariadb-data

@@ -1,0 +1,36 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: matomo-app
+  namespace: matomo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      containers:
+      - env:
+        - name: ALLOW_EMPTY_PASSWORD
+          value: "yes"
+        - name: MARIADB_HOST
+          value: mariadb
+        - name: MARIADB_PORT_NUMBER
+          value: "3306"
+        - name: MATOMO_DATABASE_NAME
+          value: bitnami_matomo
+        - name: MATOMO_DATABASE_USER
+          value: bn_matomo
+        image: bitnami/matomo:latest
+        name: matomo-app
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        volumeMounts:
+        - mountPath: /bitnami
+          name: matomo-matomo-data
+      restartPolicy: Always
+      volumes:
+      - name: matomo-matomo-data
+        persistentVolumeClaim:
+          claimName: matomo-matomo-data
