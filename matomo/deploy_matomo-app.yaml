@@ -11,10 +11,10 @@ spec:
   strategy:
     type: Recreate
   template:
+    metadata:
+      labels:
+        app: matomo
     spec:
-      metadata:
-        labels:
-          app: matomo
       containers:
       - env:
         - name: ALLOW_EMPTY_PASSWORD
