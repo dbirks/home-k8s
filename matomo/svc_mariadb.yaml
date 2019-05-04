@@ -6,6 +6,7 @@ metadata:
 spec:
   selector:
     app: matomo
+    tier: mariadb
   ports:
   - name: "3306"
     port: 3306

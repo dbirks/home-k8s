@@ -8,12 +8,14 @@ spec:
   selector:
     matchLabels:
       app: matomo
+      tier: frontend
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
         app: matomo
+        tier: frontend
     spec:
       containers:
       - env:

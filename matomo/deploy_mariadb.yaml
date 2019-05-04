@@ -8,12 +8,14 @@ spec:
   selector:
     matchLabels:
       app: matomo
+      tier: mariadb
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
         app: matomo
+        tier: mariadb
     spec:
       containers:
       - env:

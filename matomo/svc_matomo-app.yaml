@@ -6,6 +6,7 @@ metadata:
 spec:
   selector:
     app: matomo
+    tier: frontend
   ports:
   - name: "80"
     port: 80
