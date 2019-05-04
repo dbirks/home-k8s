@@ -3,14 +3,18 @@ kind: Deployment
 metadata:
   name: matomo-app
   namespace: matomo
-  labels:
-    app: matomo
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: matomo
   strategy:
     type: Recreate
   template:
     spec:
+      metadata:
+        labels:
+          app: matomo
       containers:
       - env:
         - name: ALLOW_EMPTY_PASSWORD
