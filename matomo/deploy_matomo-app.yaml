@@ -3,13 +3,12 @@ kind: Deployment
 metadata:
   name: matomo-app
   namespace: matomo
+  labels:
+    app: matomo
 spec:
   replicas: 1
   strategy:
     type: Recreate
-  metadata:
-    labels:
-      app: matomo
   template:
     spec:
       containers:

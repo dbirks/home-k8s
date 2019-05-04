@@ -3,14 +3,13 @@ kind: Deployment
 metadata:
   name: mariadb
   namespace: matomo
+  labels:
+    app: matomo
 spec:
   replicas: 1
   strategy:
     type: Recreate
   template:
-    metadata:
-      labels:
-        app: matomo
     spec:
       containers:
       - env:
