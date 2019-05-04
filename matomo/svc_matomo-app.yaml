@@ -3,10 +3,9 @@ kind: Service
 metadata:
   name: matomo-app
   namespace: matomo
-spec:
-  metadata:
   labels:
     app: matomo
+spec:
   ports:
   - name: "80"
     port: 80
