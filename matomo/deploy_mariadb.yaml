@@ -8,6 +8,9 @@ spec:
   strategy:
     type: Recreate
   template:
+    metadata:
+      labels:
+        app: matomo
     spec:
       containers:
       - env:

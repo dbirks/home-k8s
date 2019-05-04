@@ -4,6 +4,9 @@ metadata:
   name: matomo-app
   namespace: matomo
 spec:
+  metadata:
+  labels:
+    app: matomo
   ports:
   - name: "80"
     port: 80
