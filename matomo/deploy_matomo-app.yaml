@@ -29,6 +29,10 @@ spec:
           value: bitnami_matomo
         - name: MATOMO_DATABASE_USER
           value: bn_matomo
+        - name: MATOMO_USERNAME
+          value: david
+        - name: MATOMO_PASSWORD
+          value: gus
         image: bitnami/matomo:latest
         name: matomo-app
         ports:
