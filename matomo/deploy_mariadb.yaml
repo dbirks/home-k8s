@@ -25,6 +25,8 @@ spec:
           value: bn_matomo
         - name: MARIADB_PASSWORD
           value: test-pass
+        - name: MARIADB_ROOT_PASSWORD
+          value: oh-hello-there
         image: bitnami/mariadb:latest
         name: mariadb
         volumeMounts:
