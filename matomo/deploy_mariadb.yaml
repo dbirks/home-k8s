@@ -1,4 +1,4 @@
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mariadb
@@ -19,12 +19,12 @@ spec:
     spec:
       containers:
       - env:
-        - name: ALLOW_EMPTY_PASSWORD
-          value: "yes"
         - name: MARIADB_DATABASE
           value: bitnami_matomo
         - name: MARIADB_USER
           value: bn_matomo
+        - name: MARIADB_PASSWORD
+          value: test-pass
         image: bitnami/mariadb:latest
         name: mariadb
         volumeMounts:

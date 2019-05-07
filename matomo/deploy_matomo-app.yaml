@@ -1,4 +1,4 @@
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: matomo-app
@@ -19,16 +19,12 @@ spec:
     spec:
       containers:
       - env:
-        - name: ALLOW_EMPTY_PASSWORD
-          value: "yes"
-        - name: MARIADB_HOST
-          value: mariadb
-        - name: MARIADB_PORT_NUMBER
-          value: "3306"
         - name: MATOMO_DATABASE_NAME
           value: bitnami_matomo
         - name: MATOMO_DATABASE_USER
           value: bn_matomo
+        - name: MATOMO_DATABASE_PASSWORD
+          value: test-pass
         - name: MATOMO_USERNAME
           value: david
         - name: MATOMO_PASSWORD
