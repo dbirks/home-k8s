@@ -31,8 +31,15 @@ spec:
         volumeMounts:
         - mountPath: /downloads
           name: vol-downloads
+        volumeMounts:
+        - mountPath: /config
+          name: vol-config
       volumes:
       - name: vol-downloads
         nfs:
           server: 10.1.1.2
-          path: /mnt/tetons/torrents
+          path: /mnt/tetons/torrents/downloads
+      - name: vol-config
+        nfs:
+          server: 10.1.1.2
+          path: /mnt/tetons/torrents/config
