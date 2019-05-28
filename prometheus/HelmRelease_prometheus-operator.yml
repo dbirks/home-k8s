@@ -3,7 +3,6 @@ apiVersion: flux.weave.works/v1beta1
 kind: HelmRelease
 metadata:
   name: prometheus
-  namespace: monitoring
 spec:
   releaseName: prometheus-operator
   chart:
