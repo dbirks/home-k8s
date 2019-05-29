@@ -10,6 +10,6 @@ spec:
     name: prometheus-operator
     version: 5.11.0
   values:
-    prometheus.service.type: LoadBalancer
+    prometheus.service.type: "LoadBalancer"
     serviceMonitorNamespaceSelector: {} # auto-discover all service monitors across all namespaces
     serviceMonitorSelector: {} # auto-discover all service monitors in namespaces configured above
