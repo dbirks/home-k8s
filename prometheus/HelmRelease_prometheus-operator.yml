@@ -11,3 +11,5 @@ spec:
     version: 5.10.4
   values:
     prometheus.service.type: LoadBalancer
+    serviceMonitorNamespaceSelector: {} # auto-discover all service monitors across all namespaces
+    serviceMonitorSelector: {} # auto-discover all service monitors in namespaces configured above
