@@ -4,9 +4,10 @@ kind: HelmRelease
 metadata:
   name: prometheus
 spec:
-  releaseName: prometheus-operator
+  releaseName: prom
   chart:
     repository: https://kubernetes-charts.storage.googleapis.com
     name: prometheus-operator
     version: 5.10.4
-  values: {}
+  values:
+    prometheus.service.type: LoadBalancer
