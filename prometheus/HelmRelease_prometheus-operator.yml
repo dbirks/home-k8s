@@ -8,7 +8,7 @@ spec:
   chart:
     repository: https://kubernetes-charts.storage.googleapis.com
     name: prometheus-operator
-    version: 5.10.4
+    version: 5.11.0
   values:
     prometheus.service.type: LoadBalancer
     serviceMonitorNamespaceSelector: {} # auto-discover all service monitors across all namespaces
