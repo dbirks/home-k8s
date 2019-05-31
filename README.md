@@ -3,7 +3,7 @@
 ## Current setup
 Ubuntu as OS
 
-Containerd as container runtime
+containerd as container runtime
 
 Cilium as CNI network plugin
 
@@ -11,19 +11,23 @@ Kubernetes as orchestrator
 
 Sealed-secrets for encrypting secrets for version control
 
-Flux for continuous deployment
+Flux for continuous deployment, using a pull model from inside the cluster
 
-[nfs-client-provisioner](https://github.com/kubernetes-incubator/external-storage/tree/master/nfs-client) for dynamically provisioning PersistentVolumes from a NFS server
+[nfs-client-provisioner](https://github.com/kubernetes-incubator/external-storage/tree/master/nfs-client) to set up a StorageClass to dynamically provision PersistentVolumes from a separate NFS server
 
-MetalLB as LoadBalancer
+MetalLB to fulfil LoadBalancer services
 
 Tiller (with TLS enabled)
 
-### Install Containerd
+Flux's HelmOperator to deploy Helm charts
+
+## Initial setup
+
+### Install containerd
 
 Instructions [here](https://kubernetes.io/docs/setup/cri/#containerd).
 
-In short (copy-pasta):
+In short:
 ```
 modprobe overlay
 modprobe br_netfilter
@@ -75,6 +79,4 @@ kubectl taint nodes <node-name> node-role.kubernetes.io/master:NoSchedule-
 
 ### Install Cilium
 
-### Install Flux
-
-
+### Install Flux, Tiller, and HelmOperator
