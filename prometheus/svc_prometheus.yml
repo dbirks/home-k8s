@@ -1,7 +1,7 @@
 kind: Service
 apiVersion: v1
 metadata:
-  name: svc_prometheus
+  name: prometheus-service
   namespace: monitoring
 spec:
   selector:
