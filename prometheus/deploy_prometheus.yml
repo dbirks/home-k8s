@@ -14,10 +14,10 @@ spec:
     metadata:
       labels:
         app: prometheus
+      namespace: monitoring
     spec:
       containers:
       - name: prometheus-example
-        namespace: monitoring
         image: prom/prometheus:v2.10.0
         volumeMounts:
           - name: config-volume
