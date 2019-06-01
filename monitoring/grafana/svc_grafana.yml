@@ -3,8 +3,8 @@ kind: Service
 metadata:
   creationTimestamp: null
   labels:
-    app: grafana-service
-  name: grafana-service
+    app: grafana
+  name: grafana
   namespace: monitoring
 spec:
   ports:
@@ -13,7 +13,7 @@ spec:
     protocol: TCP
     targetPort: 3000
   selector:
-    app: grafana-service
+    app: grafana
   type: LoadBalancer
 status:
   loadBalancer: {}
