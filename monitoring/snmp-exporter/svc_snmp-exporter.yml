@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: snmp-exporter
+  name: snmp-exporter
+spec:
+  ports:
+  - name: "9116"
+    port: 9116
+    protocol: TCP
+    targetPort: 9116
+  selector:
+    app: snmp-exporter
+  type: ClusterIP
