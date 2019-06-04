@@ -1,24 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  creationTimestamp: null
   labels:
     app: snmp-exporter
   name: snmp-exporter
+  namespace: monitoring
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: snmp-exporter
-  strategy: {}
   template:
     metadata:
-      creationTimestamp: null
       labels:
         app: snmp-exporter
     spec:
       containers:
       - image: quay.io/prometheus/snmp-exporter:v0.15.0
         name: snmp-exporter
-        resources: {}
-status: {}
