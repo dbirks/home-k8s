@@ -4,6 +4,7 @@ metadata:
   labels:
     app: snmp-exporter
   name: snmp-exporter
+  namespace: monitoring
 spec:
   ports:
   - name: "9116"
