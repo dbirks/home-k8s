@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: cloudflare-exporter
+  name: cloudflare-exporter
+  namespace: monitoring
+spec:
+  ports:
+  - name: "9199"
+    port: 9199
+    protocol: TCP
+    targetPort: 9199
+  selector:
+    app: cloudflare-exporter
+  type: ClusterIP

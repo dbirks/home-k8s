@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: cloudflare-exporter
+  name: cloudflare-exporter
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflare-exporter
+  template:
+    metadata:
+      labels:
+        app: cloudflare-exporter
+    spec:
+      containers:
+        - image: docker.io/wehkamp/prometheus-cloudflare-exporter:1.1.1
+        name: cloudflare-exporter
