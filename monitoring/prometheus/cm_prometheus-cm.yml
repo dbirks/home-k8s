@@ -17,7 +17,12 @@ data:
           - targets: ['node-exporter:9100']
       - job_name: 'snmp-exporter (Fortigate)'
         static_configs:
-          - targets: ['snmp-exporter:9116/snmp?target=10.1.1.1']
+          - targets: ['snmp-exporter:9116']
+        metrics_path: /snmp
+        relabel_configs:
+          - target_label: __address__
+            replacement: 10.1.1.1
+
 kind: ConfigMap
 metadata:
   name: prometheus-cm
