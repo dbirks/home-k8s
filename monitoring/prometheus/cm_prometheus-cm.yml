@@ -21,7 +21,7 @@ data:
         metrics_path: /snmp
         relabel_configs:
           - target_label: __address__
-            replacement: 10.1.1.1
+            replacement: 10.1.1.1:161
 
 kind: ConfigMap
 metadata:
