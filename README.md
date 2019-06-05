@@ -15,11 +15,15 @@ Flux for continuous deployment, using a pull model from inside the cluster
 
 [nfs-client-provisioner](https://github.com/kubernetes-incubator/external-storage/tree/master/nfs-client) to set up a StorageClass to dynamically provision PersistentVolumes from a separate NFS server
 
-MetalLB to fulfil LoadBalancer services
+MetalLB to fulfill LoadBalancer services
 
 Tiller (with TLS enabled)
 
-Flux's HelmOperator to deploy Helm charts
+Flux's HelmOperator to talk to Tiller with TLS to deploy Helm charts
+
+Prometheus for metric gathering
+
+Grafana for metric visualization
 
 ## Initial setup
 
