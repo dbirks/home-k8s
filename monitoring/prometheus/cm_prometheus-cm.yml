@@ -14,8 +14,10 @@ data:
       - job_name: 'kube-state-metrics'
         static_configs:
           - targets: ['kube-state-metrics:8080']
+      - job_name: 'node-exporter'
+        static_configs:
+          - targets: ['node-exporter:9100']
 kind: ConfigMap
 metadata:
-  creationTimestamp: null
   name: prometheus-cm
   namespace: monitoring
