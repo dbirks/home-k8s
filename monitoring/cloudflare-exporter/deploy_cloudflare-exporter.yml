@@ -16,5 +16,8 @@ spec:
         app: cloudflare-exporter
     spec:
       containers:
-        - image: docker.io/wehkamp/prometheus-cloudflare-exporter:1.1.1
-        name: cloudflare-exporter
+      - name: cloudflare-exporter
+        image: docker.io/wehkamp/prometheus-cloudflare-exporter:1.1.1
+        envFrom:
+        - secretRef:
+            name: cloudflare-vars
