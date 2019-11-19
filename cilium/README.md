@@ -1,9 +1,5 @@
-(Using cillium-containerd.yml)
-```
-curl -LO https://raw.githubusercontent.com/cilium/cilium/master/examples/kubernetes/1.14/cilium-containerd.yaml
-```
+# Cilium
 
-Or if the cilium repo is cloned to ~/dev:
 ```
-cp ~/dev/cilium/examples/kubernetes/1.14/cilium-containerd.yaml .
+curl -LO https://raw.githubusercontent.com/cilium/cilium/v1.6.3/install/kubernetes/quick-install.yaml
 ```
