@@ -5,7 +5,7 @@ Mainly following [this page](https://helm.workshop.flagger.dev/prerequisites/#fl
 ```
 kubectl apply -f ns_fluxcd.yaml
 helm repo add fluxcd https://charts.fluxcd.io
-helm install flux fluxcd/flux --wait -n fluxcd --set registry.pollInterval=1m --set git.pollInterval=1m --set git.url=git@github.com/dbirks/home-k8s
+helm install flux fluxcd/flux --wait -n fluxcd --set registry.pollInterval=1m --set git.pollInterval=1m --set git.url=git@github.com:dbirks/home-k8s
 kubectl -n fluxcd logs deployment/flux | grep identity.pub | cut -d '"' -f2
 ```
 
