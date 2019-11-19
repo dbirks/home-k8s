@@ -1,5 +1,4 @@
----
-apiVersion: flux.weave.works/v1beta1
+apiVersion: helm.fluxcd.io/v1
 kind: HelmRelease
 metadata:
   name: metallb
@@ -9,5 +8,11 @@ spec:
   chart:
     repository: https://kubernetes-charts.storage.googleapis.com
     name: metallb
-    version: 0.9.5
-  values: {}
+    version: 0.12.0
+  values:
+    configInline:
+      address-pools:
+      - name: internal
+        protocol: layer2
+        addresses:
+        - 10.1.1.200-10.1.1.210
