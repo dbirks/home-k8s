@@ -9,4 +9,6 @@ spec:
     repository: https://kubernetes-charts.storage.googleapis.com
     name: nextcloud
     version: 1.8.0
-  values: {}
+  values:
+    ingress:
+      enabled: true
