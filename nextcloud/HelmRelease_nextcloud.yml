@@ -12,5 +12,3 @@ spec:
   values:
     ingress:
       enabled: true
-    service:
-      type: LoadBalancer
