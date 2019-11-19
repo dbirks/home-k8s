@@ -1,0 +1,12 @@
+apiVersion: helm.fluxcd.io/v1
+kind: HelmRelease
+metadata:
+  name: nextcloud
+  namespace: nextcloud
+spec:
+  releaseName: nextcloud
+  chart:
+    repository: https://kubernetes-charts.storage.googleapis.com
+    name: nextcloud
+    version: 1.8.0
+  values: {}
