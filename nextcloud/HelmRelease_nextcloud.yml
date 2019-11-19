@@ -14,4 +14,3 @@ spec:
       enabled: true
     service:
       type: LoadBalancer
-      port: 80
