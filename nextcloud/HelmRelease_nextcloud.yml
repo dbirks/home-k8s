@@ -10,7 +10,5 @@ spec:
     name: nextcloud
     version: 1.8.0
   values:
-    ingress:
-      enabled: true
     service:
       type: LoadBalancer
