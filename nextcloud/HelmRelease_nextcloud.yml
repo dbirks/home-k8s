@@ -12,3 +12,10 @@ spec:
   values:
     ingress:
       enabled: true
+    persistence:
+      enabled: true
+      storageClass: nfs
+  valuesFrom:
+  - secretKeyRef:
+    name: nextcloud-values
+    key: values.yaml
