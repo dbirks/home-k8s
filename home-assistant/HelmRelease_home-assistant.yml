@@ -12,6 +12,11 @@ spec:
   values:
     ingress:
       enabled: true
-      path: /
       hosts:
         - home.tellus.space
+    configurator:
+      enabled: true
+      ingress:
+        enabled: true
+        hosts:
+          - home-config.tellus.space
