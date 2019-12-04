@@ -1,0 +1,17 @@
+apiVersion: helm.fluxcd.io/v1
+kind: HelmRelease
+metadata:
+  name: home-assistant
+  namespace: home-assistant
+spec:
+  releaseName: home-assistant
+  chart:
+    repository: https://kubernetes-charts.storage.googleapis.com
+    name: home-assistant
+    version: 0.9.11
+  values:
+    ingress:
+      enabled: true
+      path: /
+      hosts:
+        - home.tellus.space
