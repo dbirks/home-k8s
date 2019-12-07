@@ -52,7 +52,7 @@ metadata:
   namespace: shinobi
 spec:
   rules:
-  - host: shinobi.tellus.space
+  - host: cameras.tellus.space
     http:
       paths:
       - backend:
