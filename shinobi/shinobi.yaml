@@ -23,6 +23,10 @@ spec:
       containers:
       - image: shinobisystems/shinobi:latest-ubuntu
         name: shinobi
+        env:
+        - name: APP_BRANCH
+          value: "dev"
+
 ---
 apiVersion: v1
 kind: Service
