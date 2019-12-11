@@ -1,12 +1,14 @@
 apiVersion: helm.fluxcd.io/v1
 kind: HelmRelease
 metadata:
-  name: nginx-ingress
+  name: nginx-ingress-private
   namespace: ingress
 spec:
-  releaseName: nginx-ingress
+  releaseName: nginx-ingress-private
   chart:
     repository: https://kubernetes-charts.storage.googleapis.com
     name: nginx-ingress
-    version: 1.25.0
-  values: {}
+    version: 1.26.2
+  values:
+    controller:
+      ingressClass: "private"
