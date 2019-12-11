@@ -16,11 +16,16 @@ spec:
         kubernetes.io/ingress.class: public
       hosts:
         - enomulous-birthday.tellus.space
+      tls:
+      - hosts:
+        - enomulous-birthday.tellus.space
+        secretName: home-assistant-cert-prod
     configurator:
       enabled: true
       ingress:
         enabled: true
         annotations:
           kubernetes.io/ingress.class: private
+          cert-manager.io/cluster-issuer: letsencrypt-prod
         hosts:
           - home-config.tellus.space
