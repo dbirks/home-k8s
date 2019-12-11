@@ -14,6 +14,7 @@ spec:
       enabled: true
       annotations:
         kubernetes.io/ingress.class: public
+        cert-manager.io/cluster-issuer: letsencrypt-prod
       hosts:
         - enomulous-birthday.tellus.space
       tls:
@@ -26,6 +27,5 @@ spec:
         enabled: true
         annotations:
           kubernetes.io/ingress.class: private
-          cert-manager.io/cluster-issuer: letsencrypt-prod
         hosts:
           - home-config.tellus.space
