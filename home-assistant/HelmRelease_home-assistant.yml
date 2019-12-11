@@ -15,12 +15,12 @@ spec:
       annotations:
         kubernetes.io/ingress.class: public
         cert-manager.io/cluster-issuer: letsencrypt-prod
-      hosts:
-        - enomulous-birthday.tellus.space
       tls:
       - hosts:
         - enomulous-birthday.tellus.space
         secretName: home-assistant-cert-prod
+      hosts:
+        - enomulous-birthday.tellus.space
     configurator:
       enabled: true
       ingress:
