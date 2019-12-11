@@ -12,11 +12,15 @@ spec:
   values:
     ingress:
       enabled: true
+      annotations:
+        kubernetes.io/ingress.class: public
       hosts:
         - enomulous-birthday.tellus.space
     configurator:
       enabled: true
       ingress:
         enabled: true
+        annotations:
+          kubernetes.io/ingress.class: private
         hosts:
           - home-config.tellus.space
