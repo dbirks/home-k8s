@@ -1,39 +1,86 @@
 # home-k8s 🏡☸
 
 ## Current setup
+Ubuntu as OS
 
-k3os as the OS
+containerd as container runtime
 
+Cilium as CNI network plugin
 
+Kubernetes as orchestrator
 
+Sealed-secrets for encrypting secrets for version control
 
-## Installation
+Flux for continuous deployment, using a pull model from inside the cluster
 
-### k3os
+[nfs-client-provisioner](https://github.com/kubernetes-incubator/external-storage/tree/master/nfs-client) to set up a StorageClass to dynamically provision PersistentVolumes from a separate NFS server
 
-Grabbed a recent .iso (0.11.1 currently) from [their releases](https://github.com/rancher/k3os/releases). Wrote to usb stick with:
+MetalLB to fulfill LoadBalancer services
+
+Tiller (with TLS enabled)
+
+Flux's HelmOperator to talk to Tiller with TLS to deploy Helm charts
+
+Prometheus for metric gathering
+
+Grafana for metric visualization
+
+## Initial setup
+
+### Install containerd
+
+Instructions [here](https://kubernetes.io/docs/setup/cri/#containerd).
+
+In short:
+```
+modprobe overlay
+modprobe br_netfilter
+
+# Setup required sysctl params, these persist across reboots.
+cat > /etc/sysctl.d/99-kubernetes-cri.conf <<EOF
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+
+sysctl --system
+
+# Install containerd
+## Set up the repository
+### Install packages to allow apt to use a repository over HTTPS
+apt-get update && apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+
+### Add Docker’s official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+
+### Add Docker apt repository.
+add-apt-repository \
+    "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+    $(lsb_release -cs) \
+    stable"
+
+## Install containerd
+apt-get update && apt-get install -y containerd.io
+
+# Configure containerd
+mkdir -p /etc/containerd
+containerd config default > /etc/containerd/config.toml
+
+# Restart containerd
+systemctl restart containerd
+```
+
+### Install Kubernetes
 
 ```
-sudo ddrescue ~/Downloads/k3os-amd64.iso /dev/sdb --force
+kubeadm init --cri-socket /run/containerd/containerd.sock
 ```
 
-Did the install with a monitor attached. Entered my github username when prompted to get my public ssh key set up. 
-
-After installation, connected to it over ssh with the `rancher` user.
-
-To use kubectl from my laptop, I grabbed the kubeconfig from `/etc/rancher/k3s/k3s.yaml`. Substituted 127.0.0.1 with its DHCP address. Pointed the `KUBECONFIG` env var to the yaml file and connected successfully.
-
-### flux v2
-
-Installed the cli with:
-
+If single-master setup, allow scheduling on the master node:
 ```
-nix-env -i fluxcd
+kubectl taint nodes <node-name> node-role.kubernetes.io/master:NoSchedule-
 ```
 
-Then checked that prereqs were met:
+### Install Cilium
 
-```
-flux check --pre
-```
-
+### Install Flux, Tiller, and HelmOperator
