@@ -37,3 +37,8 @@ Then checked that prereqs were met:
 flux check --pre
 ```
 
+Ran the bootstrap (which required a `GITHUB_TOKEN` env var set up locally), which added a deploy key to my github repo, and committed some `kube-system` manifests:
+
+```
+flux bootstrap github --owner dbirks --repository home-k8s --branch main --personal
+```
