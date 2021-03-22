@@ -21,8 +21,8 @@ spec:
         app: shinobi
     spec:
       containers:
-      - image: shinobisystems/shinobi:dev
-        name: shinobi
+        - image: shinobisystems/shinobi:dev
+          name: shinobi
 ---
 apiVersion: v1
 kind: Service
@@ -33,10 +33,10 @@ metadata:
   namespace: shinobi
 spec:
   ports:
-  - name: http
-    port: 80
-    protocol: TCP
-    targetPort: 8080
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
   selector:
     app: shinobi
   type: ClusterIP
@@ -48,14 +48,13 @@ metadata:
   namespace: shinobi
 spec:
   rules:
-  - host: shinobi.hoam.lan
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: shinobi
-            port:
-              number: 80
-
+    - host: shinobi.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shinobi
+                port:
+                  number: 80
