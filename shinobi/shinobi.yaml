@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shinobi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: shinobi
+  name: shinobi
+  namespace: shinobi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shinobi
+  template:
+    metadata:
+      labels:
+        app: shinobi
+    spec:
+      containers:
+      - image: shinobisystems/shinobi:latest-ubuntu
+        name: shinobi
+        env:
+        - name: APP_BRANCH
+          value: "dev"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: shinobi
+  name: shinobi
+  namespace: shinobi
+spec:
+  ports:
+  - name: "8080"
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: shinobi
+  type: ClusterIP
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: shinobi
+  namespace: shinobi
+spec:
+  rules:
+  - host: cameras.tellus.space
+    http:
+      paths:
+      - backend:
+          serviceName: shinobi
+          servicePort: 8080
+        path: /
