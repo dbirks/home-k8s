@@ -39,20 +39,20 @@ spec:
       targetPort: 8080
   selector:
     app: shinobi
-  type: ClusterIP
----
-apiVersion: networking.k8s.io/v1beta1
-kind: Ingress
-metadata:
-  name: shinobi
-  namespace: shinobi
-spec:
-  rules:
-    - host: shinobi.hoam.lan
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              serviceName: shinobi
-              servicePort: 80
+  type: LoadBalancer
+# ---
+# apiVersion: networking.k8s.io/v1beta1
+# kind: Ingress
+# metadata:
+#   name: shinobi
+#   namespace: shinobi
+# spec:
+#   rules:
+#     - host: shinobi.hoam.lan
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               serviceName: shinobi
+#               servicePort: 80
