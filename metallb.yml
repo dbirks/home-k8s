@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: metallb-system
+---
+apiVersion: helm.fluxcd.io/v1
+kind: HelmRelease
+metadata:
+  name: metallb
+  namespace: metallb-system
+spec:
+  releaseName: metallb
+  chart:
+    repository: https://kubernetes-charts.storage.googleapis.com
+    name: metallb
+    version: 0.12.0
+  values:
+    configInline:
+      address-pools:
+      - name: internal
+        protocol: layer2
+        addresses:
+        - 10.1.1.200-10.1.1.210
