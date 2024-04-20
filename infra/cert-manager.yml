@@ -2,7 +2,7 @@ apiVersion: source.toolkit.fluxcd.io/v1beta1
 kind: HelmRepository
 metadata:
   name: jetstack
-  namespace: ingress
+  namespace: flux-system
 spec:
   interval: 5m
   url: https://charts.jetstack.io
@@ -11,9 +11,10 @@ apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
 metadata:
   name: cert-manager
-  namespace: ingress
+  namespace: flux-system
 spec:
   interval: 5m
+  targetNamespace: kube-system
   chart:
     spec:
       chart: cert-manager
@@ -21,7 +22,7 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: jetstack
-        namespace: ingress
+        namespace: flux-system
       interval: 1m
   values:
     installCRDs: true
