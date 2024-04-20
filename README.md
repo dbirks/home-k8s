@@ -1,27 +1,79 @@
 # home-k8s 🏡☸
 
+- Install containerd
+  ```
+  sudo apt install containerd
+  ```
+- Followed the instructions here in the Kubernetes to set up the package repos and install kubectl, kubelet, and kubeadm:
+  https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#installing-kubeadm-kubelet-and-kubectl
+- enable ip forwarding
+  ```
+  sudo sysctl -w net.ipv4.ip_forward=1
+  /etc/sysctl.conf
+  ```
+- sudo kubeadm init
+- 
+
+
+curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -s -
+
+https://docs.k3s.io/advanced?_highlight=gpu#nvidia-container-runtime-support
+
+https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+
+https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#debian
+
+
+
+
 ## Current setup
 
-k3os as the OS
-
-
-
+- Kairos as the OS
+  - Picked the Debian-based image
+  - Switched to it after k3os stopped being developed
+  - Operates basically the same as k3os as far as I can see... a purpose-built linux distro for running k3s
 
 ## Installation
 
 ### k3os
 
-Grabbed a recent .iso (0.11.1 currently) from [their releases](https://github.com/rancher/k3os/releases). Wrote to usb stick with:
+Homepage: https://kairos.io
+Github repo: https://github.com/kairos-io/kairos
+
+Followed their quickstart guide roughly: https://kairos.io/docs/getting-started
+
+Grabbed a recent .iso from [their releases](https://github.com/kairos-io/kairos/releases). Wrote to usb stick with:
 
 ```
-sudo ddrescue ~/Downloads/k3os-amd64.iso /dev/sdb --force
+sudo ddrescue ~/Downloads/kairos-debian-bookworm-standard-amd64-generic-v2.4.2-k3sv1.28.2+k3s1.iso /dev/sdb --force
 ```
 
-Did the install with a monitor attached. Entered my github username when prompted to get my public ssh key set up. 
+Navigated to port 8080 on the machine from my laptop to reach the Kairos WebUI, and entered this as the cloud-config:
 
-After installation, connected to it over ssh with the `rancher` user.
+```
+#cloud-config
+
+users:
+  - name: kairos
+    ssh_authorized_keys:
+      - github:dbirks
+
+k3s:
+  enabled: true
+```
+
+Took maybe 1-2 min to install after that.
+
+After installation, connected to it over ssh (though my IP changed) with the `kairos` user.
 
 To use kubectl from my laptop, I grabbed the kubeconfig from `/etc/rancher/k3s/k3s.yaml`. Substituted 127.0.0.1 with its DHCP address. Pointed the `KUBECONFIG` env var to the yaml file and connected successfully.
+
+Some quick checks on the status when you're ssh'd on the machine:
+```
+sudo systemctl status k3s
+sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml get pods -A
+```
+
 
 ### flux v2
 
