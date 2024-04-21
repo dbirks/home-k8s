@@ -17,7 +17,7 @@ spec:
   targetNamespace: default
   chart:
     spec:
-      chart: gpu-operator
+      chart: ollama
       # Current version found here:
       # https://github.com/otwld/ollama-helm/blob/main/Chart.yaml#L7
       version: 0.23.0
