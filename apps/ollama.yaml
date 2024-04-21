@@ -39,10 +39,10 @@ spec:
 
     resources:
       requests:
-        nvidia.com/gpu: 200m
+        nvidia.com/gpu: 0.2
         memory: 128Mi
         cpu: 10m
       limits:
-        nvidia.com/gpu: 1000m
+        nvidia.com/gpu: 1
         memory: 4Gi
         cpu: 2000m
