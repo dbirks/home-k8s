@@ -1,0 +1,31 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta1
+kind: HelmRepository
+metadata:
+  name: pajikos
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://pajikos.github.io/home-assistant-helm-chart
+---
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: home-assistant
+  namespace: flux-system
+spec:
+  interval: 5m
+  targetNamespace: default
+  chart:
+    spec:
+      chart: home-assistant
+      # Current version found here:
+      # https://github.com/pajikos/home-assistant-helm-chart/blob/main/charts/home-assistant/Chart.yaml#L20
+      version: 0.2.49
+      sourceRef:
+        kind: HelmRepository
+        name: pajikos
+        namespace: flux-system
+      interval: 5m
+  # Default values:
+  # https://github.com/pajikos/home-assistant-helm-chart/blob/main/charts/home-assistant/values.yaml
+  # values:
