@@ -32,6 +32,8 @@ spec:
       ignoreLimits: true
     serviceAccount: capacitor
     ingress:
+      annotations:
+        kubernetes.io/ingress.class: nginx
       host: capacitor.hoam.lan
 ---
 apiVersion: v1
