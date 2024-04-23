@@ -19,5 +19,6 @@ spec:
   # Default values:
   # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml
   values:
-    ingressClassResource:
-      name: public
+    controller:
+      ingressClassResource:
+        name: public
