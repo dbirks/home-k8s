@@ -19,7 +19,7 @@ spec:
   # Default values:
   # https://github.com/gimlet-io/capacitor/blob/main/deploy/helm/onechart-helm-values.yaml
   # https://github.com/gimlet-io/onechart/blob/master/charts/onechart/values.yaml
-  # https://truecharts.org/common
+  # https://gimlet.io/docs/onechart-reference
   values:
     image:
       repository: ghcr.io/gimlet-io/capacitor
@@ -32,13 +32,7 @@ spec:
       ignoreLimits: true
     serviceAccount: capacitor
     ingress:
-      main:
-        enabled: true
-        hosts:
-          - host: capacitor.hoam.lan
-            paths:
-              - path: /
-                pathType: Prefix
+      host: capacitor.hoam.lan
 ---
 apiVersion: v1
 kind: ServiceAccount
