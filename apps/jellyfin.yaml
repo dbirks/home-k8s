@@ -18,4 +18,12 @@ spec:
       interval: 5m
   # Default values:
   # https://github.com/truecharts/charts/blob/master/charts/stable/jellyfin/values.yaml
-  # values:
+  values:
+    ingress:
+      main:
+        enabled: true
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-production
+        ingressClassName: private
+        hosts:
+          - host: jellyfin.hoam.lan
