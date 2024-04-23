@@ -30,7 +30,7 @@ spec:
 
     resources:
       requests:
-        nvidia.com/gpu: 0.2
+        # nvidia.com/gpu: 1
         memory: 128Mi
         cpu: 10m
       limits:
