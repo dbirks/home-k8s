@@ -36,6 +36,9 @@ spec:
         enabled: true
         hosts:
           - host: capacitor.hoam.lan
+            paths:
+              - path: /
+                pathType: Prefix
 ---
 apiVersion: v1
 kind: ServiceAccount
