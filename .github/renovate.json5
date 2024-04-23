@@ -6,6 +6,9 @@
     // If something has a major version bump, then open a separate PR for it. Otherwise just group the updates together for ease of reviewing.
     "group:allNonMajor",
   ],
+  helm-values: {
+    fileMatch: ["\\.yaml$"],
+  },
   // schedule: ["after 7am every weekday", "before 5pm every weekday"],
   timezone: "America/New_York",
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
