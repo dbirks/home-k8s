@@ -19,3 +19,18 @@ spec:
   # Default values:
   # https://github.com/metallb/metallb/blob/main/charts/metallb/values.yaml
   # values:
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: main-pool
+  namespace: kube-system
+spec:
+  addresses:
+    - 10.0.0.200-10.0.0.205
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: main-advertisement
+  namespace: kube-system
