@@ -1,0 +1,22 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: jellyfin
+  namespace: flux-system
+spec:
+  interval: 5m
+  targetNamespace: default
+  chart:
+    spec:
+      chart: jellyfin
+      # Current version found here:
+      # https://github.com/truecharts/charts/blob/master/charts/stable/jellyfin/Chart.yaml#L39
+      version: 18.8.15
+      sourceRef:
+        kind: HelmRepository
+        name: truecharts
+        namespace: flux-system
+      interval: 5m
+  # Default values:
+  # https://github.com/truecharts/charts/blob/master/charts/stable/jellyfin/values.yaml
+  # values:
