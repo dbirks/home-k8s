@@ -33,7 +33,7 @@ spec:
     serviceAccount: capacitor
     ingress:
       annotations:
-        kubernetes.io/ingress.class: nginx
+        kubernetes.io/ingress.class: private
         cert-manager.io/cluster-issuer: letsencrypt-staging
       host: capacitor.hoam.lan
       tlsEnabled: true

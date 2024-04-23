@@ -1,7 +1,7 @@
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
 metadata:
-  name: ingress-nginx
+  name: ingress-nginx-private
   namespace: kube-system
 spec:
   interval: 5m
@@ -18,4 +18,6 @@ spec:
       interval: 1m
   # Default values:
   # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml
-  # values:
+  values:
+    ingressClassResource:
+      name: private
