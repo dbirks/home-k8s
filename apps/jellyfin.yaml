@@ -28,3 +28,7 @@ spec:
         ingressClassName: private
         hosts:
           - host: jellyfin.hoam.lan
+
+    persistence:
+      config:
+        storageClass: nfs
