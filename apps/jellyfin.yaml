@@ -18,6 +18,7 @@ spec:
       interval: 5m
   # Default values:
   # https://github.com/truecharts/charts/blob/master/charts/stable/jellyfin/values.yaml
+  # https://truecharts.org/common
   values:
     ingress:
       main:
