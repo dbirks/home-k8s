@@ -18,4 +18,14 @@ spec:
       interval: 5m
   # Default values:
   # https://github.com/NVIDIA/gpu-operator/blob/master/deployments/gpu-operator/values.yaml
-  # values:
+  values:
+    toolkit:
+      env:
+        - name: CONTAINERD_CONFIG
+          value: "/etc/containerd/config.toml.tmpl"
+        - name: CONTAINERD_SOCKET
+          value: "/run/k3s/containerd/containerd.sock"
+        - name: CONTAINERD_RUNTIME_CLASS
+          value: "nvidia"
+        - name: CONTAINERD_SET_AS_DEFAULT
+          value: "true"
