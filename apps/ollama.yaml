@@ -24,8 +24,8 @@ spec:
         enabled: true
         type: nvidia
         number: 1
-      # models:
-      #   - llama3
+      models:
+        - llama3
 
     runtimeClassName: nvidia
 
