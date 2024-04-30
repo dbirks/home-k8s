@@ -47,3 +47,7 @@ spec:
           paths:
             - path: /
               pathType: Prefix
+
+    persistentVolume:
+      enabled: true
+      size: 20Gi
