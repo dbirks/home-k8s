@@ -29,15 +29,15 @@ spec:
 
     runtimeClassName: nvidia
 
-    resources:
-      requests:
-        # nvidia.com/gpu: 1
-        memory: 128Mi
-        cpu: 10m
-      limits:
-        nvidia.com/gpu: 1
-        memory: 4Gi
-        cpu: 2000m
+    # resources:
+    #   requests:
+    #     # nvidia.com/gpu: 1
+    #     memory: 128Mi
+    #     cpu: 10m
+    #   limits:
+    #     nvidia.com/gpu: 1
+    #     memory: 4Gi
+    #     cpu: 2000m
 
     ingress:
       enabled: true
