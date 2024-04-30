@@ -1,12 +1,25 @@
 # home-k8s 🏡☸
 
 
-- Install Ubuntu server
-- curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik --disable=servicelb" sh -s -
+- Install Ubuntu server 22.04
+  - Picking the latest Ubuntu version supported by the Nvidia GPU Operator: [docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/23.9.2/platform-support.html)
 
-- sudo cp /etc/rancher/k3s/k3s.yaml .
-- sudo chown david: k3s.yaml
-- scp crow:k3s.yaml ~/.kube/configs/k3s.yaml
+- Install k3s
+  - I ended up with this:
+  ```
+  curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik --disable=servicelb" sh -s -
+  ```
+  - Disabling Traefik because I wanted to use ingress-nginx instead
+  - Disabling ServiceLB because I wanted to use MetalLB instead
+  - No super solid reason, except I had used both before and think I'm more likely to use them out in the wild
+
+- Copy the kubeconfig file to your local
+  - Here my server is named crow. I copied it with:
+  ```
+  sudo cp /etc/rancher/k3s/k3s.yaml .
+  sudo chown david: k3s.yaml
+  scp crow:k3s.yaml ~/.kube/configs/k3s.yaml
+  ```
 - Edit 127.0.0.1 to your server's domain name
 
 - https://github.com/settings/tokens
