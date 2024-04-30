@@ -27,6 +27,8 @@ spec:
       # models:
       #   - llama3
 
+    runtimeClassName: nvidia
+
     resources:
       requests:
         # nvidia.com/gpu: 1
