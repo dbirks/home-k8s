@@ -1,5 +1,21 @@
 # home-k8s 🏡☸
 
+
+- Install Ubuntu server
+- curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik --disable=servicelb" sh -s -
+
+- sudo cp /etc/rancher/k3s/k3s.yaml .
+- sudo chown david: k3s.yaml
+- scp crow:k3s.yaml ~/.kube/configs/k3s.yaml
+- Edit 127.0.0.1 to your server's domain name
+
+- https://github.com/settings/tokens
+- export GITHUB_TOKEN=
+
+
+
+
+
 🚧 Under construction 🚧
 
 - Install containerd
