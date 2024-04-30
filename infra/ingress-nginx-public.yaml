@@ -22,6 +22,7 @@ spec:
     controller:
       ingressClassResource:
         name: public
+      ingressClass: private
       service:
         annotations:
           metallb.universe.tf/loadBalancerIPs: 10.0.0.201
