@@ -32,9 +32,9 @@ spec:
       ignoreLimits: true
     serviceAccount: capacitor
     ingress:
-      ingressClassName: private
       annotations:
         # cert-manager.io/cluster-issuer: letsencrypt-staging
+        kubernetes.io/ingress.class: private
       host: capacitor.hoam.lan
       # tlsEnabled: true
 ---
