@@ -20,6 +20,7 @@ spec:
   # https://github.com/MoJo2600/pihole-kubernetes/blob/main/charts/pihole/values.yaml
   values:
     serviceDns:
+      mixedService: true
       type: LoadBalancer
       loadBalancerIP: 10.0.0.202
       annotations:
