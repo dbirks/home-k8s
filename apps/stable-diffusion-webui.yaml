@@ -20,6 +20,10 @@ spec:
             limits:
               memory: 2Gi
               cpu: 1000m
+          # https://github.com/ai-dock/stable-diffusion-webui?tab=readme-ov-file#additional-environment-variables
+          env:
+            - name: WEBUI_URL
+              value: http://stable-diffusion-webui.hoam.lan:80
 ---
 apiVersion: v1
 kind: Service
