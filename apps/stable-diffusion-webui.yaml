@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stable-diffusion-webui
+spec:
+  selector:
+    matchLabels:
+      app: stable-diffusion-webui
+  template:
+    metadata:
+      labels:
+        app: stable-diffusion-webui
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: stable-diffusion-webui
+          image: ghcr.io/ai-dock/stable-diffusion-webui:cuda-11.8.0-runtime-22.04
+          resources:
+            limits:
+              memory: 2Gi
+              cpu: 1000m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stable-diffusion-webui
+spec:
+  selector:
+    app: stable-diffusion-webui
+  ports:
+    - port: 80
+      targetPort: 7860
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stable-diffusion-webui
+  labels:
+    name: stable-diffusion-webui
+spec:
+  ingressClassName: private
+  rules:
+    - host: stable-diffusion-webui.hoam.lan
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: stable-diffusion-webui
+                port:
+                  number: 80
