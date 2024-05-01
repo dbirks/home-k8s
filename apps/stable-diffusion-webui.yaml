@@ -15,15 +15,11 @@ spec:
       runtimeClassName: nvidia
       containers:
         - name: stable-diffusion-webui
-          image: ghcr.io/ai-dock/stable-diffusion-webui:cuda-11.8.0-runtime-22.04
+          image: ghcr.io/dbirks/sd-auto:72
           resources:
             limits:
-              memory: 2Gi
-              cpu: 1000m
-          # https://github.com/ai-dock/stable-diffusion-webui?tab=readme-ov-file#additional-environment-variables
-          env:
-            - name: WEBUI_URL
-              value: http://stable-diffusion-webui.hoam.lan:80
+              memory: 4Gi
+              cpu: 2000m
 ---
 apiVersion: v1
 kind: Service
