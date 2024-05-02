@@ -19,14 +19,13 @@ spec:
   # Default values:
   # https://github.com/kubernetes-sigs/external-dns/blob/master/charts/external-dns/values.yaml
   values:
+    sources:
+      - ingress
+    # Pihole only supports A/CNAME records so there is no mechanism to track ownership.
+    # You don't need to set this flag, but if you leave it unset, you will receive warning
+    # logs when ExternalDNS attempts to create TXT records.
+    registry: noop
+    provider:
+      name: pihole
     extraArgs:
-      - --source=ingress
-      # Pihole only supports A/CNAME records so there is no mechanism to track ownership.
-      # You don't need to set this flag, but if you leave it unset, you will receive warning
-      # logs when ExternalDNS attempts to create TXT records.
-      - --registry=noop
-      # IMPORTANT: If you have records that you manage manually in Pi-hole, set
-      # the policy to upsert-only so they do not get deleted.
-      - --policy=upsert-only
-      - --provider=pihole
       - --pihole-server=http://pihole-webui.default
