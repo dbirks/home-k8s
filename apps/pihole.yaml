@@ -41,6 +41,6 @@ spec:
       ingressClassName: private
       path: /
       hosts:
-        - pihole.hoam.lan
+        - pihole-webui.hoam.lan
 
-    virtualHost: pihole.hoam.lan
+    virtualHost: pihole-webui.hoam.lan
