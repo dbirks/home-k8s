@@ -42,3 +42,5 @@ spec:
       path: /
       hosts:
         - pihole.hoam.lan
+
+    virtualHost: pihole.hoam.lan
