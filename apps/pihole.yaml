@@ -22,7 +22,7 @@ spec:
     serviceDns:
       mixedService: true
       type: LoadBalancer
-      loadBalancerIP: 10.0.0.202
+      # loadBalancerIP: 10.0.0.202
       annotations:
         metallb.universe.tf/loadBalancerIPs: 10.0.0.202
 
