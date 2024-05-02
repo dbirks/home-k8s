@@ -24,16 +24,16 @@ spec:
       main:
         enabled: true
         primary: true
-        annotations:
-          cert-manager.io/cluster-issuer: letsencrypt-staging
+        # annotations:
+        #   cert-manager.io/cluster-issuer: letsencrypt-staging
         ingressClassName: private
         hosts:
           - host: jellyfin.hoam.lan
-        tls:
-          - hosts:
-              - jellyfin.hoam.lan
-            certificateIssuer: letsencrypt-staging
+        # tls:
+        #   - hosts:
+        #       - jellyfin.hoam.lan
+        #     certificateIssuer: letsencrypt-staging
 
-    persistence:
-      config:
-        storageClass: nfs
+    # persistence:
+    #   config:
+    #     storageClass: nfs
