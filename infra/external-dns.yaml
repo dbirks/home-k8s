@@ -28,4 +28,4 @@ spec:
     provider:
       name: pihole
     extraArgs:
-      - --pihole-server=http://pihole-webui.default
+      - --pihole-server=http://pihole.default
