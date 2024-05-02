@@ -27,5 +27,6 @@ spec:
     registry: noop
     provider:
       name: pihole
-    extraArgs:
-      - --pihole-server=http://pihole-web.default
+    env:
+      - EXTERNAL_DNS_PIHOLE_SERVER: http://pihole-web.default
+      - EXTERNAL_DNS_PIHOLE_PASSWORD: admin # temporary
