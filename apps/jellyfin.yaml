@@ -10,7 +10,7 @@ spec:
       chart: jellyfin
       # Current version found here:
       # https://github.com/truecharts/charts/blob/master/charts/stable/jellyfin/Chart.yaml#L39
-      version: 18.8.17
+      version: 19.1.11
       sourceRef:
         kind: HelmRepository
         name: truecharts
