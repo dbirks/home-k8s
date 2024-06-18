@@ -1,5 +1,16 @@
 # home-k8s 🏡☸
 
+🚧 Under construction 🚧
+
+The readme is currently a slurry of old setup notes: kubeadm, Kairos, then k3s, and now Talos.
+
+## Overview
+
+
+## Installing Talos
+
+
+
 
 - Install Ubuntu server 22.04
   - Picking the latest Ubuntu version supported by the Nvidia GPU Operator: [docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/23.9.2/platform-support.html)
