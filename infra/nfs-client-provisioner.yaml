@@ -20,7 +20,7 @@ spec:
   # https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/blob/master/charts/nfs-subdir-external-provisioner/values.yaml
   values:
     nfs:
-      server: ostrich.hoam.lan
+      server: truenas.hoam.lan
       path: /mnt/tetons/kubernetes
     storageClass:
       name: nfs

@@ -9,6 +9,9 @@ The readme is currently a slurry of old setup notes: kubeadm, Kairos, then k3s, 
 
 ## Installing Talos
 
+https://www.talos.dev/v1.7/learn-more/image-factory/
+
+
 
 
 
