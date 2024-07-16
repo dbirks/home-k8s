@@ -10,7 +10,7 @@ spec:
       chart: nvidia-device-plugin
       # Current version found here:
       # https://github.com/NVIDIA/k8s-device-plugin/blob/main/deployments/helm/nvidia-device-plugin/Chart.yamlA#L5
-      version: "0.15.0"
+      version: "0.15.1"
       sourceRef:
         kind: HelmRepository
         name: nvdp
