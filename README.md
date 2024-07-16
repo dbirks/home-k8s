@@ -45,6 +45,9 @@ talosctl kubeconfig -n 10.0.0.30 -e 10.0.0.30 --talosconfig talosconfig
 
 
 
+export GITHUB_TOKEN=ghp_...
+flux bootstrap github --owner dbirks --repository home-k8s --branch main --personal
+
 
 - Install Ubuntu server 22.04
   - Picking the latest Ubuntu version supported by the Nvidia GPU Operator: [docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/23.9.2/platform-support.html)
