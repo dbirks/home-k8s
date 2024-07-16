@@ -44,6 +44,10 @@ talosctl bootstrap -n 10.0.0.30 -e 10.0.0.30 --talosconfig ./talosconfig
 talosctl kubeconfig -n 10.0.0.30 -e 10.0.0.30 --talosconfig talosconfig
 
 
+cluster.allowSchedulingOnControlPlanes
+
+talosctl edit machineconfig -n 10.0.0.30 -e 10.0.0.30 --talosconfig talosconfig
+
 
 export GITHUB_TOKEN=ghp_...
 flux bootstrap github --owner dbirks --repository home-k8s --branch main --personal
