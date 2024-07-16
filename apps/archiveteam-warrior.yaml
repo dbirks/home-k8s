@@ -1,0 +1,39 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: archiveteam-warrior
+  namespace: default
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: archiveteam-warrior
+      # Current version found here:
+      # https://github.com/truecharts/charts/blob/master/charts/stable/archiveteam-warrior/Chart.yaml#L37
+      version: 7.1.3
+      sourceRef:
+        kind: HelmRepository
+        name: truecharts
+        namespace: flux-system
+      interval: 5m
+  # Default values:
+  # https://github.com/truecharts/charts/blob/master/charts/stable/archiveteam-warrior/values.yaml
+  # https://truecharts.org/common
+  values:
+    ingress:
+      main:
+        enabled: true
+        primary: true
+        # annotations:
+        #   cert-manager.io/cluster-issuer: letsencrypt-staging
+        ingressClassName: private
+        hosts:
+          - host: archiveteam.hoam.lan
+        # tls:
+        #   - hosts:
+        #       - jellyfin.hoam.lan
+        #     certificateIssuer: letsencrypt-staging
+
+    # persistence:
+    #   config:
+    #     storageClass: nfs
