@@ -11,6 +11,37 @@ The readme is currently a slurry of old setup notes: kubeadm, Kairos, then k3s, 
 
 https://www.talos.dev/v1.7/learn-more/image-factory/
 
+https://factory.talos.dev/
+
+`Reset Talos installation`
+
+https://www.talos.dev/v1.7/talos-guides/configuration/nvidia-gpu-proprietary/
+
+factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.7.5 
+
+talosctl gen config home https://10.0.0.30:6443
+
+- changed the disk to sdb
+  `talosctl disks`
+- 
+
+
+```diff
+     install:
+-        disk: /dev/sda # The disk used for installations.
+-        image: ghcr.io/siderolabs/installer:v1.7.5 # Allows for supplying the image used to perform the installation.
++        disk: /dev/sdb
++        image: factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.7.5
+```
+
+
+talosctl apply-config --insecure -n 10.0.0.30 --file controlplane.yaml
+
+The `Stage` turned to `Installing`, and after a couple of minutes, it rebooted. The `Stage` then was `Booting`, some more log messages went across the screen, and then a minute or so later, a message came up saying that it's time to run `talosctl bootstrap`.
+
+talosctl bootstrap -n 10.0.0.30 -e 10.0.0.30 --talosconfig ./talosconfig
+
+talosctl kubeconfig -n 10.0.0.30 -e 10.0.0.30 --talosconfig talosconfig
 
 
 
