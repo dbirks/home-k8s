@@ -1,0 +1,58 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runware-ui
+spec:
+  selector:
+    matchLabels:
+      app: runware-ui
+  template:
+    metadata:
+      labels:
+        app: runware-ui
+    spec:
+      containers:
+        - name: runware-ui
+          image: ghcr.io/dbirks/runware-ui:latest
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "1"
+            limits:
+              memory: "512Mi"
+              cpu: "1"
+          envFrom:
+            - secretRef:
+                name: runware-ui
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runware-ui
+spec:
+  selector:
+    app: runware-ui
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: runware-ui
+  labels:
+    name: runware-ui
+spec:
+  ingressClassName: private
+  rules:
+    - host: runware.hoam.lan
+      http:
+        paths:
+          - pathType: Prefix
+            path: "/"
+            backend:
+              service:
+                name: runware-ui
+                port:
+                  number: 80
