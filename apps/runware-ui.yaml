@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: runware-ui
-          image: ghcr.io/dbirks/runware-ui:latest
+          image: ghcr.io/dbirks/runware-ui:main
           resources:
             requests:
               memory: "64Mi"
