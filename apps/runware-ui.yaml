@@ -16,6 +16,7 @@ spec:
       containers:
         - name: runware-ui
           image: ghcr.io/dbirks/runware-ui:main
+          imagePullPolicy: Always
           resources:
             requests:
               memory: "64Mi"
