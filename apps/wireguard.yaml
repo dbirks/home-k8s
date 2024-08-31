@@ -1,0 +1,37 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: wireguard
+  namespace: default
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: wireguard
+      # Current version found here:
+      # https://github.com/bryopsida/wireguard-chart/blob/main/helm/wireguard/Chart.yaml
+      version: 0.25.0
+      sourceRef:
+        kind: HelmRepository
+        name: wireguard
+        namespace: flux-system
+      interval: 5m
+  # Default values:
+  # https://github.com/bryopsida/wireguard-chart/blob/main/helm/wireguard/values.yaml
+  values:
+    wireguard:
+      # -- Address of the VPN server
+      serverAddress: 10.34.0.1/24
+      # -- Subnet for your VPN, take care not to clash with cluster POD cidr
+      serverCidr: 10.34.0.0/24
+      # -- Add the serverCidr to the nat source net option
+      natAddSourceNet: true
+      # -- A collection of clients that will be added to wg0.conf, accepts objects with keys PublicKey and AllowedIPs (mandatory) and optional FriendlyName or FriendlyJson (https://github.com/MindFlavor/prometheus_wireguard_exporter#friendly-tags) and PersistentKeepalive (https://www.wireguard.com/quickstart/#nat-and-firewall-traversal-persistence), stored in secret
+      clients:
+        - FriendlyName: david
+          AllowedIPs: 10.34.0.101/32
+          PublicKey: GbkwZtyk4o0MC4kWiHh6Zywe7eAKFRAHgjZd0j1l0jE=
+    service:
+      enabled: true
+      type: LoadBalancer
+      port: 51820
