@@ -31,6 +31,7 @@ spec:
         - FriendlyName: david
           AllowedIPs: 10.34.0.101/32
           PublicKey: GbkwZtyk4o0MC4kWiHh6Zywe7eAKFRAHgjZd0j1l0jE=
+    replicaCount: 1
     service:
       enabled: true
       type: LoadBalancer
