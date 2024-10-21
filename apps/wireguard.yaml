@@ -10,7 +10,7 @@ spec:
       chart: wireguard
       # Current version found here:
       # https://github.com/bryopsida/wireguard-chart/blob/main/helm/wireguard/Chart.yaml
-      version: 0.25.0
+      version: 0.26.0
       sourceRef:
         kind: HelmRepository
         name: wireguard
