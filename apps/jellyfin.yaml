@@ -30,5 +30,9 @@ spec:
     persistence:
       config:
         enabled: true
-        size: 50Gi
+        size: 5Gi
+        storageClass: nfs
+      media:
+        enabled: true
+        size: 100Gi
         storageClass: nfs
