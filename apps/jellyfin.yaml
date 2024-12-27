@@ -27,3 +27,8 @@ spec:
           paths:
             - path: /
               pathType: ImplementationSpecific
+    persistence:
+      config:
+        enabled: true
+        size: 50Gi
+        storageClass: nfs
