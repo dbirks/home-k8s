@@ -9,31 +9,21 @@ spec:
     spec:
       chart: jellyfin
       # Current version found here:
-      # https://github.com/truecharts/charts/blob/master/charts/stable/jellyfin/Chart.yaml#L39
-      version: 20.1.6
+      # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/Chart.yaml#L11
+      version: 2.1.0
       sourceRef:
         kind: HelmRepository
-        name: truecharts
+        name: jellyfin
         namespace: flux-system
       interval: 5m
   # Default values:
-  # https://github.com/truecharts/charts/blob/master/charts/stable/jellyfin/values.yaml
-  # https://truecharts.org/common
+  # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/values.yaml
   values:
     ingress:
-      main:
-        enabled: true
-        primary: true
-        # annotations:
-        #   cert-manager.io/cluster-issuer: letsencrypt-staging
-        ingressClassName: private
-        hosts:
-          - host: jellyfin.hoam.lan
-        # tls:
-        #   - hosts:
-        #       - jellyfin.hoam.lan
-        #     certificateIssuer: letsencrypt-staging
-
-    # persistence:
-    #   config:
-    #     storageClass: nfs
+      enabled: true
+      className: private
+      hosts:
+        - host: jellyfin.hoam.lan
+          paths:
+            - path: /
+              pathType: ImplementationSpecific
