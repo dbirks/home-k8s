@@ -50,7 +50,7 @@ metadata:
 spec:
   ingressClassName: private
   rules:
-    - host: runware.hoam.lan
+    - host: runware.birks.haus
       http:
         paths:
           - pathType: Prefix
@@ -62,5 +62,5 @@ spec:
                   number: 80
   tls:
     - hosts:
-        - runware.hoam.lan
+        - runware.birks.haus
       secretName: runware-ui-cert

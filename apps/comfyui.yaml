@@ -62,7 +62,7 @@ metadata:
 spec:
   ingressClassName: private
   rules:
-    - host: comfyui.hoam.lan
+    - host: comfyui.birks.haus
       http:
         paths:
           - pathType: Prefix
