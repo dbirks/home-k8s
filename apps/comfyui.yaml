@@ -28,7 +28,7 @@ spec:
             claimName: comfyui-outputs-pvc # Need to apply sd-outputs-s3.yaml first
       containers:
         - name: comfyui
-          image: ghcr.io/dbirks/comfyui-docker/comfyui:latest
+          image: ghcr.io/dbirks/comfyui-docker:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8848
