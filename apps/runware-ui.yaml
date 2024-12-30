@@ -39,28 +39,3 @@ spec:
   ports:
     - port: 80
       targetPort: 8080
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: runware-ui
-  namespace: default
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-spec:
-  ingressClassName: private
-  rules:
-    - host: runware.hoam.lan
-      http:
-        paths:
-          - pathType: Prefix
-            path: "/"
-            backend:
-              service:
-                name: runware-ui
-                port:
-                  number: 80
-  tls:
-    - hosts:
-        - runware.hoam.lan
-      secretName: runware-ui-tls
