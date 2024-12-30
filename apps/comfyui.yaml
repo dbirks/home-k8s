@@ -15,6 +15,7 @@ spec:
       labels:
         app: comfyui
     spec:
+      runtimeClassName: nvidia
       volumes:
         - name: stable-diffusion-models
           hostPath:
@@ -38,11 +39,11 @@ spec:
               name: comfyui-inputs
             - mountPath: /app/ComfyUI/output
               name: comfyui-outputs
-          resources:
-            requests:
-              nvidia.com/gpu: 1
-            limits:
-              nvidia.com/gpu: 1
+          # resources:
+          #   requests:
+          #     nvidia.com/gpu: 1
+          #   limits:
+          #     nvidia.com/gpu: 1
 ---
 apiVersion: v1
 kind: Service
