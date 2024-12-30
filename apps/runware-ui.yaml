@@ -46,7 +46,7 @@ metadata:
   name: runware-ui
   namespace: default
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-staging
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: private
   rules:
