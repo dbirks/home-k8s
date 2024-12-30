@@ -1,0 +1,100 @@
+# Deployment initially from here:
+# https://github.com/aws-samples/comfyui-on-eks/blob/main/manifests/ComfyUI/comfyui_deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: comfyui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: comfyui
+  template:
+    metadata:
+      labels:
+        app: comfyui
+    spec:
+      volumes:
+        - name: stable-diffusion-models
+          hostPath:
+            path: /comfyui-models # Need to sync all models in node's user-data
+        - name: comfyui-inputs
+          persistentVolumeClaim:
+            claimName: comfyui-inputs-pvc # Need to apply sd-inputs-s3.yaml first
+        - name: comfyui-outputs
+          persistentVolumeClaim:
+            claimName: comfyui-outputs-pvc # Need to apply sd-outputs-s3.yaml first
+      containers:
+        - name: comfyui
+          image: ghcr.io/dbirks/comfyui-docker/comfyui:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8848
+          volumeMounts:
+            - mountPath: /app/ComfyUI/models
+              name: stable-diffusion-models
+            - mountPath: /app/ComfyUI/input
+              name: comfyui-inputs
+            - mountPath: /app/ComfyUI/output
+              name: comfyui-outputs
+          resources:
+            requests:
+              nvidia.com/gpu: 1
+            limits:
+              nvidia.com/gpu: 1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: comfyui
+spec:
+  selector:
+    app: comfyui
+  ports:
+    - port: 80
+      targetPort: 8848
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: comfyui
+  labels:
+    name: comfyui
+spec:
+  ingressClassName: private
+  rules:
+    - host: comfyui.hoam.lan
+      http:
+        paths:
+          - pathType: Prefix
+            path: "/"
+            backend:
+              service:
+                name: comfyui
+                port:
+                  number: 80
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: comfyui-inputs-pvc
+spec:
+  resources:
+    requests:
+      storage: 50Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: comfyui-outputs-pvc
+spec:
+  resources:
+    requests:
+      storage: 50Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+
