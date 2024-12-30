@@ -63,4 +63,4 @@ spec:
   tls:
     - hosts:
         - runware.hoam.lan
-      secretName: runware-ui-tls
+      secretName: runware-ui-cert
