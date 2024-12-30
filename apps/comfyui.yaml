@@ -17,15 +17,15 @@ spec:
     spec:
       runtimeClassName: nvidia
       volumes:
-        # - name: stable-diffusion-models
-        #   hostPath:
-        #     path: /comfyui-models # Need to sync all models in node's user-data
+        - name: stable-diffusion-models
+          persistentVolumeClaim:
+            claimName: comfyui-models-pvc
         - name: comfyui-inputs
           persistentVolumeClaim:
-            claimName: comfyui-inputs-pvc # Need to apply sd-inputs-s3.yaml first
+            claimName: comfyui-inputs-pvc
         - name: comfyui-outputs
           persistentVolumeClaim:
-            claimName: comfyui-outputs-pvc # Need to apply sd-outputs-s3.yaml first
+            claimName: comfyui-outputs-pvc
       containers:
         - name: comfyui
           image: ghcr.io/dbirks/comfyui-docker:latest
@@ -33,17 +33,12 @@ spec:
           ports:
             - containerPort: 8848
           volumeMounts:
-            # - mountPath: /app/ComfyUI/models
-            #   name: stable-diffusion-models
+            - mountPath: /app/ComfyUI/models
+              name: stable-diffusion-models
             - mountPath: /app/ComfyUI/input
               name: comfyui-inputs
             - mountPath: /app/ComfyUI/output
               name: comfyui-outputs
-          # resources:
-          #   requests:
-          #     nvidia.com/gpu: 1
-          #   limits:
-          #     nvidia.com/gpu: 1
 ---
 apiVersion: v1
 kind: Service
@@ -77,6 +72,19 @@ spec:
                 name: comfyui
                 port:
                   number: 80
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: comfyui-models-pvc
+  namespace: default
+spec:
+  resources:
+    requests:
+      storage: 100Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
