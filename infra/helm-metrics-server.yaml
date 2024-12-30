@@ -14,3 +14,12 @@ spec:
         name: metrics-server
         namespace: flux-system
       reconcileStrategy: ChartVersion
+  # Default values:
+  # https://github.com/kubernetes-sigs/metrics-server/blob/master/charts/metrics-server/values.yaml
+  values:
+    # Specifies if the v1beta1.metrics.k8s.io API service should be created.
+    apiService:
+      create: true
+      # Taking the easier option for now of just disabling TLS verification:
+      # https://www.talos.dev/v1.9/kubernetes-guides/configuration/deploy-metrics-server/
+      insecureSkipTLSVerify: true
