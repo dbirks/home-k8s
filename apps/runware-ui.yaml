@@ -45,6 +45,8 @@ kind: Ingress
 metadata:
   name: runware-ui
   namespace: default
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
 spec:
   ingressClassName: private
   rules:
@@ -58,3 +60,7 @@ spec:
                 name: runware-ui
                 port:
                   number: 80
+  tls:
+    - hosts:
+        - runware.hoam.lan
+      secretName: runware-ui-tls
