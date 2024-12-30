@@ -20,7 +20,7 @@ spec:
   # https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/blob/master/charts/nfs-subdir-external-provisioner/values.yaml
   values:
     nfs:
-      # server: truenas.birks.haus
+      # server: truenas.hoam.lan
       server: 10.0.0.43
       path: /mnt/tetons/kubernetes
     storageClass:

@@ -23,7 +23,7 @@ spec:
       enabled: true
       className: private
       hosts:
-        - host: jellyfin.birks.haus
+        - host: jellyfin.hoam.lan
           paths:
             - path: /
               pathType: ImplementationSpecific

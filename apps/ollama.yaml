@@ -35,7 +35,7 @@ spec:
       enabled: true
       className: private
       hosts:
-        - host: ollama.birks.haus
+        - host: ollama.hoam.lan
           paths:
             - path: /
               pathType: Prefix

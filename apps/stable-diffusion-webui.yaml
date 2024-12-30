@@ -43,7 +43,7 @@ metadata:
 spec:
   ingressClassName: private
   rules:
-    - host: stable-diffusion-webui.birks.haus
+    - host: stable-diffusion-webui.hoam.lan
       http:
         paths:
           - pathType: Prefix
