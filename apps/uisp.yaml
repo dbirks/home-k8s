@@ -24,6 +24,47 @@ spec:
               value: unms
             - name: UNMS_PG_SCHEMA
               value: unms
+            - name: UNMS_PG_HOST
+              value: unms-postgres
+            - name: UNMS_PG_PORT
+              value: "5432"
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          ports:
+            - containerPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unms
+  namespace: default
+spec:
+  selector:
+    app: unms
+  ports:
+  - port: 80
+    targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unms-postgres
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: unms-postgres
+  template:
+    metadata:
+      labels:
+        app: unms-postgres
+    spec:
+      containers:
         - name: postgres
           image: ubnt/unms-postgres:2.4.156
           env:
@@ -35,3 +76,24 @@ spec:
               value: unms
             - name: UNMS_POSTGRES_SCHEMA
               value: unms
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          ports:
+            - containerPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unms-postgres
+  namespace: default
+spec:
+  selector:
+   name: unms-postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
