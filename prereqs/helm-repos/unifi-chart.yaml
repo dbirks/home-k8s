@@ -6,4 +6,4 @@ metadata:
 spec:
   interval: 5m
   type: oci
-  url: oci://ghcr.io/mkilchhofer/unifi-chart/unifi
+  url: oci://ghcr.io/mkilchhofer
