@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unms
+spec:
+  selector:
+    matchLabels:
+      app: unms
+  template:
+    metadata:
+      labels:
+        app: unms
+    spec:
+      containers:
+        - name: unms
+          image: ubnt/unms:2.4.156
+          env:
+            - name: UNMS_PG_PASSWORD
+              value: baddabing
+            - name: UNMS_PG_USER
+              value: unms
+            - name: UNMS_PG_DB
+              value: unms
+            - name: UNMS_PG_SCHEMA
+              value: unms
+        - name: postgres
+          image: ubnt/unms-postgres:2.4.156
+          env:
+            - name: UNMS_POSTGRES_PASSWORD
+              value: baddabing
+            - name: UNMS_POSTGRES_USER
+              value: unms
+            - name: UNMS_POSTGRES_DB
+              value: unms
+            - name: UNMS_POSTGRES_SCHEMA
+              value: unms
