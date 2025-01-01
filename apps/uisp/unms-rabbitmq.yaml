@@ -16,6 +16,9 @@ spec:
       containers:
         - name: rabbitmq
           image: rabbitmq:3.7.28-alpine
+          env:
+            - name: RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS
+              value: "-rabbit channel_max 4096"
           resources:
             requests:
               memory: "1Gi"
@@ -33,7 +36,7 @@ metadata:
   namespace: default
 spec:
   selector:
-   name: unms-rabbitmq
+    name: unms-rabbitmq
   ports:
-  - port: 5672
-    targetPort: 5672
+    - port: 5672
+      targetPort: 5672
