@@ -25,6 +25,14 @@ spec:
               value: unms
             - name: UNMS_POSTGRES_SCHEMA
               value: unms
+            - name: UCRM_POSTGRES_PASSWORD
+              value: tweedledee
+            - name: UCRM_POSTGRES_USER
+              value: ucrm
+            - name: UCRM_POSTGRES_DB
+              value: unms
+            - name: UCRM_POSTGRES_SCHEMA
+              value: ucrm
           resources:
             requests:
               memory: "1Gi"
@@ -42,7 +50,7 @@ metadata:
   namespace: default
 spec:
   selector:
-   name: unms-postgres
+    name: unms-postgres
   ports:
-  - port: 5432
-    targetPort: 5432
+    - port: 5432
+      targetPort: 5432
