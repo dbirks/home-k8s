@@ -1,13 +1,13 @@
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
 metadata:
-  name: unifi-chart/unifi
+  name: unifi
   namespace: default
 spec:
   interval: 5m
   chart:
     spec:
-      chart: unifi
+      chart: unifi-chart/unifi
       # Current version found here:
       # https://github.com/mkilchhofer/unifi-chart/blob/main/charts/unifi/Chart.yaml#L7
       version: 1.11.0
@@ -27,6 +27,3 @@ spec:
       hosts:
         - unifi.hoam.lan
     timezone: America/New_York
-    persistence:
-      enabled: true
-      size: 5Gi
