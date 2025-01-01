@@ -33,6 +33,10 @@ spec:
               value: unms-siridb
             - name: UNMS_SIRIDB_PORT
               value: "9000"
+            - name: UNMS_RABBITMQ_HOST
+              value: unms-rabbitmq
+            - name: UNMS_RABBITMQ_PORT
+              value: "5672"
           resources:
             requests:
               memory: "1Gi"
