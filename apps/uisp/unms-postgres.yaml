@@ -28,10 +28,10 @@ spec:
           resources:
             requests:
               memory: "1Gi"
-              cpu: "1"
+              cpu: 10m
             limits:
               memory: "1Gi"
-              cpu: "1"
+              cpu: 10m
           ports:
             - containerPort: 5432
 ---
