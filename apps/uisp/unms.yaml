@@ -29,6 +29,10 @@ spec:
               value: unms-postgres
             - name: UNMS_PG_PORT
               value: "5432"
+            - name: UNMS_SIRIDB_HOST
+              value: unms-siridb
+            - name: UNMS_SIRIDB_PORT
+              value: "9000"
           resources:
             requests:
               memory: "1Gi"
