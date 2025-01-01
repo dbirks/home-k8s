@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ucrm
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ucrm
+  template:
+    metadata:
+      labels:
+        app: ucrm
+    spec:
+      containers:
+        - name: ucrm
+          image: ubnt/unms-crm:4.4.21
+          # - POSTGRES_HOST=unms-postgres
+          # - POSTGRES_PASSWORD=${UCRM_POSTGRES_PASSWORD}
+          # - POSTGRES_SCHEMA=${UCRM_POSTGRES_SCHEMA}
+          # - POSTGRES_USER=${UCRM_POSTGRES_USER}
+          # - POSTGRES_DB=${UCRM_POSTGRES_DB}
+          # - UCRM_USER=${UCRM_USER}
+          # - UNMS_VERSION=${UNMS_VERSION}
+          # - UNMS_HOST=unms
+          # - UNMS_PORT=${UNMS_HTTP_PORT}
+          # - UNMS_TOKEN=${UNMS_TOKEN}
+          # - UNMS_BASE_URL=/v2.1
+          # - UNMS_POSTGRES_SCHEMA=${UNMS_POSTGRES_SCHEMA}
+          env:
+            - name: POSTGRES_HOST
+              value: unms-postgres
+            - name: POSTGRES_PASSWORD
+              value: tweedledee
+            - name: POSTGRES_SCHEMA
+              value: ucrm
+            - name: POSTGRES_USER
+              value: ucrm
+            - name: POSTGRES_DB
+              value: unms
+            - name: UCRM_USER
+              value: admin
+            - name: UNMS_VERSION
+              value: "4.4.21"
+            - name: UNMS_HOST
+              value: unms
+            - name: UNMS_PORT
+              value: "80"
+            - name: UNMS_POSTGRES_SCHEMA
+              value: unms
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: 10m
+            limits:
+              memory: "1Gi"
+              cpu: 1000m
+          ports:
+            - containerPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ucrm
+  namespace: default
+spec:
+  selector:
+    app: ucrm
+  ports:
+    - port: 80
+      targetPort: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ucrm
+  namespace: default
+  labels:
+    name: ucrm
+spec:
+  ingressClassName: private
+  rules:
+    - host: ucrm.hoam.lan
+      http:
+        paths:
+          - pathType: Prefix
+            path: "/"
+            backend:
+              service:
+                name: ucrm
+                port:
+                  number: 80
