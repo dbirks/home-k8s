@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: rabbitmq
-          image: ubnt/unms-rabbitmq:2.4.156
+          image: rabbitmq:3.7.28-alpine
           resources:
             requests:
               memory: "1Gi"
