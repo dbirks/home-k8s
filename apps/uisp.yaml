@@ -50,6 +50,27 @@ spec:
   - port: 80
     targetPort: 8081
 ---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: unms
+  namespace: default
+  labels:
+    name: unms
+spec:
+  ingressClassName: private
+  rules:
+  - host: unms.hoam.lan
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: unms
+            port: 
+              number: 80
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
