@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unms-rabbitmq
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: unms-rabbitmq
+  template:
+    metadata:
+      labels:
+        name: unms-rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: ubnt/unms-rabbitmq:2.4.156
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          ports:
+            - containerPort: 5672
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unms-rabbitmq
+  namespace: default
+spec:
+  selector:
+   name: unms-rabbitmq
+  ports:
+  - port: 5672
+    targetPort: 5672
