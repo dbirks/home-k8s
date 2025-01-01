@@ -16,15 +16,6 @@ spec:
       containers:
         - name: siridb
           image: ubnt/unms-siridb:2.4.156
-          env:
-            - name: UNMS_POSTGRES_PASSWORD
-              value: baddabing
-            - name: UNMS_POSTGRES_USER
-              value: unms
-            - name: UNMS_POSTGRES_DB
-              value: unms
-            - name: UNMS_POSTGRES_SCHEMA
-              value: unms
           resources:
             requests:
               memory: "1Gi"
