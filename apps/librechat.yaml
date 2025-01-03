@@ -26,4 +26,4 @@ spec:
         - host: librechat.hoam.lan
           paths:
             - path: /
-              pathType: ImplementationSpecific
+              pathType: Prefix
