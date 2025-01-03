@@ -19,6 +19,9 @@ spec:
   # Default values:
   # https://github.com/bat-bs/helm-charts/blob/main/charts/librechat/values.yaml
   values:
+    librechat:
+      configEnv:
+        ALLOW_REGISTRATION: "true"
     ingress:
       enabled: true
       className: private
