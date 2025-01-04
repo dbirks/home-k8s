@@ -1,0 +1,32 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: codimd
+  namespace: default
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: codimd
+      # Current version found here:
+      # https://github.com/hackmdio/codimd-helm/blob/master/charts/codimd/Chart.yaml#L21
+      version: 0.1.11
+      sourceRef:
+        kind: HelmRepository
+        name: codimd
+        namespace: flux-system
+      interval: 5m
+  # Default values:
+  # https://github.com/hackmdio/codimd-helm/blob/master/charts/codimd/values.yaml
+  values:
+    service:
+      type: ClusterIP
+      port: 80
+    ingress:
+      enabled: true
+      annotations:
+        kubernetes.io/ingress.class: private
+      hosts:
+        - host: codimd.hoam.lan
+          paths:
+            - /

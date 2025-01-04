@@ -1,0 +1,8 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: HelmRepository
+metadata:
+  name: codimd
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: https://helm.codimd.dev
