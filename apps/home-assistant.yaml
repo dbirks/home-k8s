@@ -10,7 +10,7 @@ spec:
       chart: home-assistant
       # Current version found here:
       # https://github.com/pajikos/home-assistant-helm-chart/blob/main/charts/home-assistant/Chart.yaml#L20
-      version: 0.2.96
+      version: 0.2.100
       sourceRef:
         kind: HelmRepository
         name: pajikos
