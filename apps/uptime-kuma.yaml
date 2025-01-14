@@ -20,7 +20,7 @@ spec:
   # https://github.com/dirsigler/uptime-kuma-helm/blob/main/charts/uptime-kuma/values.yaml
   values:
     image:
-      tag: 1.23.16-debian
+      tag: 2.0.0-beta.1
     ingress:
       enabled: true
       className: private
