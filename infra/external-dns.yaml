@@ -10,7 +10,7 @@ spec:
       chart: external-dns
       # Current version found here:
       # https://github.com/kubernetes-sigs/external-dns/blob/master/charts/external-dns/Chart.yaml#L5
-      version: 1.15.0
+      version: 1.15.1
       sourceRef:
         kind: HelmRepository
         name: external-dns
