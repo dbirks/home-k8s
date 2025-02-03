@@ -10,7 +10,7 @@ spec:
       chart: unifi-chart/unifi
       # Current version found here:
       # https://github.com/mkilchhofer/unifi-chart/blob/main/charts/unifi/Chart.yaml#L7
-      version: 1.11.0
+      version: 1.12.1
       sourceRef:
         kind: HelmRepository
         name: unifi-chart
