@@ -22,7 +22,7 @@ spec:
     librechat:
       configEnv:
         ALLOW_REGISTRATION: "true"
-        PLUGIN_MODELS: gpt-4o,o1-mini
+        # PLUGIN_MODELS: gpt-4o,o1-mini
     ingress:
       enabled: true
       className: private
