@@ -23,6 +23,7 @@ spec:
       configEnv:
         ALLOW_REGISTRATION: "true"
         OPENAI_MODELS: gpt-4o,gpt-4o-mini,o1-mini,o1,o3-mini,o3-mini-high
+
     ingress:
       enabled: true
       className: private
@@ -31,3 +32,9 @@ spec:
           paths:
             - path: /
               pathType: Prefix
+
+    image:
+      registry: ghcr.io
+      repository: danny-avila/librechat-dev
+      pullPolicy: IfNotPresent
+      tag: 0312d4f4f479f6ffde65c6d617d380ed55d8fec5
