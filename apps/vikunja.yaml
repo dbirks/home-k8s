@@ -18,16 +18,16 @@ spec:
       interval: 5m
   # Default values:
   # https://github.com/truecharts/public/blob/master/charts/stable/vikunja/values.yaml
-  values:
-    ingress:
-      main:
-        enabled: true
-        ingressClassName: private
-        hosts:
-          - host: vikunja.hoam.lan
-            paths:
-              - path: /
-                pathType: Prefix
-      integrations:
-        traefik:
-          enabled: false
+  # values:
+  #   ingress:
+  #     main:
+  #       enabled: true
+  #       ingressClassName: private
+  #       hosts:
+  #         - host: vikunja.hoam.lan
+  #           paths:
+  #             - path: /
+  #               pathType: Prefix
+  #     integrations:
+  #       traefik:
+  #         enabled: false
