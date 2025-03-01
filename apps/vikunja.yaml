@@ -18,7 +18,13 @@ spec:
       interval: 5m
   # Default values:
   # https://github.com/truecharts/public/blob/master/charts/stable/vikunja/values.yaml
-  # values:
+  values:
+    metrics:
+      main:
+        enabled: false
+  cnpg:
+    main:
+      enabled: false
   #   ingress:
   #     main:
   #       enabled: true
