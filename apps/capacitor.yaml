@@ -16,7 +16,7 @@ metadata:
   name: capacitor
   namespace: flux-system
 spec:
-  targetNamespace: flux-system
+  targetNamespace: default
   interval: 1h
   retryInterval: 2m
   timeout: 5m
