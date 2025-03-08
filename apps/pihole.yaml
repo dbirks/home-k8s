@@ -10,7 +10,7 @@ spec:
       chart: pihole
       # Current version found here:
       # https://github.com/MoJo2600/pihole-kubernetes/blob/main/charts/pihole/Chart.yaml#L7
-      version: 2.27.0
+      version: 2.29.1
       sourceRef:
         kind: HelmRepository
         name: mojo2600
