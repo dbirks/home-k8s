@@ -9,9 +9,8 @@ spec:
     spec:
       chart: tailscale-operator
       # Current version found here:
-      # todo, kinda sorta
-      # https://pkgs.tailscale.com/unstable/helmcharts/index.yaml
-      version: 1.81.191
+      # https://pkgs.tailscale.com/helmcharts/index.yaml
+      version: 1.80.3
       sourceRef:
         kind: HelmRepository
         name: tailscale
