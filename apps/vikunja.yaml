@@ -22,9 +22,9 @@ spec:
     metrics:
       main:
         enabled: false
-  cnpg:
-    main:
-      enabled: false
+    cnpg:
+      main:
+        enabled: false
   #   ingress:
   #     main:
   #       enabled: true
