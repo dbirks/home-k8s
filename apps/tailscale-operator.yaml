@@ -20,3 +20,14 @@ spec:
   # https://github.com/tailscale/tailscale/blob/main/cmd/k8s-operator/deploy/chart/values.yaml
   # Reads from a secret called operator-oauth
   # values:
+---
+apiVersion: tailscale.com/v1alpha1
+kind: Connector
+metadata:
+  name: home-subnet-connector
+  namespace: default
+spec:
+  hostname: home-subnet-connector
+  subnetRouter:
+    advertiseRoutes:
+      - "10.0.0.0/24"
