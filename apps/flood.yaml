@@ -19,6 +19,19 @@ spec:
   # Default values:
   # https://github.com/truecharts/public/blob/master/charts/stable/flood/values.yaml
   values:
+    # Completely disable all Traefik integrations
+    ingressMiddlewares:
+      traefik:
+        tc-basic-secure-headers:
+          enabled: false
+    
+    global:
+      traefik:
+        # Disable service annotations from Traefik
+        addServiceAnnotations: false
+        # Disable common middlewares completely
+        commonMiddlewares: []
+        
     ingress:
       main:
         enabled: true
