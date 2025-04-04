@@ -19,35 +19,45 @@ spec:
   # Default values:
   # https://github.com/truecharts/public/blob/master/charts/stable/flood/values.yaml
   values:
-    # Enable ingress but disable Traefik integrations
+    # Super minimal configuration to avoid any template issues
     ingress:
       main:
-        enabled: true
-        ingressClassName: private
-        hosts:
-          - host: flood.hoam.lan
-            paths:
-              - path: /
-                pathType: Prefix
-        # This bypasses the Traefik middleware integration
-        useTraefik: false
-        annotations:
-          # This prevents Traefik CRD lookup
-          "traefik.enabled": "false"
-    
-    # Disable all middlewares
-    ingressMiddlewares: {}
-    
-    # Globally disable Traefik
-    global:
-      traefik:
         enabled: false
-        addServiceAnnotations: false
-        commonMiddlewares: []
-      annotations: {}
-      labels: {}
-      
-    # Disable any potential Gateway API routes
-    route:
+    
+    # Just configure the basic service
+    service:
+      main:
+        enabled: true
+        primary: true
+        type: ClusterIP
+        ports:
+          main:
+            port: 10036
+            targetPort: 3000
+    
+    # Empty objects for problematic sections
+    global: {}
+    ingressMiddlewares: {}
+    metrics:
       main:
         enabled: false
+---
+# Create a separate ingress resource directly
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: flood-ingress
+  namespace: default
+spec:
+  ingressClassName: private
+  rules:
+    - host: flood.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: flood-main
+                port:
+                  number: 10036
