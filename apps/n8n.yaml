@@ -24,3 +24,6 @@ spec:
       className: private
       hosts:
         - host: n8n.hoam.lan
+          paths:
+            - path: /
+              pathType: Prefix
