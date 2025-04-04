@@ -18,13 +18,13 @@ spec:
       interval: 5m
   # Default values:
   # https://github.com/truecharts/public/blob/master/charts/stable/flood/values.yaml
-  # values:
-  #   ingress:
-  #     main:
-  #       enabled: true
-  #       ingressClassName: private
-  #       hosts:
-  #         - host: flood.hoam.lan
-  #           paths:
-  #             - path: /
-  #               pathType: Prefix
+  values:
+    ingress:
+      main:
+        enabled: true
+        ingressClassName: private
+        hosts:
+          - host: flood.hoam.lan
+            paths:
+              - path: /
+                pathType: Prefix
