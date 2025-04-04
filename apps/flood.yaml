@@ -32,7 +32,7 @@ spec:
         type: ClusterIP
         ports:
           main:
-            port: 10036
+            port: 80
             targetPort: 3000
     
     # Empty objects for problematic sections
@@ -46,7 +46,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: flood-ingress
+  name: flood
   namespace: default
 spec:
   ingressClassName: private
@@ -58,6 +58,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: flood-main
+                name: flood
                 port:
-                  number: 10036
+                  number: 80
