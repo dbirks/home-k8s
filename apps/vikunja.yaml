@@ -19,21 +19,48 @@ spec:
   # Default values:
   # https://github.com/truecharts/public/blob/master/charts/stable/vikunja/values.yaml
   values:
-    metrics:
-      main:
-        enabled: false
+    # Disable Redis and CNPG (PostgreSQL) dependencies which may be causing credential issues
     cnpg:
       main:
         enabled: false
-  #   ingress:
-  #     main:
-  #       enabled: true
-  #       ingressClassName: private
-  #       hosts:
-  #         - host: vikunja.hoam.lan
-  #           paths:
-  #             - path: /
-  #               pathType: Prefix
-  #     integrations:
-  #       traefik:
-  #         enabled: false
+    redis:
+      enabled: false
+
+    vikunja:
+      service:
+        frontendurl: "http://vikunja.hoam.lan"
+
+    # Configure persistence to use emptyDir instead of secret to avoid template issues
+    persistence:
+      vikunja-config:
+        enabled: true
+        type: emptyDir
+      files:
+        enabled: true
+        type: emptyDir
+
+    # Disable Traefik integrations to avoid CRD issues
+    global:
+      traefik:
+        addServiceAnnotations: false
+        commonMiddlewares: []
+
+    ingressMiddlewares:
+      traefik:
+        tc-basic-secure-headers:
+          enabled: false
+
+    # Add ingress configuration
+    ingress:
+      main:
+        enabled: true
+        ingressClassName: private
+        hosts:
+          - host: vikunja.hoam.lan
+            paths:
+              - path: /
+                pathType: Prefix
+
+    metrics:
+      main:
+        enabled: false
