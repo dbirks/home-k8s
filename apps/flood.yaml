@@ -19,19 +19,7 @@ spec:
   # Default values:
   # https://github.com/truecharts/public/blob/master/charts/stable/flood/values.yaml
   values:
-    # Completely disable all Traefik integrations
-    ingressMiddlewares:
-      traefik:
-        tc-basic-secure-headers:
-          enabled: false
-    
-    global:
-      traefik:
-        # Disable service annotations from Traefik
-        addServiceAnnotations: false
-        # Disable common middlewares completely
-        commonMiddlewares: []
-        
+    # Enable ingress but disable Traefik integrations
     ingress:
       main:
         enabled: true
@@ -41,3 +29,25 @@ spec:
             paths:
               - path: /
                 pathType: Prefix
+        # This bypasses the Traefik middleware integration
+        useTraefik: false
+        annotations:
+          # This prevents Traefik CRD lookup
+          "traefik.enabled": "false"
+    
+    # Disable all middlewares
+    ingressMiddlewares: {}
+    
+    # Globally disable Traefik
+    global:
+      traefik:
+        enabled: false
+        addServiceAnnotations: false
+        commonMiddlewares: []
+      annotations: {}
+      labels: {}
+      
+    # Disable any potential Gateway API routes
+    route:
+      main:
+        enabled: false
