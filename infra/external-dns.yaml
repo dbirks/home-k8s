@@ -32,3 +32,5 @@ spec:
         value: http://pihole-web.default
       - name: EXTERNAL_DNS_PIHOLE_PASSWORD
         value: admin # temporary
+      - name: EXTERNAL_DNS_PIHOLE_API_VERSION
+        value: 6
