@@ -35,3 +35,7 @@ spec:
 
     extraArgs:
       - "--pihole-api-version=6"
+
+    image:
+      repository: ghcr.io/dbirks/external-dns/external-dns
+      tag: f1d0401-1744438202
