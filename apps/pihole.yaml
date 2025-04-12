@@ -47,3 +47,8 @@ spec:
 
     persistentVolumeClaim:
       enabled: true
+
+    # -- default upstream DNS 1 server to use
+    DNS1: "1.0.0.1"
+    # -- default upstream DNS 2 server to use
+    DNS2: "8.8.4.4"
