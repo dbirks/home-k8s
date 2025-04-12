@@ -44,3 +44,6 @@ spec:
         - pihole-webui.hoam.lan
 
     virtualHost: pihole-webui.hoam.lan
+
+    persistentVolumeClaim:
+      enabled: true
