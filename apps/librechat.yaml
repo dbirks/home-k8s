@@ -10,7 +10,7 @@ spec:
       chart: librechat
       # Current version found here:
       # https://github.com/bat-bs/helm-charts/blob/main/charts/librechat/Chart.yaml#L17
-      version: 1.8.8
+      version: 1.8.9
       sourceRef:
         kind: HelmRepository
         name: blue-atlas
