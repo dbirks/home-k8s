@@ -55,6 +55,6 @@ spec:
 
     image:
       registry: ghcr.io
-      repository: danny-avila/librechat
+      repository: danny-avila/librechat-dev
       pullPolicy: IfNotPresent
-      tag: ghcr.io/danny-avila/librechat-dev:a6f0a8244f1ad1696d819a8d087130d226570765
+      tag: a6f0a8244f1ad1696d819a8d087130d226570765
