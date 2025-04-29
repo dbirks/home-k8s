@@ -23,6 +23,26 @@ spec:
       configEnv:
         ALLOW_REGISTRATION: "true"
         OPENAI_MODELS: gpt-4o,gpt-4o-mini,o1-mini,o1,o3-mini,o3-mini-high,gpt-4.5-preview
+      configYamlContent: |
+        # Definition of custom endpoints
+        endpoints:
+          custom:
+            - name: "Ollama"
+              apiKey: "ollama"
+              type: "chat"
+              # use 'host.docker.internal' instead of localhost if running LibreChat in a docker container
+              baseURL: "http://ollama:11434/v1/chat/completions"
+              models:
+                default: ["gemma3", "llama3"]
+                # fetching list of models is supported but the `name` field must start
+                # with `ollama` (case-insensitive), as it does in this example.
+                fetch: true
+              titleConvo: true
+              titleModel: "current_model"
+              summarize: false
+              summaryModel: "current_model"
+              forcePrompt: false
+              modelDisplayLabel: "Ollama"
 
     ingress:
       enabled: true
@@ -38,3 +58,4 @@ spec:
       repository: danny-avila/librechat
       pullPolicy: IfNotPresent
       tag: v0.7.7-rc1
+
