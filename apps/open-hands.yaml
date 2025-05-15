@@ -1,0 +1,81 @@
+# https://docs.all-hands.dev/modules/usage/installation
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-hands
+spec:
+  selector:
+    matchLabels:
+      app: open-hands
+  template:
+    metadata:
+      labels:
+        app: open-hands
+    spec:
+      containers:
+      - name: open-hands
+        image: docker.all-hands.dev/all-hands-ai/openhands:0.38
+        env:
+        - name: SANDBOX_RUNTIME_CONTAINER_IMAGE
+          value: docker.all-hands.dev/all-hands-ai/runtime:0.38-nikolaik
+        - name: LOG_ALL_EVENTS
+          value: "true"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "10m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+        ports:
+        - containerPort: 3000
+        volumeMounts:
+        - name: open-hands
+          mountPath: /root/.openhands-state
+      volumes:
+      - name: open-hands
+        persistentVolumeClaim:
+          claimName: open-hands
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-hands
+spec:
+  selector:
+    app: open-hands
+  ports:
+  - port: 3000
+    targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: open-hands
+spec:
+  ingressClassName: private
+  rules:
+    - host: openhands.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: open-hands
+                port:
+                  number: 3000
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: open-hands
+spec:
+  resources:
+    requests:
+      storage: 10Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+
+
