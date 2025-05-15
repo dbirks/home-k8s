@@ -33,10 +33,16 @@ spec:
         volumeMounts:
         - name: open-hands
           mountPath: /.openhands-state
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
       volumes:
       - name: open-hands
         persistentVolumeClaim:
           claimName: open-hands
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
 ---
 apiVersion: v1
 kind: Service
