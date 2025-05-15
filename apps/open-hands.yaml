@@ -41,7 +41,7 @@ spec:
           claimName: open-hands
       - name: docker-socket
         hostPath:
-          path: /var/run/docker.sock
+          path: /system/run/containerd/containerd.sock
           type: Socket
 ---
 apiVersion: v1
