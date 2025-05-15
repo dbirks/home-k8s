@@ -32,7 +32,7 @@ spec:
         - containerPort: 3000
         volumeMounts:
         - name: open-hands
-          mountPath: /root/.openhands-state
+          mountPath: /.openhands-state
       volumes:
       - name: open-hands
         persistentVolumeClaim:
