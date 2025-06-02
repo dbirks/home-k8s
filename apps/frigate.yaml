@@ -1,0 +1,45 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: frigate
+  namespace: default
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: frigate
+      # Current version found here:
+      # https://github.com/blakeblackshear/blakeshome-charts/blob/master/charts/frigate/Chart.yaml#L5
+      version: 7.8.0
+      sourceRef:
+        kind: HelmRepository
+        name: blakeblackshear
+        namespace: flux-system
+      interval: 5m
+  # Default values:
+  # https://github.com/blakeblackshear/blakeshome-charts/blob/master/charts/frigate/values.yaml
+  values:
+    gpu:
+      enabled: true
+      runtimeClassName: nvidia
+
+    ingress:
+      enabled: true
+      ingressClassName: private
+      path: /
+      hosts:
+        - host: frigate.hoam.lan
+          paths:
+            - path: /
+              portName: http-auth
+
+    persistence:
+      config:
+        enabled: true
+        storageClass: nfs
+        size: 100Mi
+      
+      media:
+        enabled: true
+        storageClass: nfs
+        size: 300Gi
