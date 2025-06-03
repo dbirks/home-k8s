@@ -19,6 +19,9 @@ spec:
   # Default values:
   # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/values.yaml
   values:
+    image:
+      tag: 2025060205
+
     ingress:
       enabled: true
       className: private
