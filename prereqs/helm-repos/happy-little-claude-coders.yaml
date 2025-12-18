@@ -1,0 +1,9 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: HelmRepository
+metadata:
+  name: happy-little-claude-coders
+  namespace: flux-system
+spec:
+  type: oci
+  url: oci://ghcr.io/dbirks/charts
+  interval: 5m

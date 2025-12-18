@@ -1,0 +1,70 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: happy-little-claude-coders
+  namespace: default
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: happy-little-claude-coders
+      version: 0.2.0
+      sourceRef:
+        kind: HelmRepository
+        name: happy-little-claude-coders
+        namespace: flux-system
+      interval: 5m
+  # Chart values reference:
+  # https://github.com/dbirks/happy-little-claude-coders/blob/main/chart/happy-little-claude-coders/values.yaml
+  values:
+    image:
+      repository: ghcr.io/dbirks/happy-little-claude-coders
+      tag: "0.2.0"
+
+    # Multiple workspaces - each gets its own deployment/pods
+    workspaces:
+      - name: cawcaw
+        repos:
+          - "https://github.com/dbirks/cawcaw.git"
+        storageSize: 5Gi
+        persistent: true
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+
+      - name: librechat
+        repos:
+          - "https://github.com/dbirks/librechat.git"
+        storageSize: 10Gi
+        persistent: true
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+
+    # Global git configuration
+    git:
+      userName: "David Birks"
+      userEmail: "david@birks.dev"
+
+    # GitHub authentication - you'll need to set this up
+    # Option 1: GitHub App (recommended for security)
+    # githubApp:
+    #   enabled: true
+    #   secretName: github-app-credentials
+    #   refreshIntervalMinutes: 50
+
+    # Option 2: Personal Access Token
+    # github:
+    #   tokenSecretName: github-token
+
+    # Claude Code authentication
+    # claude:
+    #   secretName: claude-token
