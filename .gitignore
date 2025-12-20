@@ -1,0 +1,4 @@
+metal-amd64.iso
+controlplane.yaml
+worker.yaml
+talosconfig
