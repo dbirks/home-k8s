@@ -23,3 +23,6 @@ spec:
       # Taking the easier option for now of just disabling TLS verification:
       # https://www.talos.dev/v1.9/kubernetes-guides/configuration/deploy-metrics-server/
       insecureSkipTLSVerify: true
+    # Additional args for Talos compatibility - skip kubelet TLS verification
+    args:
+      - --kubelet-insecure-tls
