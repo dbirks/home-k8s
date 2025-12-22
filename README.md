@@ -1,124 +1,107 @@
 # home-k8s 🏡☸
 
-🚧 Under construction 🚧
-
-The readme is currently a slurry of old setup notes: kubeadm, Kairos, then k3s, and now Talos.
-
-## Overview
-
-
-## Installing Talos
-
-https://www.talos.dev/v1.7/learn-more/image-factory/
-
-https://factory.talos.dev/
-
-`Reset Talos installation`
-
-https://www.talos.dev/v1.7/talos-guides/configuration/nvidia-gpu-proprietary/
-
-factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.7.5 
-
-talosctl gen config home https://10.0.0.30:6443
-
-- changed the disk to sdb
-  `talosctl disks`
-- 
-
-
-```diff
-     install:
--        disk: /dev/sda # The disk used for installations.
--        image: ghcr.io/siderolabs/installer:v1.7.5 # Allows for supplying the image used to perform the installation.
-+        disk: /dev/sdb
-+        image: factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.7.5
-```
-
-
-talosctl apply-config --insecure -n 10.0.0.30 --file controlplane.yaml
-
-The `Stage` turned to `Installing`, and after a couple of minutes, it rebooted. The `Stage` then was `Booting`, some more log messages went across the screen, and then a minute or so later, a message came up saying that it's time to run `talosctl bootstrap`.
-
-talosctl bootstrap -n 10.0.0.30 -e 10.0.0.30 --talosconfig ./talosconfig
-
-talosctl kubeconfig -n 10.0.0.30 -e 10.0.0.30 --talosconfig talosconfig
-
-
-cluster.allowSchedulingOnControlPlanes
-
-talosctl edit machineconfig -n 10.0.0.30 -e 10.0.0.30 --talosconfig talosconfig
-
-
-export GITHUB_TOKEN=ghp_...
-flux bootstrap github --owner dbirks --repository home-k8s --branch main --personal
-
-
-- Install Ubuntu server 22.04
-  - Picking the latest Ubuntu version supported by the Nvidia GPU Operator: [docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/23.9.2/platform-support.html)
-
-- Install k3s
-  - I ended up with this:
-  ```
-  curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik --disable=servicelb" sh -s -
-  ```
-  - Disabling Traefik because I wanted to use ingress-nginx instead
-  - Disabling ServiceLB because I wanted to use MetalLB instead
-  - No super solid reason, except I had used both before and think I'm more likely to use them out in the wild
-
-- Copy the kubeconfig file to your local
-  - Here my server is named crow. I copied it with:
-  ```
-  sudo cp /etc/rancher/k3s/k3s.yaml .
-  sudo chown david: k3s.yaml
-  scp crow:k3s.yaml ~/.kube/configs/k3s.yaml
-  ```
-- Edit 127.0.0.1 to your server's domain name
-
-- https://github.com/settings/tokens
-- export GITHUB_TOKEN=
-
-
-
-
-
-🚧 Under construction 🚧
-
-- Install containerd
-  ```
-  sudo apt install containerd
-  ```
-- Followed the instructions here in the Kubernetes to set up the package repos and install kubectl, kubelet, and kubeadm:
-  https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#installing-kubeadm-kubelet-and-kubectl
-- enable ip forwarding
-  ```
-  sudo sysctl -w net.ipv4.ip_forward=1
-  /etc/sysctl.conf
-  ```
-- sudo kubeadm init
-- 
-
-
-curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -s -
-
-https://docs.k3s.io/advanced?_highlight=gpu#nvidia-container-runtime-support
-
-https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
-
-https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#debian
-
-
-
+Single-node k8s cluster running on Talos Linux. Lives on a USB stick.
 
 ## Current setup
+
+Running Talos v1.9.5 (upgraded from v1.7.5).
+
+Control plane: `10.0.0.30`
+
+### Hardware
+
+Installed on USB drive at `/dev/sda`.
+
+NVIDIA GPU with proprietary drivers via custom schematic.
+
+### Talos install image
+
+Factory image with NVIDIA support:
+
+```
+factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.9.5
+```
+
+Same schematic ID as before - just bumped the version tag.
+
+Docs:
+- https://www.talos.dev/v1.9/learn-more/image-factory/
+- https://factory.talos.dev/
+- https://www.talos.dev/v1.9/talos-guides/configuration/nvidia-gpu-proprietary/
+
+## Install process (Dec 2024)
+
+Generate config:
+
+```bash
+talosctl gen config home https://10.0.0.30:6443
+```
+
+Edit `controlplane.yaml` to set the install disk and custom image:
+
+```yaml
+install:
+    disk: /dev/sda
+    image: factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.9.5
+```
+
+Enable scheduling on control plane (single node cluster):
+
+```yaml
+cluster:
+    allowSchedulingOnControlPlanes: true
+```
+
+Apply config to node:
+
+```bash
+talosctl apply-config --insecure -n 10.0.0.30 --file controlplane.yaml
+```
+
+Wait for install to complete and node to reboot. Screen shows `Installing`, then `Booting`, then tells you to bootstrap.
+
+Bootstrap the cluster:
+
+```bash
+talosctl bootstrap -n 10.0.0.30 -e 10.0.0.30 --talosconfig ./talosconfig
+```
+
+Get kubeconfig:
+
+```bash
+talosctl kubeconfig -n 10.0.0.30 -e 10.0.0.30 --talosconfig talosconfig
+```
+
+## GitOps with Flux
+
+Running Flux v2.7.5. Using HelmRelease API v2 (migrated from v2beta1).
+
+Bootstrap Flux:
+
+```bash
+export GITHUB_TOKEN=ghp_...
+flux bootstrap github --owner dbirks --repository home-k8s --branch main --personal
+```
+
+This adds a deploy key to the repo and commits the Flux manifests to `flux-system/`.
+
+---
+
+## Archive - old install notes
+
+<details>
+<summary>Kairos / k3s setup (pre-Talos)</summary>
+
+### Current setup
 
 - Kairos as the OS
   - Picked the Debian-based image
   - Switched to it after k3os stopped being developed
   - Operates basically the same as k3os as far as I can see... a purpose-built linux distro for running k3s
 
-## Installation
+### Installation
 
-### k3os
+#### k3os
 
 Homepage: https://kairos.io
 Github repo: https://github.com/kairos-io/kairos
@@ -157,8 +140,7 @@ sudo systemctl status k3s
 sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml get pods -A
 ```
 
-
-### flux v2
+#### flux v2
 
 Installed the cli with:
 
@@ -177,3 +159,67 @@ Ran the bootstrap (which required a `GITHUB_TOKEN` env var set up locally), whic
 ```
 flux bootstrap github --owner dbirks --repository home-k8s --branch main --personal
 ```
+
+</details>
+
+<details>
+<summary>k3s on Ubuntu notes</summary>
+
+- Install Ubuntu server 22.04
+  - Picking the latest Ubuntu version supported by the Nvidia GPU Operator: [docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/23.9.2/platform-support.html)
+
+- Install k3s
+  - I ended up with this:
+  ```
+  curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik --disable=servicelb" sh -s -
+  ```
+  - Disabling Traefik because I wanted to use ingress-nginx instead
+  - Disabling ServiceLB because I wanted to use MetalLB instead
+  - No super solid reason, except I had used both before and think I'm more likely to use them out in the wild
+
+- Copy the kubeconfig file to your local
+  - Here my server is named crow. I copied it with:
+  ```
+  sudo cp /etc/rancher/k3s/k3s.yaml .
+  sudo chown david: k3s.yaml
+  scp crow:k3s.yaml ~/.kube/configs/k3s.yaml
+  ```
+- Edit 127.0.0.1 to your server's domain name
+
+- https://github.com/settings/tokens
+- export GITHUB_TOKEN=
+
+</details>
+
+<details>
+<summary>kubeadm notes</summary>
+
+- Install containerd
+  ```
+  sudo apt install containerd
+  ```
+- Followed the instructions here in the Kubernetes to set up the package repos and install kubectl, kubelet, and kubeadm:
+  https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#installing-kubeadm-kubelet-and-kubectl
+- enable ip forwarding
+  ```
+  sudo sysctl -w net.ipv4.ip_forward=1
+  /etc/sysctl.conf
+  ```
+- sudo kubeadm init
+
+</details>
+
+<details>
+<summary>Miscellaneous k3s links</summary>
+
+```
+curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -s -
+```
+
+https://docs.k3s.io/advanced?_highlight=gpu#nvidia-container-runtime-support
+
+https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+
+https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#debian
+
+</details>
