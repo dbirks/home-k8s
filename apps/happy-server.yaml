@@ -26,6 +26,7 @@ spec:
     replicaCount: 2
 
     # Use bundled PostgreSQL and Redis with Alpine images
+    # NOTE: Persistence disabled until NFS server (ostrich) is back online
     postgresql:
       enabled: true
       image:
@@ -37,7 +38,7 @@ spec:
         username: happy_server
       primary:
         persistence:
-          size: 10Gi
+          enabled: false  # Disabled - NFS server offline
 
     redis:
       enabled: true
@@ -47,7 +48,7 @@ spec:
         tag: "7-alpine"
       master:
         persistence:
-          size: 1Gi
+          enabled: false  # Disabled - NFS server offline
 
     # MinIO for S3-compatible storage
     minio:
@@ -56,7 +57,7 @@ spec:
         rootUser: admin
         rootPassword: changeme-in-production
       persistence:
-        size: 20Gi
+        enabled: false  # Disabled - NFS server offline
       defaultBuckets: "happy"
 
     # Resource limits
