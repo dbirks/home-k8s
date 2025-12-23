@@ -87,6 +87,8 @@ spec:
       consoleImage:
         registry: public.ecr.aws
         repository: bitnami/minio-console
+      persistence:
+        enabled: false  # Uses emptyDir - data is ephemeral
 
     # Resource limits
     resources:
