@@ -80,6 +80,13 @@ spec:
 
     minio:
       enabled: true
+      # Use AWS public ECR for Bitnami images (docker.io/bitnami is deprecated)
+      image:
+        registry: public.ecr.aws
+        repository: bitnami/minio
+      consoleImage:
+        registry: public.ecr.aws
+        repository: bitnami/minio-console
 
     # Resource limits
     resources:
