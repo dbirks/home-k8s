@@ -25,9 +25,12 @@ spec:
 
     replicaCount: 2
 
-    # Use bundled PostgreSQL and Redis
-    # NOTE: Persistence disabled until NFS server (ostrich) is back online
-    # NOTE: Using default Bitnami images (not Alpine) - Alpine has permission issues with emptyDir
+    # ============================================================================
+    # Subcharts configured with emptyDir (ephemeral storage for learning/testing)
+    # ============================================================================
+    # Data will be lost on pod restart - this is for development/learning only
+    # When NFS server is restored, set persistence.enabled: true for each
+
     postgresql:
       enabled: true
       auth:
@@ -35,23 +38,55 @@ spec:
         username: happy_server
       primary:
         persistence:
-          enabled: false  # Disabled - NFS server offline
+          enabled: false  # Uses emptyDir - data is ephemeral
+      volumePermissions:
+        enabled: false  # Not needed with emptyDir
 
     redis:
       enabled: true
+      auth:
+        enabled: false  # Disabled for development
       master:
         persistence:
-          enabled: false  # Disabled - NFS server offline
+          enabled: false  # Uses emptyDir - data is ephemeral
+      replica:
+        persistence:
+          enabled: false
+      # Disable Redis-level persistence (AOF and RDB)
+      commonConfiguration: |-
+        appendonly no
+        save ""
 
-    # MinIO for S3-compatible storage
     minio:
       enabled: true
+      mode: standalone
       auth:
-        rootUser: admin
-        rootPassword: changeme-in-production
+        rootUser: minio-admin
+        rootPassword: minio-dev-password
       persistence:
-        enabled: false  # Disabled - NFS server offline
-      defaultBuckets: "happy"
+        enabled: false  # Uses emptyDir - data is ephemeral
+      # Use provisioning instead of defaultBuckets (more reliable)
+      provisioning:
+        enabled: true
+        buckets:
+          - name: happy
+            policy: none
+            purge: false
+      # Security contexts for emptyDir
+      podSecurityContext:
+        enabled: true
+        fsGroup: 1001
+      containerSecurityContext:
+        enabled: true
+        runAsUser: 1001
+        runAsNonRoot: true
+      resources:
+        requests:
+          memory: 256Mi
+          cpu: 100m
+        limits:
+          memory: 512Mi
+          cpu: 250m
 
     # Resource limits
     resources:
