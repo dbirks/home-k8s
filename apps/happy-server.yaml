@@ -54,11 +54,21 @@ spec:
 
     redis:
       enabled: true
+      # Use Bitnami image (Alpine has compatibility issues with Bitnami chart)
+      image:
+        registry: docker.io
+        repository: bitnami/redis
+        tag: latest
       auth:
         enabled: false  # Disabled for development
       master:
         persistence:
           enabled: false  # Uses emptyDir - data is ephemeral
+        # Disable security contexts for emptyDir compatibility
+        podSecurityContext:
+          enabled: false
+        containerSecurityContext:
+          enabled: false
       replica:
         persistence:
           enabled: false
