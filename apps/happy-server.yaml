@@ -39,6 +39,12 @@ spec:
       primary:
         persistence:
           enabled: false  # Uses emptyDir - data is ephemeral
+        # Fix permission issues with emptyDir
+        containerSecurityContext:
+          enabled: true
+          runAsUser: 1001
+          runAsNonRoot: true
+          readOnlyRootFilesystem: false  # Disabled for emptyDir compatibility
       volumePermissions:
         enabled: false  # Not needed with emptyDir
 
@@ -60,18 +66,18 @@ spec:
     minio:
       enabled: true
       mode: standalone
+      # Use official MinIO image (Bitnami image unavailable due to registry changes)
+      image:
+        registry: docker.io
+        repository: minio/minio
+        tag: latest
       auth:
         rootUser: minio-admin
         rootPassword: minio-dev-password
       persistence:
         enabled: false  # Uses emptyDir - data is ephemeral
-      # Use provisioning instead of defaultBuckets (more reliable)
-      provisioning:
-        enabled: true
-        buckets:
-          - name: happy
-            policy: none
-            purge: false
+      # Use defaultBuckets (provisioning may not work with official image)
+      defaultBuckets: "happy"
       # Security contexts for emptyDir
       podSecurityContext:
         enabled: true
@@ -80,6 +86,7 @@ spec:
         enabled: true
         runAsUser: 1001
         runAsNonRoot: true
+        readOnlyRootFilesystem: false  # Disabled for compatibility
       resources:
         requests:
           memory: 256Mi
