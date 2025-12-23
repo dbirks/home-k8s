@@ -25,14 +25,11 @@ spec:
 
     replicaCount: 2
 
-    # Use bundled PostgreSQL and Redis with Alpine images
+    # Use bundled PostgreSQL and Redis
     # NOTE: Persistence disabled until NFS server (ostrich) is back online
+    # NOTE: Using default Bitnami images (not Alpine) - Alpine has permission issues with emptyDir
     postgresql:
       enabled: true
-      image:
-        registry: docker.io
-        repository: postgres
-        tag: "17-alpine"
       auth:
         database: happy_server
         username: happy_server
@@ -42,10 +39,6 @@ spec:
 
     redis:
       enabled: true
-      image:
-        registry: docker.io
-        repository: redis
-        tag: "7-alpine"
       master:
         persistence:
           enabled: false  # Disabled - NFS server offline
