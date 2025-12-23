@@ -19,6 +19,11 @@ spec:
         name: happy-server
         namespace: flux-system
   values:
+    # Allow non-Bitnami images (for MinIO official image)
+    global:
+      security:
+        allowInsecureImages: true
+
     image:
       repository: ghcr.io/dbirks/happy-server
       tag: "0.1.0"
