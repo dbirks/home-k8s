@@ -44,12 +44,11 @@ spec:
       primary:
         persistence:
           enabled: false  # Uses emptyDir - data is ephemeral
-        # Fix permission issues with emptyDir
+        # Disable security contexts entirely for development/emptyDir compatibility
+        podSecurityContext:
+          enabled: false
         containerSecurityContext:
-          enabled: true
-          runAsUser: 1001
-          runAsNonRoot: true
-          readOnlyRootFilesystem: false  # Disabled for emptyDir compatibility
+          enabled: false
       volumePermissions:
         enabled: false  # Not needed with emptyDir
 
