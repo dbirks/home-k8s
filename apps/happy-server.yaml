@@ -12,9 +12,10 @@ spec:
   interval: 5m
   chart:
     spec:
-      chart: ./charts/happy-server
+      chart: happy-server
+      version: "0.1.2"
       sourceRef:
-        kind: GitRepository
+        kind: HelmRepository
         name: happy-server
         namespace: flux-system
       interval: 1m
@@ -78,36 +79,9 @@ spec:
         save ""
 
     minio:
-      enabled: true
-      mode: standalone
-      # Use official MinIO image (Bitnami image unavailable due to registry changes)
-      image:
-        registry: docker.io
-        repository: minio/minio
-        tag: latest
-      auth:
-        rootUser: minio-admin
-        rootPassword: minio-dev-password
-      persistence:
-        enabled: false  # Uses emptyDir - data is ephemeral
-      # Use defaultBuckets (provisioning may not work with official image)
-      defaultBuckets: "happy"
-      # Security contexts for emptyDir
-      podSecurityContext:
-        enabled: true
-        fsGroup: 1001
-      containerSecurityContext:
-        enabled: true
-        runAsUser: 1001
-        runAsNonRoot: true
-        readOnlyRootFilesystem: false  # Disabled for compatibility
-      resources:
-        requests:
-          memory: 256Mi
-          cpu: 100m
-        limits:
-          memory: 512Mi
-          cpu: 250m
+      # Disabled for now - Bitnami chart incompatible with official MinIO image
+      # TODO: Use MinIO operator or different chart when S3 storage is needed
+      enabled: false
 
     # Resource limits
     resources:
