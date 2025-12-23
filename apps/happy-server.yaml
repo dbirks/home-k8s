@@ -12,12 +12,12 @@ spec:
   interval: 5m
   chart:
     spec:
-      chart: happy-server
-      version: "0.1.0"
+      chart: ./charts/happy-server
       sourceRef:
-        kind: HelmRepository
+        kind: GitRepository
         name: happy-server
         namespace: flux-system
+      interval: 1m
   values:
     # Allow non-Bitnami images (for MinIO official image)
     global:
