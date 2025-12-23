@@ -79,9 +79,7 @@ spec:
         save ""
 
     minio:
-      # Disabled for now - Bitnami chart incompatible with official MinIO image
-      # TODO: Use MinIO operator or different chart when S3 storage is needed
-      enabled: false
+      enabled: true
 
     # Resource limits
     resources:
