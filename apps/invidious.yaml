@@ -10,7 +10,7 @@ spec:
       chart: invidious
       # Current version found here:
       # https://github.com/truecharts/public/blob/master/charts/stable/invidious/Chart.yaml#L41
-      version: 11.5.3
+      version: 12.13.5
       sourceRef:
         kind: HelmRepository
         name: truecharts
