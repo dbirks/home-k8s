@@ -84,8 +84,11 @@ spec:
       image:
         registry: public.ecr.aws
         repository: bitnami/minio
-      # Disable console since Bitnami console image is unavailable
-      disableWebUI: true
+      console:
+        enabled: true
+        image:
+          registry: public.ecr.aws
+          repository: bitnami/minio-console
       persistence:
         enabled: false  # Uses emptyDir - data is ephemeral
 
