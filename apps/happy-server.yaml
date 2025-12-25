@@ -88,7 +88,7 @@ spec:
         enabled: true
         image:
           registry: public.ecr.aws
-          repository: bitnami/minio-console
+          repository: bitnami/minio-object-browser
       persistence:
         enabled: false  # Uses emptyDir - data is ephemeral
 
