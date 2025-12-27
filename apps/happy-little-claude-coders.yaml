@@ -27,7 +27,7 @@ spec:
         repos:
           - "https://github.com/dbirks/cawcaw.git"
         storageSize: 5Gi
-        persistent: true
+        persistent: false  # Using emptyDir until NFS is restored
         resources:
           limits:
             cpu: 2000m
@@ -40,7 +40,7 @@ spec:
         repos:
           - "https://github.com/dbirks/librechat.git"
         storageSize: 10Gi
-        persistent: true
+        persistent: false  # Using emptyDir until NFS is restored
         resources:
           limits:
             cpu: 2000m
