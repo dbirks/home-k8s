@@ -54,16 +54,11 @@ spec:
       userName: "David Birks"
       userEmail: "david@birks.dev"
 
-    # GitHub authentication - you'll need to set this up
-    # Option 1: GitHub App (recommended for security)
-    # githubApp:
-    #   enabled: true
-    #   secretName: github-app-credentials
-    #   refreshIntervalMinutes: 50
-
-    # Option 2: Personal Access Token
-    # github:
-    #   tokenSecretName: github-token
+    # GitHub authentication via GitHub App
+    githubApp:
+      enabled: true
+      secretName: github-app-credentials
+      refreshIntervalMinutes: 50
 
     # Claude Code authentication
     # claude:
