@@ -59,7 +59,7 @@ spec:
       enabled: true
       secretName: github-app-credentials
       refreshIntervalMinutes: 50
-      sidecarImage: ghcr.io/dbirks/github-token-sidecar:8e44d84
+      sidecarImage: ghcr.io/dbirks/github-token-sidecar:9452ccd
 
     # Claude Code authentication
     # claude:
