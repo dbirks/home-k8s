@@ -8,7 +8,7 @@ spec:
   chart:
     spec:
       chart: happy-little-claude-coders
-      version: 0.3.1
+      version: 0.4.0
       sourceRef:
         kind: HelmRepository
         name: happy-little-claude-coders
@@ -19,7 +19,7 @@ spec:
   values:
     image:
       repository: ghcr.io/dbirks/happy-little-claude-coders
-      tag: "0.3.1"
+      tag: "0.4.0"
 
     # Multiple workspaces - each gets its own deployment/pods
     workspaces:
@@ -62,5 +62,5 @@ spec:
       sidecarImage: ghcr.io/dbirks/github-token-sidecar:3819e0c
 
     # Claude Code authentication
-    # claude:
-    #   secretName: claude-token
+    claude:
+      secretName: claude-oauth
