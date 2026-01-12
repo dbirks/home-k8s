@@ -5,10 +5,20 @@ metadata:
   namespace: default
 spec:
   interval: 5m
+  timeout: 15m  # Increase timeout to handle slow installs
+  maxHistory: 3  # Limit ConfigMap bloat from release history
+  install:
+    timeout: 15m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 15m
+    remediation:
+      retries: 3
   chart:
     spec:
       chart: happy-little-claude-coders
-      version: 0.6.0
+      version: 0.7.0
       sourceRef:
         kind: HelmRepository
         name: happy-little-claude-coders
@@ -19,7 +29,7 @@ spec:
   values:
     image:
       repository: ghcr.io/dbirks/happy-little-claude-coders
-      tag: "0.6.0"
+      tag: "0.7.0"
 
     # Multiple workspaces - each gets its own deployment/pods
     workspaces:
