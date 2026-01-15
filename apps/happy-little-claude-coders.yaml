@@ -18,7 +18,7 @@ spec:
   chart:
     spec:
       chart: happy-little-claude-coders
-      version: 0.11.2
+      version: 0.11.3
       sourceRef:
         kind: HelmRepository
         name: happy-little-claude-coders
@@ -29,7 +29,7 @@ spec:
   values:
     image:
       repository: ghcr.io/dbirks/happy-little-claude-coders
-      tag: "0.11.2"
+      tag: "0.11.3"
 
     # Multiple workspaces - each gets its own deployment/pods
     workspaces:
