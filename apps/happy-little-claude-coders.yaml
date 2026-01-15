@@ -18,7 +18,7 @@ spec:
   chart:
     spec:
       chart: happy-little-claude-coders
-      version: 0.11.3
+      version: 0.12.0
       sourceRef:
         kind: HelmRepository
         name: happy-little-claude-coders
@@ -29,7 +29,7 @@ spec:
   values:
     image:
       repository: ghcr.io/dbirks/happy-little-claude-coders
-      tag: "0.11.3"
+      tag: "0.12.0"
 
     # Multiple workspaces - each gets its own deployment/pods
     workspaces:
@@ -75,6 +75,9 @@ spec:
     claude:
       secretName: claude-oauth
 
-    # Happy CLI config - disabled until NFS is restored
+    # Happy CLI config - using per-workspace PVCs
+    # NOTE: Requires persistent: true on workspaces AND working storage class
     happy:
       sharedConfig: false
+      perWorkspaceConfig: true
+      configStorageClass: ""  # Use default (currently nfs - needs fixing!)
