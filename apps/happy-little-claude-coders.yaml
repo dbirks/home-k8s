@@ -29,7 +29,7 @@ spec:
   values:
     image:
       repository: ghcr.io/dbirks/happy-little-claude-coders
-      tag: "0.12.1"
+      tag: "1.0.0"
 
     # Multiple workspaces - each gets its own deployment/pods
     workspaces:
