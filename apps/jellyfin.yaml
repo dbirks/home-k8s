@@ -10,7 +10,7 @@ spec:
       chart: jellyfin
       # Current version found here:
       # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/Chart.yaml#L11
-      version: 2.3.0
+      version: 2.7.0
       sourceRef:
         kind: HelmRepository
         name: jellyfin

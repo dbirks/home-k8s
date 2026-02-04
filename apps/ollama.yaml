@@ -10,7 +10,7 @@ spec:
       chart: ollama
       # Current version found here:
       # https://github.com/otwld/ollama-helm/blob/main/Chart.yaml#L7
-      version: 1.15.0
+      version: 1.41.0
       sourceRef:
         kind: HelmRepository
         name: otwld

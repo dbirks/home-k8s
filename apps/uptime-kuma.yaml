@@ -10,7 +10,7 @@ spec:
       chart: uptime-kuma
       # Current version found here:
       # https://github.com/dirsigler/uptime-kuma-helm/blob/main/charts/uptime-kuma/Chart.yaml#L14
-      version: 2.21.2
+      version: 2.24.0
       sourceRef:
         kind: HelmRepository
         name: uptime-kuma
