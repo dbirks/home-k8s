@@ -17,27 +17,52 @@ spec:
       interval: 5m
   values:
     servingEngineSpec:
+      # Use the nvidia RuntimeClass for GPU access
       runtimeClassName: nvidia
+
       modelSpec:
         - name: qwen3-8b
           repository: vllm/vllm-openai
           tag: latest
+          # HuggingFace model ID - downloaded on first start
           modelURL: Qwen/Qwen3-8B
           replicaCount: 1
-          requestCPU: 2
-          requestMemory: 16Gi
+
+          # Resource requests - keep CPU low, node only has 4 cores
+          requestCPU: 1
+          requestMemory: 8Gi
           requestGPU: 1
+          limitCPU: 2
+          limitMemory: 16Gi
+
+          # Local storage for model weights (downloaded from HuggingFace)
           pvcStorage: 50Gi
           storageClass: local-path
+
+          # Shared memory for PyTorch IPC
           shmSize: 8Gi
+
+          # vLLM engine configuration
           vllmConfig:
+            # Cap context length to save VRAM (Qwen3-8B supports up to 128K)
             maxModelLen: 8192
+            # BF16 for best quality on Blackwell architecture
             dtype: bfloat16
+            # How much GPU memory vLLM can use for KV cache (0-1)
             gpuMemoryUtilization: 0.90
 
     routerSpec:
+      # The router provides OpenAI-compatible API and load balances across models
       enableRouter: true
       replicaCount: 1
+      # Reduce router resource requests
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
       ingress:
         enabled: true
         className: private
@@ -47,8 +72,8 @@ spec:
               - path: /
                 pathType: Prefix
 
+    # Monitoring - disabled for home use
     kube-prometheus-stack:
       enabled: false
-
     prometheus-adapter:
       enabled: false
