@@ -8,40 +8,17 @@ spec:
   chart:
     spec:
       chart: librechat
-      # Current version found here:
-      # https://github.com/bat-bs/helm-charts/blob/main/charts/librechat/Chart.yaml#L17
-      version: 1.8.10
+      version: 2.0.2
       sourceRef:
         kind: HelmRepository
-        name: blue-atlas
+        name: librechat
         namespace: flux-system
       interval: 5m
-  # Default values:
-  # https://github.com/bat-bs/helm-charts/blob/main/charts/librechat/values.yaml
   values:
-    librechat:
-      configEnv:
-        ALLOW_REGISTRATION: "true"
-        OPENAI_MODELS: gpt-4o,gpt-4o-mini,o1-mini,o1,o3-mini,o3-mini-high,gpt-4.5-preview
-      configYamlContent: |
-        version: 1.2.3
-        # Definition of custom endpoints
-        endpoints:
-          custom:
-            - name: "Ollama"
-              apiKey: "ollama"
-              baseURL: "http://ollama:11434/v1/chat/completions"
-              models:
-                default: ["gemma3", "llama3"]
-                # fetching list of models is supported but the `name` field must start
-                # with `ollama` (case-insensitive), as it does in this example.
-                fetch: true
-              titleConvo: true
-              titleModel: "current_model"
-              summarize: false
-              summaryModel: "current_model"
-              forcePrompt: false
-              modelDisplayLabel: "Ollama"
+    image:
+      registry: ghcr.io
+      repository: danny-avila/librechat
+      tag: v0.8.4
 
     ingress:
       enabled: true
@@ -52,8 +29,36 @@ spec:
             - path: /
               pathType: Prefix
 
-    image:
-      registry: ghcr.io
-      repository: danny-avila/librechat-dev
-      pullPolicy: IfNotPresent
-      tag: a6f0a8244f1ad1696d819a8d087130d226570765
+    librechat:
+      configEnv:
+        ALLOW_REGISTRATION: "true"
+        OPENAI_MODELS: gpt-4o,gpt-4o-mini,o1-mini,o1,o3-mini,o3-mini-high,gpt-4.5-preview
+      configYamlContent: |
+        version: 1.2.3
+        endpoints:
+          custom:
+            - name: "Ollama"
+              apiKey: "ollama"
+              baseURL: "http://ollama:11434/v1/chat/completions"
+              models:
+                default: ["gemma3", "llama3"]
+                fetch: true
+              titleConvo: true
+              titleModel: "current_model"
+              summarize: false
+              summaryModel: "current_model"
+              forcePrompt: false
+              modelDisplayLabel: "Ollama"
+
+    mongodb:
+      enabled: true
+      auth:
+        enabled: false
+
+    meilisearch:
+      enabled: true
+      persistence:
+        enabled: true
+
+    redis:
+      enabled: false
