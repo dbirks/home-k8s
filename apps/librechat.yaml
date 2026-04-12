@@ -54,6 +54,8 @@ spec:
       enabled: true
       auth:
         enabled: false
+      image:
+        tag: 8.0-debian-12
 
     meilisearch:
       enabled: true
