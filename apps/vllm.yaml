@@ -20,6 +20,25 @@ spec:
       # Use the nvidia RuntimeClass so pods get GPU access
       runtimeClassName: nvidia
 
+      # Startup probe - very generous for slow cold starts on i5-6600K
+      # Triton kernel compilation for Mamba/DeltaNet layers takes 10-20+ min on first run
+      startupProbe:
+        initialDelaySeconds: 30
+        periodSeconds: 30
+        failureThreshold: 120
+        httpGet:
+          path: /health
+          port: 8000
+
+      # Liveness probe - once running, check every 30s
+      livenessProbe:
+        initialDelaySeconds: 30
+        periodSeconds: 30
+        failureThreshold: 5
+        httpGet:
+          path: /health
+          port: 8000
+
       # =====================================================================
       # ACTIVE MODEL: Qwen3.5-35B-A3B (GPTQ-Int4)
       # =====================================================================
