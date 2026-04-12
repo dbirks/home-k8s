@@ -1,100 +1,54 @@
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: vllm-models
-  namespace: default
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: local-path
-  resources:
-    requests:
-      storage: 50Gi
----
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
 metadata:
   name: vllm
   namespace: default
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: vllm
-  template:
-    metadata:
-      labels:
-        app: vllm
+  interval: 5m
+  timeout: 15m
+  chart:
     spec:
+      chart: vllm-stack
+      version: 0.1.10
+      sourceRef:
+        kind: HelmRepository
+        name: vllm
+        namespace: flux-system
+      interval: 5m
+  values:
+    servingEngineSpec:
       runtimeClassName: nvidia
-      containers:
-        - name: vllm
-          image: vllm/vllm-openai:latest
-          args:
-            - "--model"
-            - "Qwen/Qwen3-8B"
-            - "--host"
-            - "0.0.0.0"
-            - "--port"
-            - "8000"
-            - "--max-model-len"
-            - "8192"
-          ports:
-            - containerPort: 8000
-          resources:
-            limits:
-              nvidia.com/gpu: 1
-            requests:
-              cpu: "2"
-              memory: 16Gi
-          volumeMounts:
-            - name: models
-              mountPath: /root/.cache/huggingface
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 30
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 60
-            periodSeconds: 30
-      volumes:
-        - name: models
-          persistentVolumeClaim:
-            claimName: vllm-models
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: vllm
-  namespace: default
-spec:
-  selector:
-    app: vllm
-  ports:
-    - port: 8000
-      targetPort: 8000
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: vllm
-  namespace: default
-spec:
-  ingressClassName: private
-  rules:
-    - host: vllm.hoam.lan
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: vllm
-                port:
-                  number: 8000
+      modelSpec:
+        - name: qwen3-8b
+          repository: vllm/vllm-openai
+          tag: latest
+          modelURL: Qwen/Qwen3-8B
+          replicaCount: 1
+          requestCPU: 2
+          requestMemory: 16Gi
+          requestGPU: 1
+          pvcStorage: 50Gi
+          storageClass: local-path
+          shmSize: 8Gi
+          vllmConfig:
+            maxModelLen: 8192
+            dtype: bfloat16
+            gpuMemoryUtilization: 0.90
+
+    routerSpec:
+      enableRouter: true
+      replicaCount: 1
+      ingress:
+        enabled: true
+        className: private
+        hosts:
+          - host: vllm.hoam.lan
+            paths:
+              - path: /
+                pathType: Prefix
+
+    kube-prometheus-stack:
+      enabled: false
+
+    prometheus-adapter:
+      enabled: false
