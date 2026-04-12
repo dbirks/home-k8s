@@ -36,7 +36,8 @@ spec:
           limitMemory: 16Gi
 
           # Local storage for model weights (downloaded from HuggingFace)
-          pvcStorage: 50Gi
+          # Multiple models can be cached here - Qwen 8B (~16GB), 30B AWQ (~15GB), etc.
+          pvcStorage: 150Gi
           storageClass: local-path
 
           # Shared memory for PyTorch IPC
