@@ -32,4 +32,4 @@ spec:
     volume:
       enabled: true
       size: 5Gi
-      storageClassName: nfs
+      storageClassName: local-path

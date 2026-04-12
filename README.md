@@ -1,93 +1,178 @@
-# home-k8s 🏡☸
+# home-k8s
 
-Single-node k8s cluster running on Talos Linux. Lives on a USB stick.
+Single-node k8s cluster running on Talos Linux.
 
 ## Current setup
 
-Running Talos v1.9.5 (upgraded from v1.7.5).
+Running Talos v1.12.6 on a 256GB SSD.
 
-Control plane: `10.0.0.30`
+Control plane: `10.0.0.30` (or DHCP-assigned, check after boot)
 
 ### Hardware
 
-Installed on USB drive at `/dev/sda`.
-
-NVIDIA GPU with proprietary drivers via custom schematic.
+- 256GB SSD as install disk
+- NVIDIA RTX 5090 (Blackwell) with open-source GPU drivers
 
 ### Talos install image
 
-Factory image with NVIDIA support:
+Factory image with NVIDIA open driver support:
 
 ```
-factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.9.5
+factory.talos.dev/installer/036d341b186bfa76a1c0a545125bbd667908a09a50dfe5e7ab32cc93901b84a2:v1.12.6
 ```
 
-Same schematic ID as before - just bumped the version tag.
+Schematic uses `nvidia-open-gpu-kernel-modules` (required for RTX 50-series/Blackwell GPUs - the proprietary `nonfree-kmod-nvidia` does not support them).
+
+Schematic config: `talos-nvidia-schematic.yaml`
 
 Docs:
-- https://www.talos.dev/v1.9/learn-more/image-factory/
+- https://www.talos.dev/v1.12/learn-more/image-factory/
 - https://factory.talos.dev/
-- https://www.talos.dev/v1.9/talos-guides/configuration/nvidia-gpu-proprietary/
+- https://www.talos.dev/v1.12/talos-guides/configuration/nvidia-gpu/
 
-## Install process (Dec 2024)
+## Install process (April 2026)
 
-Generate config:
+### 1. Download the ISO
+
+The ISO is built via Talos Image Factory with NVIDIA extensions baked in.
+
+```bash
+# If you need to regenerate the schematic ID:
+SCHEMATIC_ID=$(curl -sX POST --data-binary @talos-nvidia-schematic.yaml \
+  https://factory.talos.dev/schematics \
+  -H "Content-Type: application/yaml" | jq -r '.id')
+
+# Download the ISO
+curl -LO "https://factory.talos.dev/image/${SCHEMATIC_ID}/v1.12.6/metal-amd64.iso"
+```
+
+### 2. Flash to USB drive
+
+```bash
+lsblk                    # identify your USB device
+sudo dd if=metal-amd64.iso of=/dev/sdX bs=4M status=progress && sync
+```
+
+### 3. Boot and note the IP
+
+Boot the server from the USB drive. Talos enters maintenance mode and displays the DHCP-assigned IP.
+
+### 4. Generate Talos config
 
 ```bash
 talosctl gen config home https://10.0.0.30:6443
 ```
 
-Edit `controlplane.yaml` to set the install disk and custom image:
+### 5. Edit controlplane.yaml
+
+Set the install disk (find the device name with `talosctl disks` after booting):
 
 ```yaml
 install:
-    disk: /dev/sda
-    image: factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.9.5
+    disk: /dev/sda    # or /dev/nvme0n1, wherever the 256GB SSD is
+    image: factory.talos.dev/installer/036d341b186bfa76a1c0a545125bbd667908a09a50dfe5e7ab32cc93901b84a2:v1.12.6
 ```
 
-Enable scheduling on control plane (single node cluster):
+Enable scheduling on control plane (single-node cluster):
 
 ```yaml
 cluster:
     allowSchedulingOnControlPlanes: true
 ```
 
-Apply config to node:
+NVIDIA kernel modules (should already be in the generated config if using the factory image):
 
-```bash
-talosctl apply-config --insecure -n 10.0.0.30 --file controlplane.yaml
+```yaml
+machine:
+    kernel:
+        modules:
+            - name: nvidia
+            - name: nvidia_uvm
+            - name: nvidia_drm
+            - name: nvidia_modeset
 ```
 
-Wait for install to complete and node to reboot. Screen shows `Installing`, then `Booting`, then tells you to bootstrap.
-
-Bootstrap the cluster:
+### 6. Apply config
 
 ```bash
-talosctl bootstrap -n 10.0.0.30 -e 10.0.0.30 --talosconfig ./talosconfig
+talosctl apply-config --insecure -n <DHCP_IP> --file controlplane.yaml
 ```
 
-Get kubeconfig:
+Wait for install to complete. Screen shows `Installing`, then `Booting`.
+
+### 7. Bootstrap the cluster
 
 ```bash
-talosctl kubeconfig -n 10.0.0.30 -e 10.0.0.30 --talosconfig talosconfig
+talosctl bootstrap -n <NODE_IP> -e <NODE_IP> --talosconfig ./talosconfig
+```
+
+### 8. Get kubeconfig
+
+```bash
+talosctl kubeconfig -n <NODE_IP> -e <NODE_IP> --talosconfig talosconfig
+```
+
+### 9. Verify NVIDIA GPU
+
+```bash
+talosctl get extensions          # should show nvidia-open-gpu-kernel-modules
+talosctl dmesg | grep -i nvidia  # check for probe errors
+kubectl run gpu-test --rm -it --restart=Never \
+  --image=nvidia/cuda:12.8.0-base-ubuntu24.04 \
+  --overrides='{"spec":{"runtimeClassName":"nvidia"}}' \
+  -- nvidia-smi
 ```
 
 ## GitOps with Flux
 
-Running Flux v2.7.5. Using HelmRelease API v2 (migrated from v2beta1).
-
-Bootstrap Flux:
+Bootstrap Flux after the cluster is running:
 
 ```bash
 export GITHUB_TOKEN=ghp_...
 flux bootstrap github --owner dbirks --repository home-k8s --branch main --personal
 ```
 
-This adds a deploy key to the repo and commits the Flux manifests to `flux-system/`.
+This adds a deploy key to the repo and commits Flux manifests to `flux-system/`.
+
+Flux reconciles in dependency order: `prereqs` -> `infra` -> `apps`
+
+### Suspended apps (.yaml.hold)
+
+Apps renamed to `.yaml.hold` are not reconciled by Flux. Current holds:
+
+- `apps/happy-little-claude-coders.yaml.hold` - waiting for secrets setup
+- `apps/happy-server.yaml.hold` - waiting for secrets setup
+- `infra/nfs-client-provisioner.yaml.hold` - waiting for TrueNAS/NFS server
+
+To re-enable, rename back to `.yaml` and commit.
+
+## Storage
+
+### NFS (when TrueNAS is available)
+
+NFS provisioner connects to `10.0.0.43:/mnt/tetons/kubernetes` and creates a `nfs` StorageClass. Re-enable by renaming `infra/nfs-client-provisioner.yaml.hold` back to `.yaml`.
+
+### Local storage (temporary)
+
+While NFS is unavailable, a local-path-provisioner can provide storage backed by the SSD. See `infra/local-path-provisioner.yaml` (if created).
 
 ---
 
 ## Archive - old install notes
+
+<details>
+<summary>Talos v1.9.5 setup (Dec 2024)</summary>
+
+Previous setup ran Talos v1.9.5 on a 63GB USB stick at `/dev/sda` with IP `10.0.0.30`.
+
+Used proprietary NVIDIA drivers (`nonfree-kmod-nvidia`) which worked for the old GPU but do not support RTX 50-series.
+
+Factory image:
+```
+factory.talos.dev/installer/0412a9a6369c0fb55e913cdfcbf4ad6ca3fab6e56ab71198ec4b58ad7e7a4ddd:v1.9.5
+```
+
+</details>
 
 <details>
 <summary>Kairos / k3s setup (pre-Talos)</summary>
