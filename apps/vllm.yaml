@@ -17,46 +17,145 @@ spec:
       interval: 5m
   values:
     servingEngineSpec:
-      # Use the nvidia RuntimeClass for GPU access
+      # Use the nvidia RuntimeClass so pods get GPU access via nvidia-container-toolkit
       runtimeClassName: nvidia
 
       modelSpec:
-        - name: qwen3-8b
+        # =====================================================================
+        # MODEL 1: Qwen3.5-35B-A3B (GPTQ-Int4)
+        # =====================================================================
+        # Best for: broad reasoning, agentic workflows, long context
+        # Architecture: Hybrid MoE (35B total, 3B active per token)
+        #   - 3 of 4 layers use Gated DeltaNet (Mamba-style linear attention)
+        #   - 1 of 4 layers use standard grouped-query attention
+        # Thinking mode: built-in <think> reasoning, togglable per-request
+        # Expected speed on 5090: ~194-202 tok/s generation
+        # VRAM: ~22GB weights + KV cache, fits 131K context with FP8 KV
+        - name: qwen35-35b
           repository: vllm/vllm-openai
           tag: latest
-          # HuggingFace model ID - downloaded on first start
-          modelURL: Qwen/Qwen3-8B
+          modelURL: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+          # Set to 1 to activate this model (only one model can use the GPU at a time)
           replicaCount: 1
-
-          # Resource requests - keep CPU low, node only has 4 cores
+          # CPU/memory - keep low, i5-6600K only has 4 cores
           requestCPU: 1
           requestMemory: 8Gi
           requestGPU: 1
           limitCPU: 2
-          limitMemory: 16Gi
-
-          # Local storage for model weights (downloaded from HuggingFace)
-          # Multiple models can be cached here - Qwen 8B (~16GB), 30B AWQ (~15GB), etc.
+          limitMemory: 32Gi
+          # Storage for model weights (~22GB for GPTQ-Int4) + HuggingFace cache
           pvcStorage: 150Gi
           storageClass: local-path
-
-          # Shared memory for PyTorch IPC
+          # Shared memory for PyTorch inter-process communication
           shmSize: 8Gi
-
-          # vLLM engine configuration
           vllmConfig:
-            # Cap context length to save VRAM (Qwen3-8B supports up to 128K)
-            maxModelLen: 8192
-            # BF16 for best quality on Blackwell architecture
+            # MANDATORY: float16 crashes with GPTQ-Int4 due to mixed weight dtypes
             dtype: bfloat16
-            # How much GPU memory vLLM can use for KV cache (0-1)
+            # GPTQ with Marlin kernel - fastest quantized inference on Ampere+
+            # quantization: gptq_marlin  # TODO: check if chart supports this field
+            # Context length cap - 131K is max achievable on 32GB with GPTQ + FP8 KV
+            # Start conservative, increase if stable
+            maxModelLen: 65536
+            # How much VRAM vLLM can use (0-1). 0.85 is safer on first run because
+            # the Mamba/DeltaNet layers use Triton kernels that auto-benchmark on
+            # cold start, temporarily eating 4-8GB extra VRAM
+            gpuMemoryUtilization: 0.85
+            # Limit concurrent sequences to avoid KV cache exhaustion
+            maxNumSeqs: 2
+            # MANDATORY: Gated DeltaNet (Mamba) layers require minimum block size of 2096.
+            # Without this you get: "block_size (2096) must be <= max_num_batched_tokens"
+            maxNumBatchedTokens: 2096
+            # Extra args the chart may pass through to vllm serve
+            extraArgs:
+              - "--kv-cache-dtype=fp8"           # Halves KV cache size, essential for long context
+              - "--enable-prefix-caching"         # Reuses KV cache for repeated prefixes (huge for agents)
+              - "--reasoning-parser=qwen3"        # Parses <think>...</think> blocks in API responses
+              - "--trust-remote-code"             # Required for Qwen model architecture code
+              - "--quantization=gptq_marlin"      # Fast Marlin kernel for GPTQ inference
+              - "--enforce-eager"                 # Disable CUDA graphs (MoE + Mamba can break them)
+          # Sampling presets (for reference - set these client-side):
+          # Thinking mode (reasoning/agents): temp=1.0, top_p=0.95, top_k=20, presence_penalty=1.5
+          # Thinking mode (precise coding):   temp=0.6, top_p=0.95, top_k=20, presence_penalty=0.0
+          # Non-thinking (general chat):      temp=0.7, top_p=0.8,  top_k=20, presence_penalty=1.5
+          # Toggle thinking per-request via: extra_body={"chat_template_kwargs": {"enable_thinking": true/false}}
+
+        # =====================================================================
+        # MODEL 2: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
+        # =====================================================================
+        # Best for: coding, tool calling, agentic coding tasks
+        # Architecture: MoE (30B total, 3B active per token)
+        # Speed: very fast due to only 3B active params (comparable to a 3B dense model)
+        # VRAM: ~15GB weights, leaves ~14GB for KV cache
+        # Practical context: 32-65K tokens on 32GB
+        - name: qwen3-coder-30b
+          repository: vllm/vllm-openai
+          tag: latest
+          modelURL: Qwen/Qwen3-Coder-30B-A3B-Instruct-AWQ
+          # Set to 0 = inactive. Change to 1 and set qwen35-35b to 0 to switch models
+          replicaCount: 0
+          requestCPU: 1
+          requestMemory: 8Gi
+          requestGPU: 1
+          limitCPU: 2
+          limitMemory: 32Gi
+          pvcStorage: 150Gi
+          storageClass: local-path
+          shmSize: 8Gi
+          vllmConfig:
+            dtype: bfloat16
+            # 32K is safe and comfortable for coding; 65K possible if needed
+            maxModelLen: 32768
+            gpuMemoryUtilization: 0.95
+            # More concurrent sequences possible since model is smaller
+            maxNumSeqs: 4
+            extraArgs:
+              - "--quantization=awq_marlin"       # Fast Marlin kernel for AWQ inference
+              - "--enable-prefix-caching"          # Reuse KV cache across similar prompts
+              - "--enable-auto-tool-choice"         # Enable structured tool/function calling
+              - "--tool-call-parser=hermes"         # Qwen3-Coder uses Hermes-style <tool_call> tags
+              - "--trust-remote-code"
+              - "--enforce-eager"                   # Safer for MoE dynamic expert routing
+
+        # =====================================================================
+        # MODEL 3: Gemma 4 26B-A4B (AWQ 4-bit)
+        # =====================================================================
+        # Best for: multimodal (vision + text), fast inference, general reasoning
+        # Architecture: MoE (25.2B total, 3.8B active per token, 8/128 experts + 1 shared)
+        # License: Apache 2.0 (fully open, commercial OK)
+        # Supports: text, image, video input (up to 60s video at 1fps)
+        # Native context: 256K tokens
+        # VRAM: ~16-18GB at 4-bit, comfortable fit on 32GB
+        # Note: vLLM has a known bug with tensor parallelism on this MoE model,
+        #   but that doesn't affect single-GPU use
+        - name: gemma4-26b
+          repository: vllm/vllm-openai
+          tag: latest
+          modelURL: cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
+          # Set to 0 = inactive. Change to 1 to switch to this model
+          replicaCount: 0
+          requestCPU: 1
+          requestMemory: 8Gi
+          requestGPU: 1
+          limitCPU: 2
+          limitMemory: 32Gi
+          pvcStorage: 150Gi
+          storageClass: local-path
+          shmSize: 8Gi
+          vllmConfig:
+            dtype: bfloat16
+            # Gemma 4 supports 256K natively; 65K is a safe starting point on 32GB
+            maxModelLen: 65536
             gpuMemoryUtilization: 0.90
+            maxNumSeqs: 4
+            extraArgs:
+              - "--enable-prefix-caching"
+              - "--trust-remote-code"
 
     routerSpec:
-      # The router provides OpenAI-compatible API and load balances across models
+      # The router provides a unified OpenAI-compatible API endpoint
+      # and can load-balance across models (though with 1 GPU only one runs at a time)
       enableRouter: true
       replicaCount: 1
-      # Reduce router resource requests
       resources:
         requests:
           cpu: 100m
@@ -73,7 +172,8 @@ spec:
               - path: /
                 pathType: Prefix
 
-    # Monitoring - disabled for home use
+    # Monitoring stack - disabled for home use
+    # Enable these if you want Prometheus metrics and Grafana dashboards
     kube-prometheus-stack:
       enabled: false
     prometheus-adapter:
