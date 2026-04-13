@@ -68,7 +68,9 @@ spec:
             # "main" is the stable alias - point all agents here so you can
             # swap the underlying model without updating agent configs.
             # "qwen3-coder" is the specific model name if you want to be explicit.
-            - "--served-model-name=main,qwen3-coder"
+            - "--served-model-name"
+            - "main"
+            - "qwen3-coder"
             # 16K without FP8 KV cache (incompatible with this model's compressed-tensors)
             - "--max-model-len=16384"
             - "--dtype=bfloat16"
