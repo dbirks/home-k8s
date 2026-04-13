@@ -20,8 +20,7 @@ spec:
       # Use the nvidia RuntimeClass so pods get GPU access
       runtimeClassName: nvidia
 
-      # Startup probe - very generous for slow cold starts on i5-6600K
-      # Triton kernel compilation for Mamba/DeltaNet layers takes 10-20+ min on first run
+      # Startup probe - generous for model download + weight loading
       startupProbe:
         initialDelaySeconds: 30
         periodSeconds: 30
@@ -40,81 +39,79 @@ spec:
           port: 8000
 
       # =====================================================================
-      # ACTIVE MODEL: Qwen3.5-35B-A3B (GPTQ-Int4)
+      # ACTIVE MODEL: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
       # =====================================================================
-      # Best for: broad reasoning, agentic workflows, long context
-      # Architecture: Hybrid MoE (35B total, 3B active per token)
-      #   - 3 of 4 layers use Gated DeltaNet (Mamba-style linear attention)
-      #   - 1 of 4 layers use standard grouped-query attention
-      # Thinking mode: built-in <think> reasoning, togglable per-request
-      # Expected speed on 5090: ~194-202 tok/s generation
-      # VRAM: ~22GB weights + KV cache, fits 131K context with FP8 KV
+      # Best for: coding, tool calling, agentic coding tasks
+      # Architecture: Standard transformer MoE (30B total, 3B active per token)
+      #   - NO Mamba/DeltaNet layers (unlike Qwen3.5) = no Triton compilation issues
+      # VRAM: ~15GB weights (AWQ), leaves ~15GB for KV cache
+      # Benchmarked on RTX 5090: ~1,157 tok/s throughput (16 concurrent reqs)
+      # Tool calling: dedicated qwen3_coder parser in vLLM
       #
-      # TO SWITCH MODELS: replace this modelSpec entry with one of the
-      # alternatives below (commented out), then commit and push.
-      #
-      # Sampling presets (set client-side):
-      #   Thinking mode (reasoning/agents): temp=1.0, top_p=0.95, top_k=20, presence_penalty=1.5
-      #   Thinking mode (precise coding):   temp=0.6, top_p=0.95, top_k=20, presence_penalty=0.0
-      #   Non-thinking (general chat):      temp=0.7, top_p=0.8,  top_k=20, presence_penalty=1.5
-      #   Toggle thinking per-request: extra_body={"chat_template_kwargs": {"enable_thinking": true/false}}
+      # Claude Code connection:
+      #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
+      #   ANTHROPIC_API_KEY=dummy
+      #   ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder
+      #   ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder
+      #   ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder
+      #   DISABLE_PROMPT_CACHING=1
+      #   claude
       modelSpec:
-        - name: qwen35-35b
+        - name: qwen3-coder
           repository: vllm/vllm-openai
           tag: latest
-          # HuggingFace model ID - vLLM downloads from huggingface.co on first start
-          modelURL: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+          # HuggingFace model ID - community AWQ quant, ~15GB
+          modelURL: stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
           replicaCount: 1
+          # CPU/memory - keep low, i5-6600K only has 4 cores
           requestCPU: 1
           requestMemory: 8Gi
           requestGPU: 1
           limitCPU: 2
           limitMemory: 32Gi
-          # Model weights (~22GB) + HuggingFace cache for multiple models
+          # Model cache - shared across model switches
           pvcStorage: 150Gi
           storageClass: local-path
           # Shared memory for PyTorch IPC
           shmSize: 8Gi
           vllmConfig:
-            # MANDATORY: float16 crashes with GPTQ-Int4 due to mixed weight dtypes
             dtype: bfloat16
-            # 16K to leave GPU headroom for Triton autotuner on cold start.
-            # 32K OOM'd during profiling. Can increase after Triton cache warms.
-            maxModelLen: 16384
-            # 0.80 to leave headroom for Triton autotuner on cold start.
-            # The Mamba/DeltaNet layers need extra GPU memory during profiling.
-            # Can try 0.85-0.90 after first successful start.
-            gpuMemoryUtilization: 0.80
-            # Limit concurrent sequences - 2 is safe on 32GB with this model
-            maxNumSeqs: 2
-            # MANDATORY: Mamba/DeltaNet layers need block_size <= max_num_batched_tokens
-            maxNumBatchedTokens: 2096
+            # 32K is comfortable with AWQ (~15GB weights + FP8 KV cache)
+            # Can push to 114K with gpu_memory_utilization=0.95
+            maxModelLen: 32768
+            # 0.90 is safe - standard transformer, no Triton profiling issues
+            gpuMemoryUtilization: 0.90
+            # More concurrent sequences possible since model is smaller
+            maxNumSeqs: 4
             extraArgs:
-              - "--kv-cache-dtype=fp8"           # Halves KV cache, essential for long context
-              - "--enable-prefix-caching"         # Reuses KV cache for repeated prefixes
-              - "--reasoning-parser=qwen3"        # Parses <think>...</think> in API responses
-              - "--trust-remote-code"             # Required for Qwen model code
-              - "--quantization=gptq_marlin"      # Fast Marlin kernel for GPTQ
-              - "--enforce-eager"                 # Disable CUDA graphs (MoE+Mamba can break them)
-              - "--served-model-name=qwen35"      # Alias without slashes (required for Claude Code)
-              - "--enable-auto-tool-choice"        # Required for Claude Code agentic tool use
-              - "--tool-call-parser=qwen3_coder"    # Correct parser for Qwen3.5 tool calls (despite the name)
+              # FP8 KV cache - doubles effective context capacity
+              - "--kv-cache-dtype=fp8_e5m2"
+              # Prefix caching - huge win for coding agents with repeated system prompts
+              - "--enable-prefix-caching"
+              # Required for Qwen model architecture code
+              - "--trust-remote-code"
+              # AWQ with fast Marlin kernel
+              - "--quantization=awq_marlin"
+              # Alias without slashes (required for Claude Code /v1/messages endpoint)
+              - "--served-model-name=qwen3-coder"
+              # Enable tool calling (required for Claude Code agentic tool use)
+              - "--enable-auto-tool-choice"
+              # Dedicated parser for Qwen3-Coder XML-style function calling
+              # Do NOT use hermes - qwen3_coder is the correct parser
+              - "--tool-call-parser=qwen3_coder"
 
       # =====================================================================
-      # ALTERNATIVE MODEL: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
+      # ALTERNATIVE: Qwen3.5-35B-A3B (GPTQ-Int4) - CURRENTLY BROKEN ON i5
       # =====================================================================
-      # Best for: coding, tool calling, agentic coding tasks
-      # Architecture: MoE (30B total, 3B active per token)
-      # VRAM: ~15GB weights, leaves ~14GB for KV cache
-      # Practical context: 32-65K tokens
-      #
-      # To activate: replace the modelSpec above with this block:
+      # The Mamba/DeltaNet hybrid architecture requires Triton kernel compilation
+      # that OOMs during profiling on 32GB VRAM with an i5-6600K.
+      # Needs either more VRAM headroom or a Triton cache from a faster machine.
       #
       # modelSpec:
-      #   - name: qwen3-coder-30b
+      #   - name: qwen35-35b
       #     repository: vllm/vllm-openai
       #     tag: latest
-      #     modelURL: Qwen/Qwen3-Coder-30B-A3B-Instruct-AWQ
+      #     modelURL: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
       #     replicaCount: 1
       #     requestCPU: 1
       #     requestMemory: 8Gi
@@ -126,27 +123,26 @@ spec:
       #     shmSize: 8Gi
       #     vllmConfig:
       #       dtype: bfloat16
-      #       maxModelLen: 32768
-      #       gpuMemoryUtilization: 0.95
-      #       maxNumSeqs: 4
+      #       maxModelLen: 16384
+      #       gpuMemoryUtilization: 0.80
+      #       maxNumSeqs: 2
+      #       maxNumBatchedTokens: 2096
       #       extraArgs:
-      #         - "--quantization=awq_marlin"
+      #         - "--kv-cache-dtype=fp8"
       #         - "--enable-prefix-caching"
-      #         - "--enable-auto-tool-choice"
-      #         - "--tool-call-parser=hermes"     # Qwen3 uses Hermes-style tool calls
+      #         - "--reasoning-parser=qwen3"
       #         - "--trust-remote-code"
+      #         - "--quantization=gptq_marlin"
       #         - "--enforce-eager"
+      #         - "--served-model-name=qwen35"
+      #         - "--enable-auto-tool-choice"
+      #         - "--tool-call-parser=qwen3_coder"
 
       # =====================================================================
-      # ALTERNATIVE MODEL: Gemma 4 26B-A4B (AWQ 4-bit)
+      # ALTERNATIVE: Gemma 4 26B-A4B (AWQ 4-bit)
       # =====================================================================
       # Best for: multimodal (vision+text), fast inference, general reasoning
-      # Architecture: MoE (25.2B total, 3.8B active, 8/128 experts)
-      # License: Apache 2.0 (fully open, commercial OK)
-      # Supports: text, image, video input
-      # VRAM: ~16-18GB at 4-bit, very comfortable on 32GB
-      #
-      # To activate: replace the modelSpec above with this block:
+      # Apache 2.0 license
       #
       # modelSpec:
       #   - name: gemma4-26b
@@ -170,11 +166,10 @@ spec:
       #       extraArgs:
       #         - "--enable-prefix-caching"
       #         - "--trust-remote-code"
+      #         - "--served-model-name=gemma4"
 
     routerSpec:
-      # Router disabled - unnecessary for single model on single GPU,
-      # and the lmstack-router image was crash-looping.
-      # Access the model directly via the engine service + ingress below.
+      # Router disabled - unnecessary for single model on single GPU
       enableRouter: false
 
     # Monitoring - disabled for home use
@@ -183,7 +178,7 @@ spec:
     prometheus-adapter:
       enabled: false
 ---
-# Ingress for the vLLM model service directly (router is disabled)
+# Ingress for the vLLM model service (router is disabled)
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -199,6 +194,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: vllm-qwen35-35b-engine-service
+                name: vllm-qwen3-coder-engine-service
                 port:
                   number: 80
