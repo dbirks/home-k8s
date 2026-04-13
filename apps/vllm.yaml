@@ -71,8 +71,8 @@ spec:
             - "--served-model-name"
             - "main"
             - "qwen3-coder"
-            # 16K without FP8 KV cache (incompatible with this model's compressed-tensors)
-            - "--max-model-len=16384"
+            # 32K+ needed - Claude Code requests up to 32K output tokens
+            - "--max-model-len=40960"
             - "--dtype=bfloat16"
             # 90% GPU memory for KV cache allocation
             - "--gpu-memory-utilization=0.90"
