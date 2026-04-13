@@ -95,6 +95,9 @@ spec:
               - "--trust-remote-code"             # Required for Qwen model code
               - "--quantization=gptq_marlin"      # Fast Marlin kernel for GPTQ
               - "--enforce-eager"                 # Disable CUDA graphs (MoE+Mamba can break them)
+              - "--served-model-name=qwen35"      # Alias without slashes (required for Claude Code)
+              - "--enable-auto-tool-choice"        # Required for Claude Code agentic tool use
+              - "--tool-call-parser=hermes"        # Parse tool calls from model output
 
       # =====================================================================
       # ALTERNATIVE MODEL: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
