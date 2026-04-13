@@ -168,27 +168,33 @@ spec:
       #         - "--trust-remote-code"
 
     routerSpec:
-      # Unified OpenAI-compatible API endpoint at vllm.hoam.lan
-      enableRouter: true
-      replicaCount: 1
-      resources:
-        requests:
-          cpu: 100m
-          memory: 256Mi
-        limits:
-          cpu: 500m
-          memory: 512Mi
-      ingress:
-        enabled: true
-        className: private
-        hosts:
-          - host: vllm.hoam.lan
-            paths:
-              - path: /
-                pathType: Prefix
+      # Router disabled - unnecessary for single model on single GPU,
+      # and the lmstack-router image was crash-looping.
+      # Access the model directly via the engine service + ingress below.
+      enableRouter: false
 
     # Monitoring - disabled for home use
     kube-prometheus-stack:
       enabled: false
     prometheus-adapter:
       enabled: false
+---
+# Ingress for the vLLM model service directly (router is disabled)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vllm
+  namespace: default
+spec:
+  ingressClassName: private
+  rules:
+    - host: vllm.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vllm-qwen35-35b-engine-service
+                port:
+                  number: 80
