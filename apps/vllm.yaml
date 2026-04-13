@@ -53,6 +53,9 @@ spec:
         app: vllm
     spec:
       runtimeClassName: nvidia
+      # CRITICAL: disable K8s service links injection. The service named "vllm"
+      # creates VLLM_PORT env var which conflicts with vLLM's own VLLM_PORT env.
+      enableServiceLinks: false
       containers:
         - name: vllm
           image: vllm/vllm-openai:latest
