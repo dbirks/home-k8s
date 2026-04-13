@@ -97,7 +97,7 @@ spec:
               - "--enforce-eager"                 # Disable CUDA graphs (MoE+Mamba can break them)
               - "--served-model-name=qwen35"      # Alias without slashes (required for Claude Code)
               - "--enable-auto-tool-choice"        # Required for Claude Code agentic tool use
-              - "--tool-call-parser=hermes"        # Parse tool calls from model output
+              - "--tool-call-parser=qwen3_coder"    # Correct parser for Qwen3.5 tool calls (despite the name)
 
       # =====================================================================
       # ALTERNATIVE MODEL: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
