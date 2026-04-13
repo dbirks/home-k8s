@@ -67,15 +67,15 @@ spec:
             - "--port=8000"
             # Alias without slashes (required for Claude Code /v1/messages)
             - "--served-model-name=qwen3-coder"
-            # 32K context - comfortable with AWQ + FP8 KV cache on 32GB
-            - "--max-model-len=32768"
+            # 16K without FP8 KV cache (incompatible with this model's compressed-tensors)
+            - "--max-model-len=16384"
             - "--dtype=bfloat16"
             # 90% GPU memory for KV cache allocation
             - "--gpu-memory-utilization=0.90"
             # Up to 4 concurrent sequences
             - "--max-num-seqs=4"
-            # FP8 KV cache - doubles effective context capacity
-            - "--kv-cache-dtype=fp8_e5m2"
+            # Note: fp8_e5m2 KV cache is incompatible with this model's compressed-tensors format
+            # - "--kv-cache-dtype=fp8_e5m2"
             # Prefix caching - reuses KV cache for repeated system prompts
             - "--enable-prefix-caching"
             # Auto-detect quantization format (this model uses compressed-tensors)
