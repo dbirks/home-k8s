@@ -4,14 +4,12 @@ metadata:
   name: external-dns
   namespace: kube-system
 spec:
-  suspend: true
   interval: 5m
   chart:
     spec:
       chart: external-dns
-      # Current version found here:
-      # https://github.com/kubernetes-sigs/external-dns/blob/master/charts/external-dns/Chart.yaml#L5
-      version: 1.16.1
+      # https://github.com/kubernetes-sigs/external-dns/blob/master/charts/external-dns/Chart.yaml
+      version: 1.20.0
       sourceRef:
         kind: HelmRepository
         name: external-dns
@@ -22,9 +20,7 @@ spec:
   values:
     sources:
       - ingress
-    # Pihole only supports A/CNAME records so there is no mechanism to track ownership.
-    # You don't need to set this flag, but if you leave it unset, you will receive warning
-    # logs when ExternalDNS attempts to create TXT records.
+    # Pi-hole only supports A/CNAME records, no TXT for ownership tracking
     registry: noop
     provider:
       name: pihole
@@ -32,11 +28,8 @@ spec:
       - name: EXTERNAL_DNS_PIHOLE_SERVER
         value: http://pihole-web.default
       - name: EXTERNAL_DNS_PIHOLE_PASSWORD
-        value: admin # temporary
+        value: admin
 
     extraArgs:
+      # Pi-hole v6 API support (merged upstream, v5 is deprecated)
       - "--pihole-api-version=6"
-
-    image:
-      repository: ghcr.io/dbirks/external-dns/external-dns
-      tag: f1d0401-1744438202
