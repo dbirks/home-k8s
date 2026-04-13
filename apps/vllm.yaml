@@ -75,8 +75,8 @@ spec:
             - "--kv-cache-dtype=fp8_e5m2"
             # Prefix caching - reuses KV cache for repeated system prompts
             - "--enable-prefix-caching"
-            # AWQ with fast Marlin kernel
-            - "--quantization=awq_marlin"
+            # Auto-detect quantization format (this model uses compressed-tensors)
+            # - "--quantization=awq_marlin"  # Don't override - model config knows its format
             # Required for Qwen model architecture code
             - "--trust-remote-code"
             # Enable tool calling (required for Claude Code)
