@@ -1,184 +1,140 @@
-apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
+# =====================================================================
+# vLLM Deployment - Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
+# =====================================================================
+# Architecture: Standard transformer MoE (30B total, 3B active per token)
+# VRAM: ~15GB weights (AWQ), leaves ~15GB for KV cache on RTX 5090
+# Benchmarked on RTX 5090: ~1,157 tok/s throughput
+# Tool calling: dedicated qwen3_coder parser in vLLM
+# Anthropic /v1/messages API: native in vLLM v0.19+
+#
+# Claude Code connection:
+#   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
+#   ANTHROPIC_API_KEY=dummy
+#   ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder
+#   ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder
+#   ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder
+#   DISABLE_PROMPT_CACHING=1
+#   claude
+#
+# To switch models, change the command args below and commit.
+# See commented alternatives at the bottom of this file.
+# Docs: https://docs.vllm.ai/en/latest/serving/integrations/claude_code/
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-models
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      # Shared model cache - holds multiple models across switches
+      storage: 150Gi
+---
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: vllm
   namespace: default
 spec:
-  interval: 5m
-  timeout: 15m
-  chart:
+  replicas: 1
+  # Recreate strategy - only one pod can hold the GPU at a time
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
     spec:
-      chart: vllm-stack
-      version: 0.1.10
-      sourceRef:
-        kind: HelmRepository
-        name: vllm
-        namespace: flux-system
-      interval: 5m
-  values:
-    servingEngineSpec:
-      # Use the nvidia RuntimeClass so pods get GPU access
       runtimeClassName: nvidia
-
-      # Startup probe - generous for model download + weight loading
-      startupProbe:
-        initialDelaySeconds: 30
-        periodSeconds: 30
-        failureThreshold: 120
-        httpGet:
-          path: /health
-          port: 8000
-
-      # Liveness probe - once running, check every 30s
-      livenessProbe:
-        initialDelaySeconds: 30
-        periodSeconds: 30
-        failureThreshold: 5
-        httpGet:
-          path: /health
-          port: 8000
-
-      # =====================================================================
-      # ACTIVE MODEL: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
-      # =====================================================================
-      # Best for: coding, tool calling, agentic coding tasks
-      # Architecture: Standard transformer MoE (30B total, 3B active per token)
-      #   - NO Mamba/DeltaNet layers (unlike Qwen3.5) = no Triton compilation issues
-      # VRAM: ~15GB weights (AWQ), leaves ~15GB for KV cache
-      # Benchmarked on RTX 5090: ~1,157 tok/s throughput (16 concurrent reqs)
-      # Tool calling: dedicated qwen3_coder parser in vLLM
-      #
-      # Claude Code connection:
-      #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
-      #   ANTHROPIC_API_KEY=dummy
-      #   ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder
-      #   ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder
-      #   ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder
-      #   DISABLE_PROMPT_CACHING=1
-      #   claude
-      modelSpec:
-        - name: qwen3-coder
-          repository: vllm/vllm-openai
-          tag: latest
-          # HuggingFace model ID - community AWQ quant, ~15GB
-          modelURL: stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
-          replicaCount: 1
-          # CPU/memory - keep low, i5-6600K only has 4 cores
-          requestCPU: 1
-          requestMemory: 8Gi
-          requestGPU: 1
-          limitCPU: 2
-          limitMemory: 32Gi
-          # Model cache - shared across model switches
-          pvcStorage: 150Gi
-          storageClass: local-path
-          # Shared memory for PyTorch IPC
-          shmSize: 8Gi
-          vllmConfig:
-            dtype: bfloat16
-            # 32K is comfortable with AWQ (~15GB weights + FP8 KV cache)
-            # Can push to 114K with gpu_memory_utilization=0.95
-            maxModelLen: 32768
-            # 0.90 is safe - standard transformer, no Triton profiling issues
-            gpuMemoryUtilization: 0.90
-            # More concurrent sequences possible since model is smaller
-            maxNumSeqs: 4
-            extraArgs:
-              # FP8 KV cache - doubles effective context capacity
-              - "--kv-cache-dtype=fp8_e5m2"
-              # Prefix caching - huge win for coding agents with repeated system prompts
-              - "--enable-prefix-caching"
-              # Required for Qwen model architecture code
-              - "--trust-remote-code"
-              # AWQ with fast Marlin kernel
-              - "--quantization=awq_marlin"
-              # Alias without slashes (required for Claude Code /v1/messages endpoint)
-              - "--served-model-name=qwen3-coder"
-              # Enable tool calling (required for Claude Code agentic tool use)
-              - "--enable-auto-tool-choice"
-              # Dedicated parser for Qwen3-Coder XML-style function calling
-              # Do NOT use hermes - qwen3_coder is the correct parser
-              - "--tool-call-parser=qwen3_coder"
-
-      # =====================================================================
-      # ALTERNATIVE: Qwen3.5-35B-A3B (GPTQ-Int4) - CURRENTLY BROKEN ON i5
-      # =====================================================================
-      # The Mamba/DeltaNet hybrid architecture requires Triton kernel compilation
-      # that OOMs during profiling on 32GB VRAM with an i5-6600K.
-      # Needs either more VRAM headroom or a Triton cache from a faster machine.
-      #
-      # modelSpec:
-      #   - name: qwen35-35b
-      #     repository: vllm/vllm-openai
-      #     tag: latest
-      #     modelURL: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
-      #     replicaCount: 1
-      #     requestCPU: 1
-      #     requestMemory: 8Gi
-      #     requestGPU: 1
-      #     limitCPU: 2
-      #     limitMemory: 32Gi
-      #     pvcStorage: 150Gi
-      #     storageClass: local-path
-      #     shmSize: 8Gi
-      #     vllmConfig:
-      #       dtype: bfloat16
-      #       maxModelLen: 16384
-      #       gpuMemoryUtilization: 0.80
-      #       maxNumSeqs: 2
-      #       maxNumBatchedTokens: 2096
-      #       extraArgs:
-      #         - "--kv-cache-dtype=fp8"
-      #         - "--enable-prefix-caching"
-      #         - "--reasoning-parser=qwen3"
-      #         - "--trust-remote-code"
-      #         - "--quantization=gptq_marlin"
-      #         - "--enforce-eager"
-      #         - "--served-model-name=qwen35"
-      #         - "--enable-auto-tool-choice"
-      #         - "--tool-call-parser=qwen3_coder"
-
-      # =====================================================================
-      # ALTERNATIVE: Gemma 4 26B-A4B (AWQ 4-bit)
-      # =====================================================================
-      # Best for: multimodal (vision+text), fast inference, general reasoning
-      # Apache 2.0 license
-      #
-      # modelSpec:
-      #   - name: gemma4-26b
-      #     repository: vllm/vllm-openai
-      #     tag: latest
-      #     modelURL: cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
-      #     replicaCount: 1
-      #     requestCPU: 1
-      #     requestMemory: 8Gi
-      #     requestGPU: 1
-      #     limitCPU: 2
-      #     limitMemory: 32Gi
-      #     pvcStorage: 150Gi
-      #     storageClass: local-path
-      #     shmSize: 8Gi
-      #     vllmConfig:
-      #       dtype: bfloat16
-      #       maxModelLen: 65536
-      #       gpuMemoryUtilization: 0.90
-      #       maxNumSeqs: 4
-      #       extraArgs:
-      #         - "--enable-prefix-caching"
-      #         - "--trust-remote-code"
-      #         - "--served-model-name=gemma4"
-
-    routerSpec:
-      # Router disabled - unnecessary for single model on single GPU
-      enableRouter: false
-
-    # Monitoring - disabled for home use
-    kube-prometheus-stack:
-      enabled: false
-    prometheus-adapter:
-      enabled: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          command:
+            - vllm
+            - serve
+            - stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            # Alias without slashes (required for Claude Code /v1/messages)
+            - "--served-model-name=qwen3-coder"
+            # 32K context - comfortable with AWQ + FP8 KV cache on 32GB
+            - "--max-model-len=32768"
+            - "--dtype=bfloat16"
+            # 90% GPU memory for KV cache allocation
+            - "--gpu-memory-utilization=0.90"
+            # Up to 4 concurrent sequences
+            - "--max-num-seqs=4"
+            # FP8 KV cache - doubles effective context capacity
+            - "--kv-cache-dtype=fp8_e5m2"
+            # Prefix caching - reuses KV cache for repeated system prompts
+            - "--enable-prefix-caching"
+            # AWQ with fast Marlin kernel
+            - "--quantization=awq_marlin"
+            # Required for Qwen model architecture code
+            - "--trust-remote-code"
+            # Enable tool calling (required for Claude Code)
+            - "--enable-auto-tool-choice"
+            # Dedicated parser for Qwen3-Coder XML-style function calling
+            - "--tool-call-parser=qwen3_coder"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 8Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          # Generous startup probe - model download can take a while
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
 ---
-# Ingress for the vLLM model service (router is disabled)
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  namespace: default
+spec:
+  selector:
+    app: vllm
+  ports:
+    - port: 80
+      targetPort: 8000
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -194,6 +150,33 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: vllm-qwen3-coder-engine-service
+                name: vllm
                 port:
                   number: 80
+
+# =====================================================================
+# ALTERNATIVE: Qwen3.5-35B-A3B (GPTQ-Int4) - BROKEN ON i5-6600K
+# =====================================================================
+# Mamba/DeltaNet hybrid architecture causes Triton OOM during profiling.
+# Replace the command args above with:
+#   - stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
+#   + Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+#   + "--reasoning-parser=qwen3"
+#   + "--enforce-eager"
+#   + "--max-num-batched-tokens=2096"
+#   - "--quantization=awq_marlin"
+#   + "--quantization=gptq_marlin"
+#   Change --served-model-name to qwen35
+#   Change --max-model-len to 16384
+#   Change --gpu-memory-utilization to 0.80
+
+# =====================================================================
+# ALTERNATIVE: Gemma 4 26B-A4B (AWQ 4-bit)
+# =====================================================================
+# Multimodal (vision+text), Apache 2.0 license
+# Replace the command args above with:
+#   - stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
+#   + cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
+#   Change --served-model-name to gemma4
+#   Remove --tool-call-parser and --enable-auto-tool-choice
+#   Remove --quantization (auto-detected)
