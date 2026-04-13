@@ -78,12 +78,13 @@ spec:
           vllmConfig:
             # MANDATORY: float16 crashes with GPTQ-Int4 due to mixed weight dtypes
             dtype: bfloat16
-            # 32K is stable on 32GB with GPTQ + FP8 KV cache.
-            # 65K OOM'd on KV cache init - can retry once Triton cache is warm.
-            maxModelLen: 32768
-            # 0.90 works once model is cached on disk. First-ever cold start
-            # may need 0.85 due to Triton autotuner eating 4-8GB temporarily.
-            gpuMemoryUtilization: 0.90
+            # 16K to leave GPU headroom for Triton autotuner on cold start.
+            # 32K OOM'd during profiling. Can increase after Triton cache warms.
+            maxModelLen: 16384
+            # 0.80 to leave headroom for Triton autotuner on cold start.
+            # The Mamba/DeltaNet layers need extra GPU memory during profiling.
+            # Can try 0.85-0.90 after first successful start.
+            gpuMemoryUtilization: 0.80
             # Limit concurrent sequences - 2 is safe on 32GB with this model
             maxNumSeqs: 2
             # MANDATORY: Mamba/DeltaNet layers need block_size <= max_num_batched_tokens
