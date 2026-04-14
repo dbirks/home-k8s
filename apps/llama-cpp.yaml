@@ -57,32 +57,26 @@ spec:
             - "0.0.0.0"
             - "--port"
             - "8080"
-            # Model: Q8_0 (highest quality GGUF, ~30GB)
-            # With --n-cpu-moe 24: first 24 layers' experts on CPU, last 24 on GPU
-            # GPU gets ~15GB model + KV cache, CPU handles half the expert compute
+            # Model: Q4_K_M fully on GPU (~17GB) - no CPU offload, max speed
+            # Leaves ~15GB for KV cache on 32GB 5090
+            # Expected: 150-234 tok/s (vs 28 tok/s with n-cpu-moe 12)
             - "--hf-repo"
-            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q8_0"
-            # GPU: all layers on GPU for attention, but experts split via n-cpu-moe
+            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M"
+            # GPU: everything on GPU
             - "-ngl"
             - "99"
-            # Split MoE experts: first 24 layers on CPU, last 24 on GPU
-            # Balances VRAM usage vs speed (all-CPU was 9 tok/s)
-            - "--n-cpu-moe"
-            - "12"
             # KV cache quantization: q8_0 keys + q4_0 values
             # ~3x compression vs f16, maximizes context length
             - "--cache-type-k"
             - "q8_0"
             - "--cache-type-v"
             - "q4_0"
-            # Flash attention for efficient long-context
+            # Flash attention
             - "-fa"
             - "on"
-            # Context: depends on how much VRAM is left after model + experts
+            # Context: 65K should fit with ~15GB free for KV cache
             - "-c"
             - "65536"
-            # Disable mmap for better perf with CPU offload
-            - "--no-mmap"
             # Concurrent request slots
             - "-np"
             - "2"
@@ -96,7 +90,6 @@ spec:
               nvidia.com/gpu: 1
             requests:
               cpu: "1"
-              # Model fully on GPU, minimal CPU RAM needed
               memory: 4Gi
           volumeMounts:
             # Mount at /root/.cache so both huggingface and llama.cpp caches persist
