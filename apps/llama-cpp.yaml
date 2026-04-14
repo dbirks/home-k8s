@@ -57,13 +57,18 @@ spec:
             - "0.0.0.0"
             - "--port"
             - "8080"
-            # Model: Q4_K_M fits entirely on GPU (~17GB), no CPU offload needed
-            # This lets the 5090 do ALL the compute - expect 150-234 tok/s
+            # Model: Q8_0 (highest quality GGUF, ~30GB)
+            # With --n-cpu-moe 24: first 24 layers' experts on CPU, last 24 on GPU
+            # GPU gets ~15GB model + KV cache, CPU handles half the expert compute
             - "--hf-repo"
-            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M"
-            # GPU: all layers on GPU (no expert offloading)
+            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q8_0"
+            # GPU: all layers on GPU for attention, but experts split via n-cpu-moe
             - "-ngl"
             - "99"
+            # Split MoE experts: first 24 layers on CPU, last 24 on GPU
+            # Balances VRAM usage vs speed (all-CPU was 9 tok/s)
+            - "--n-cpu-moe"
+            - "24"
             # KV cache quantization: q8_0 keys + q4_0 values
             # ~3x compression vs f16, maximizes context length
             - "--cache-type-k"
@@ -73,10 +78,11 @@ spec:
             # Flash attention for efficient long-context
             - "-fa"
             - "on"
-            # Context: ~15GB free VRAM for KV cache with q8/q4 compression
-            # should support 64K+ context
+            # Context: depends on how much VRAM is left after model + experts
             - "-c"
             - "65536"
+            # Disable mmap for better perf with CPU offload
+            - "--no-mmap"
             # Concurrent request slots
             - "-np"
             - "2"
