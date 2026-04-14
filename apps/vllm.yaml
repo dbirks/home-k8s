@@ -40,7 +40,7 @@ metadata:
   name: vllm
   namespace: default
 spec:
-  replicas: 1
+  replicas: 0  # Scaled down - using llama-cpp instead
   # Recreate strategy - only one pod can hold the GPU at a time
   strategy:
     type: Recreate

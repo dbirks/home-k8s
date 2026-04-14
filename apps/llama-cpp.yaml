@@ -1,0 +1,141 @@
+# =====================================================================
+# llama.cpp Server - Qwen3-Coder-30B-A3B-Instruct (GGUF Q8_0)
+# =====================================================================
+# Architecture: MoE (30B total, 3B active per token)
+# Strategy: GPU handles attention + shared layers, CPU handles MoE experts
+# VRAM: ~10-12GB (non-expert weights) + KV cache on RTX 5090
+# CPU RAM: ~20-25GB for expert weights
+# Anthropic /v1/messages API: built-in, no flag needed
+# KV cache: q8_0 keys + q4_0 values = ~3x compression
+#
+# Claude Code connection:
+#   ANTHROPIC_BASE_URL=http://llama.hoam.lan
+#   ANTHROPIC_API_KEY=dummy
+#   ANTHROPIC_AUTH_TOKEN=dummy
+#   ANTHROPIC_DEFAULT_OPUS_MODEL=main
+#   ANTHROPIC_DEFAULT_SONNET_MODEL=main
+#   ANTHROPIC_DEFAULT_HAIKU_MODEL=main
+#   claude
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llama-models
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      # Q8_0 GGUF is ~30GB, plus cache overhead
+      storage: 100Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: llama
+  template:
+    metadata:
+      labels:
+        app: llama
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - name: llama-server
+          image: ghcr.io/ggml-org/llama.cpp:server-cuda
+          args:
+            - "--host=0.0.0.0"
+            - "--port=8080"
+            # Model: auto-downloads and caches from HuggingFace
+            # Q8_0 = highest quality that fits with CPU MoE offload
+            - "--hf-repo=unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q8_0"
+            # GPU: offload all layers, but experts stay on CPU
+            - "--n-gpu-layers=auto"
+            # THE KEY FLAG: offload MoE expert weights to CPU RAM
+            # Only ~3-4GB of non-expert weights stay on GPU
+            # Frees ~12GB+ VRAM for KV cache
+            - "--cpu-moe"
+            # KV cache quantization: q8_0 keys + q4_0 values
+            # ~3x compression vs f16, near-zero quality loss
+            - "--cache-type-k=q8_0"
+            - "--cache-type-v=q4_0"
+            # Flash attention for efficient long-context
+            - "--flash-attn=on"
+            # 128K context - should fit easily with expert offload + KV quant
+            - "--ctx-size=131072"
+            # Concurrent request slots
+            - "--parallel=2"
+            # Model aliases for Claude Code (no slashes allowed)
+            - "--alias=main"
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              # i5-6600K only has 4 cores - keep requests low
+              cpu: "1"
+              # Expert weights load into CPU RAM (~20-25GB)
+              memory: 32Gi
+          volumeMounts:
+            - name: models
+              mountPath: /root/.cache/llama.cpp
+          # Model download can take a long time on first start
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: llama-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llama
+  namespace: default
+spec:
+  selector:
+    app: llama
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llama
+  namespace: default
+spec:
+  ingressClassName: private
+  rules:
+    - host: llama.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: llama
+                port:
+                  number: 80
