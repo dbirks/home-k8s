@@ -77,9 +77,10 @@ spec:
             # Context: 65K should fit with ~15GB free for KV cache
             - "-c"
             - "65536"
-            # Concurrent request slots
+            # Single slot - Claude Code sends parallel requests that compete
+            # for GPU time, causing the big prompt to stall
             - "-np"
-            - "2"
+            - "1"
             # Model alias for Claude Code (no slashes allowed)
             - "-a"
             - "main"
