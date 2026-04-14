@@ -64,10 +64,11 @@ spec:
             # GPU: offload all layers, but experts stay on CPU
             - "-ngl"
             - "99"
-            # THE KEY FLAG: offload MoE expert weights to CPU RAM
-            # Only ~3-4GB of non-expert weights stay on GPU
-            # Frees ~12GB+ VRAM for KV cache
-            - "--cpu-moe"
+            # Offload expert weight STORAGE to CPU, but GPU still computes
+            # -ot "exps=CPU" stores expert tensors in CPU RAM,
+            # GPU pulls them over PCIe when needed for computation
+            - "-ot"
+            - "exps=CPU"
             # KV cache quantization: q8_0 keys + q4_0 values
             # ~3x compression vs f16, near-zero quality loss
             - "--cache-type-k"
