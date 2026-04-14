@@ -71,16 +71,17 @@ spec:
             - "--served-model-name"
             - "main"
             - "qwen3-coder"
-            # 64K context with CUDA graphs enabled for faster generation
-            # Claude Code needs ~50K minimum (17K prompt + 32K output)
-            - "--max-model-len=65536"
+            # 32K context per session - allows ~8 concurrent sessions with FP8 KV
+            # Claude Code needs ~50K for full context but most requests are shorter
+            - "--max-model-len=32768"
             - "--dtype=bfloat16"
-            # 95% GPU memory - squeeze out max KV cache on dedicated inference GPU
+            # 95% GPU memory for max KV cache
             - "--gpu-memory-utilization=0.95"
-            # Up to 4 concurrent sequences
-            - "--max-num-seqs=4"
-            # Note: fp8_e5m2 KV cache is incompatible with this model's compressed-tensors format
-            # - "--kv-cache-dtype=fp8_e5m2"
+            # Support 8 concurrent sessions (5-10 Claude Code terminals)
+            - "--max-num-seqs=8"
+            # FP8 E4M3 KV cache - doubles KV capacity vs BF16
+            # NOTE: e4m3 works, e5m2 does NOT (incompatible with compressed-tensors)
+            - "--kv-cache-dtype=fp8_e4m3"
             # Prefix caching - reuses KV cache for repeated system prompts
             - "--enable-prefix-caching"
             # Auto-detect quantization format (this model uses compressed-tensors)
