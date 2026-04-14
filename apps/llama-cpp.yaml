@@ -37,7 +37,7 @@ metadata:
   name: llama
   namespace: default
 spec:
-  replicas: 1
+  replicas: 0  # Scaled down - using vLLM instead
   strategy:
     type: Recreate
   selector:
