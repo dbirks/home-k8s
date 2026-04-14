@@ -68,7 +68,7 @@ spec:
             # Split MoE experts: first 24 layers on CPU, last 24 on GPU
             # Balances VRAM usage vs speed (all-CPU was 9 tok/s)
             - "--n-cpu-moe"
-            - "24"
+            - "12"
             # KV cache quantization: q8_0 keys + q4_0 values
             # ~3x compression vs f16, maximizes context length
             - "--cache-type-k"
