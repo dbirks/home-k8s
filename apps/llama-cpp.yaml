@@ -57,11 +57,11 @@ spec:
             - "0.0.0.0"
             - "--port"
             - "8080"
-            # Model: Q4_K_M fully on GPU (~17GB) - no CPU offload, max speed
-            # Leaves ~15GB for KV cache on 32GB 5090
-            # Expected: 150-234 tok/s (vs 28 tok/s with n-cpu-moe 12)
+            # Model: UD-Q4_K_XL fully on GPU (~17.7GB) - no CPU offload, max speed
+            # Unsloth Dynamic 2.0 quant: smaller AND higher quality than Q4_K_M
+            # Leaves ~14GB for KV cache on 32GB 5090
             - "--hf-repo"
-            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M"
+            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL"
             # GPU: everything on GPU
             - "-ngl"
             - "99"
