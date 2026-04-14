@@ -53,29 +53,38 @@ spec:
         - name: llama-server
           image: ghcr.io/ggml-org/llama.cpp:server-cuda
           args:
-            - "--host=0.0.0.0"
-            - "--port=8080"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
             # Model: auto-downloads and caches from HuggingFace
             # Q8_0 = highest quality that fits with CPU MoE offload
-            - "--hf-repo=unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q8_0"
+            - "--hf-repo"
+            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q8_0"
             # GPU: offload all layers, but experts stay on CPU
-            - "--n-gpu-layers=auto"
+            - "-ngl"
+            - "99"
             # THE KEY FLAG: offload MoE expert weights to CPU RAM
             # Only ~3-4GB of non-expert weights stay on GPU
             # Frees ~12GB+ VRAM for KV cache
             - "--cpu-moe"
             # KV cache quantization: q8_0 keys + q4_0 values
             # ~3x compression vs f16, near-zero quality loss
-            - "--cache-type-k=q8_0"
-            - "--cache-type-v=q4_0"
+            - "--cache-type-k"
+            - "q8_0"
+            - "--cache-type-v"
+            - "q4_0"
             # Flash attention for efficient long-context
-            - "--flash-attn=on"
-            # 128K context - should fit easily with expert offload + KV quant
-            - "--ctx-size=131072"
+            - "-fa"
+            # 128K context - fits with expert offload + KV quant
+            - "-c"
+            - "131072"
             # Concurrent request slots
-            - "--parallel=2"
-            # Model aliases for Claude Code (no slashes allowed)
-            - "--alias=main"
+            - "-np"
+            - "2"
+            # Model alias for Claude Code (no slashes allowed)
+            - "-a"
+            - "main"
           ports:
             - containerPort: 8080
           resources:
