@@ -57,20 +57,15 @@ spec:
             - "0.0.0.0"
             - "--port"
             - "8080"
-            # Model: auto-downloads and caches from HuggingFace
-            # Q8_0 = highest quality that fits with CPU MoE offload
+            # Model: Q4_K_M fits entirely on GPU (~17GB), no CPU offload needed
+            # This lets the 5090 do ALL the compute - expect 150-234 tok/s
             - "--hf-repo"
-            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q8_0"
-            # GPU: offload all layers, but experts stay on CPU
+            - "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M"
+            # GPU: all layers on GPU (no expert offloading)
             - "-ngl"
             - "99"
-            # Offload expert weight STORAGE to CPU, but GPU still computes
-            # -ot "exps=CPU" stores expert tensors in CPU RAM,
-            # GPU pulls them over PCIe when needed for computation
-            - "-ot"
-            - "exps=CPU"
             # KV cache quantization: q8_0 keys + q4_0 values
-            # ~3x compression vs f16, near-zero quality loss
+            # ~3x compression vs f16, maximizes context length
             - "--cache-type-k"
             - "q8_0"
             - "--cache-type-v"
@@ -78,9 +73,10 @@ spec:
             # Flash attention for efficient long-context
             - "-fa"
             - "on"
-            # 128K context - fits with expert offload + KV quant
+            # Context: ~15GB free VRAM for KV cache with q8/q4 compression
+            # should support 64K+ context
             - "-c"
-            - "131072"
+            - "65536"
             # Concurrent request slots
             - "-np"
             - "2"
@@ -93,10 +89,9 @@ spec:
             limits:
               nvidia.com/gpu: 1
             requests:
-              # i5-6600K only has 4 cores - keep requests low
               cpu: "1"
-              # Expert weights load into CPU RAM (~20-25GB)
-              memory: 32Gi
+              # Model fully on GPU, minimal CPU RAM needed
+              memory: 4Gi
           volumeMounts:
             # Mount at /root/.cache so both huggingface and llama.cpp caches persist
             - name: models
