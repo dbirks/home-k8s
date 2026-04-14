@@ -10,6 +10,7 @@
 # Claude Code connection:
 #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
 #   ANTHROPIC_API_KEY=dummy
+#   ANTHROPIC_AUTH_TOKEN=dummy
 #   ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder
 #   ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder
 #   ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder
@@ -71,9 +72,10 @@ spec:
             - "--served-model-name"
             - "main"
             - "qwen3-coder"
-            # 65K context per session - Claude Code needs ~50K+ (large system prompt + 32K output)
-            # With FP8 KV cache: 292K total tokens / 65K = ~4.5 concurrent sessions
-            - "--max-model-len=65536"
+            # Native 256K context - vLLM dynamically allocates KV cache per request,
+            # so this ceiling doesn't waste memory. Actual concurrency depends on
+            # real request sizes (~66K for typical Claude Code sessions).
+            - "--max-model-len=262144"
             - "--dtype=bfloat16"
             # 95% GPU memory for max KV cache
             - "--gpu-memory-utilization=0.95"
