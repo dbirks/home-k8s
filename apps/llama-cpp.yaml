@@ -98,8 +98,9 @@ spec:
               # Expert weights load into CPU RAM (~20-25GB)
               memory: 32Gi
           volumeMounts:
+            # Mount at /root/.cache so both huggingface and llama.cpp caches persist
             - name: models
-              mountPath: /root/.cache/llama.cpp
+              mountPath: /root/.cache
           # Model download can take a long time on first start
           startupProbe:
             httpGet:
