@@ -71,9 +71,9 @@ spec:
             - "--served-model-name"
             - "main"
             - "qwen3-coder"
-            # Claude Code sends ~17K system prompt + requests 32K output tokens
-            # 128K gives plenty of headroom for conversation context growth
-            - "--max-model-len=131072"
+            # 64K context with CUDA graphs enabled for faster generation
+            # Claude Code needs ~50K minimum (17K prompt + 32K output)
+            - "--max-model-len=65536"
             - "--dtype=bfloat16"
             # 95% GPU memory - squeeze out max KV cache on dedicated inference GPU
             - "--gpu-memory-utilization=0.95"
@@ -87,8 +87,8 @@ spec:
             # - "--quantization=awq_marlin"  # Don't override - model config knows its format
             # Required for Qwen model architecture code
             - "--trust-remote-code"
-            # Skip CUDA graphs to free VRAM for KV cache (graphs eat ~3-5GB)
-            - "--enforce-eager"
+            # CUDA graphs enabled (removed --enforce-eager) for faster generation
+            # Tradeoff: uses ~5GB VRAM but boosts tok/s significantly
             # Enable tool calling (required for Claude Code)
             - "--enable-auto-tool-choice"
             # Dedicated parser for Qwen3-Coder XML-style function calling
