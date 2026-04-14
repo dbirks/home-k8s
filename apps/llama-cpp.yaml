@@ -74,6 +74,12 @@ spec:
             # Flash attention
             - "-fa"
             - "on"
+            # Batch size for prompt processing - bigger = faster prefill
+            # Default 2048 means 16 passes for a 32K prompt. 8192 = 4 passes.
+            - "-b"
+            - "8192"
+            - "-ub"
+            - "4096"
             # Context: 65K should fit with ~15GB free for KV cache
             - "-c"
             - "65536"
