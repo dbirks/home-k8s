@@ -75,8 +75,8 @@ spec:
             # 128K gives plenty of headroom for conversation context growth
             - "--max-model-len=131072"
             - "--dtype=bfloat16"
-            # 90% GPU memory for KV cache allocation
-            - "--gpu-memory-utilization=0.90"
+            # 95% GPU memory - squeeze out max KV cache on dedicated inference GPU
+            - "--gpu-memory-utilization=0.95"
             # Up to 4 concurrent sequences
             - "--max-num-seqs=4"
             # Note: fp8_e5m2 KV cache is incompatible with this model's compressed-tensors format
