@@ -71,9 +71,9 @@ spec:
             - "--served-model-name"
             - "main"
             - "qwen3-coder"
-            # Claude Code sends ~9K system prompt + requests 32K output tokens
-            # Need at least 41K total. 49K gives headroom for larger prompts.
-            - "--max-model-len=49152"
+            # Claude Code sends ~17K system prompt + requests 32K output tokens
+            # 128K gives plenty of headroom for conversation context growth
+            - "--max-model-len=131072"
             - "--dtype=bfloat16"
             # 90% GPU memory for KV cache allocation
             - "--gpu-memory-utilization=0.90"
