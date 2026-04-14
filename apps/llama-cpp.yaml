@@ -76,6 +76,7 @@ spec:
             - "q4_0"
             # Flash attention for efficient long-context
             - "-fa"
+            - "on"
             # 128K context - fits with expert offload + KV quant
             - "-c"
             - "131072"
