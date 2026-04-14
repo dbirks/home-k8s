@@ -87,6 +87,8 @@ spec:
             # - "--quantization=awq_marlin"  # Don't override - model config knows its format
             # Required for Qwen model architecture code
             - "--trust-remote-code"
+            # Skip CUDA graphs to free VRAM for KV cache (graphs eat ~3-5GB)
+            - "--enforce-eager"
             # Enable tool calling (required for Claude Code)
             - "--enable-auto-tool-choice"
             # Dedicated parser for Qwen3-Coder XML-style function calling
