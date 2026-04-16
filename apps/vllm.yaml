@@ -86,9 +86,7 @@ spec:
             - "--kv-cache-dtype=fp8_e4m3"
             # Prefix caching - reuses KV cache for repeated system prompts
             - "--enable-prefix-caching"
-            # Swap preempted KV blocks to CPU RAM instead of discarding them.
-            # Preempted sessions resume from CPU swap instead of full recompute.
-            - "--swap-space=4"
+            # V1 engine uses recompute preemption (no swap-space flag)
             # Auto-detect quantization format (this model uses compressed-tensors)
             # - "--quantization=awq_marlin"  # Don't override - model config knows its format
             # Required for Qwen model architecture code
