@@ -1,0 +1,69 @@
+# Prometheus - metrics collection and storage
+# Dashboards: https://prometheus-community.github.io/helm-charts
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: prometheus
+      version: "29.2.1"
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: flux-system
+      interval: 5m
+  values:
+    # Disable unused components for a lean homelab setup
+    alertmanager:
+      enabled: false
+    prometheus-pushgateway:
+      enabled: false
+
+    # Node metrics
+    prometheus-node-exporter:
+      enabled: true
+
+    # Kubernetes state metrics
+    kube-state-metrics:
+      enabled: true
+
+    server:
+      service:
+        type: ClusterIP
+        servicePort: 80
+
+      persistentVolume:
+        enabled: true
+        size: 20Gi
+        storageClassName: local-path
+        accessModes:
+          - ReadWriteOnce
+
+      retention: "15d"
+
+      ingress:
+        enabled: true
+        ingressClassName: private
+        hosts:
+          - prometheus.hoam.lan
+
+    # Scrape vLLM metrics
+    extraScrapeConfigs: |
+      - job_name: 'vllm'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - vllm.default.svc.cluster.local:80
+            labels:
+              instance: vllm
