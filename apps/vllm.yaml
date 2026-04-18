@@ -1,19 +1,18 @@
 # =====================================================================
-# vLLM Deployment - Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
+# vLLM Deployment - Qwen3.6-35B-A3B (AWQ 4-bit)
 # =====================================================================
-# Architecture: Standard transformer MoE (30B total, 3B active per token)
-# VRAM: ~15GB weights (AWQ), leaves ~15GB for KV cache on RTX 5090
-# Benchmarked on RTX 5090: ~1,157 tok/s throughput
-# Tool calling: dedicated qwen3_coder parser in vLLM
+# Architecture: GatedDeltaNet hybrid MoE (35B total, 3B active per token)
+# VRAM: ~24GB weights (AWQ), leaves ~6GB for KV cache on RTX 5090
+# Tool calling: qwen3_coder parser + qwen3 reasoning parser
 # Anthropic /v1/messages API: native in vLLM v0.19+
 #
 # Claude Code connection:
 #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
 #   ANTHROPIC_API_KEY=dummy
 #   ANTHROPIC_AUTH_TOKEN=dummy
-#   ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder
-#   ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder
-#   ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder
+#   ANTHROPIC_DEFAULT_OPUS_MODEL=main
+#   ANTHROPIC_DEFAULT_SONNET_MODEL=main
+#   ANTHROPIC_DEFAULT_HAIKU_MODEL=main
 #   DISABLE_PROMPT_CACHING=1
 #   claude
 #
@@ -63,48 +62,39 @@ spec:
           command:
             - vllm
             - serve
-            - stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
+            - cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
             - "--host=0.0.0.0"
             - "--port=8000"
             # "main" is the stable alias - point all agents here so you can
             # swap the underlying model without updating agent configs.
-            # "qwen3-coder" is the specific model name if you want to be explicit.
             - "--served-model-name"
             - "main"
-            - "qwen3-coder"
-            # Native 256K context - vLLM dynamically allocates KV cache per request,
-            # so this ceiling doesn't waste memory. Actual concurrency depends on
-            # real request sizes (~66K for typical Claude Code sessions).
+            - "qwen36"
+            # Native 256K context - vLLM dynamically allocates KV cache per request
             - "--max-model-len=262144"
             - "--dtype=bfloat16"
             # 95% GPU memory for max KV cache
             - "--gpu-memory-utilization=0.95"
-            # Support 8 concurrent sessions (5-10 Claude Code terminals)
-            - "--max-num-seqs=8"
+            # Reduced from 8 — model weights are ~24GB, less KV cache headroom
+            - "--max-num-seqs=4"
             # FP8 E4M3 KV cache - doubles KV capacity vs BF16
-            # NOTE: e4m3 works, e5m2 does NOT (incompatible with compressed-tensors)
             - "--kv-cache-dtype=fp8_e4m3"
             # Prefix caching - reuses KV cache for repeated system prompts
             - "--enable-prefix-caching"
-            # V1 engine uses recompute preemption (no swap-space flag)
-            # Auto-detect quantization format (this model uses compressed-tensors)
-            # - "--quantization=awq_marlin"  # Don't override - model config knows its format
             # Required for Qwen model architecture code
             - "--trust-remote-code"
-            # CUDA graphs enabled (removed --enforce-eager) for faster generation
-            # Tradeoff: uses ~5GB VRAM but boosts tok/s significantly
-            # Enable tool calling (required for Claude Code)
+            # Skip vision encoder — text-only use saves VRAM for KV cache
+            - "--language-model-only"
+            # Enable tool calling (required for Claude Code / Agent SDK)
             - "--enable-auto-tool-choice"
-            # Dedicated parser for Qwen3-Coder XML-style function calling
             - "--tool-call-parser=qwen3_coder"
+            # Reasoning/thinking mode parser for <think> blocks
+            - "--reasoning-parser=qwen3"
           ports:
             - containerPort: 8000
           env:
             - name: HF_HOME
               value: /data
-            # Temporary: debug logging to diagnose Agent SDK tool calling issue
-            - name: VLLM_LOGGING_LEVEL
-              value: DEBUG
           resources:
             limits:
               nvidia.com/gpu: 1
@@ -172,28 +162,25 @@ spec:
                   number: 80
 
 # =====================================================================
-# ALTERNATIVE: Qwen3.5-35B-A3B (GPTQ-Int4) - BROKEN ON i5-6600K
+# FALLBACK: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
 # =====================================================================
-# Mamba/DeltaNet hybrid architecture causes Triton OOM during profiling.
+# Standard transformer MoE, proven stable. ~15GB weights leaves plenty
+# of KV cache. Use if Qwen3.6 GatedDeltaNet architecture has issues.
 # Replace the command args above with:
-#   - stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
-#   + Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
-#   + "--reasoning-parser=qwen3"
-#   + "--enforce-eager"
-#   + "--max-num-batched-tokens=2096"
-#   - "--quantization=awq_marlin"
-#   + "--quantization=gptq_marlin"
-#   Change --served-model-name to qwen35
-#   Change --max-model-len to 16384
-#   Change --gpu-memory-utilization to 0.80
+#   - cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
+#   + stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
+#   Change --served-model-name to "main" "qwen3-coder"
+#   Change --max-num-seqs to 8
+#   Remove --language-model-only
+#   Remove --reasoning-parser=qwen3
 
 # =====================================================================
 # ALTERNATIVE: Gemma 4 26B-A4B (AWQ 4-bit)
 # =====================================================================
 # Multimodal (vision+text), Apache 2.0 license
 # Replace the command args above with:
-#   - stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
+#   - cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
 #   + cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
 #   Change --served-model-name to gemma4
-#   Remove --tool-call-parser and --enable-auto-tool-choice
-#   Remove --quantization (auto-detected)
+#   Change --tool-call-parser to gemma4
+#   Remove --reasoning-parser and --language-model-only
