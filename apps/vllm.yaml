@@ -97,13 +97,14 @@ spec:
             - "--enable-auto-tool-choice"
             # Dedicated parser for Qwen3-Coder XML-style function calling
             - "--tool-call-parser=qwen3_coder"
-            # Temporary: debug logging to diagnose Agent SDK tool calling issue
-            - "--log-level=debug"
           ports:
             - containerPort: 8000
           env:
             - name: HF_HOME
               value: /data
+            # Temporary: debug logging to diagnose Agent SDK tool calling issue
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
           resources:
             limits:
               nvidia.com/gpu: 1
