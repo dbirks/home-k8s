@@ -59,7 +59,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          image: vllm/vllm-openai:v0.19.0
+          image: vllm/vllm-openai:v0.19.1
           command:
             - vllm
             - serve
@@ -97,6 +97,8 @@ spec:
             - "--enable-auto-tool-choice"
             # Dedicated parser for Qwen3-Coder XML-style function calling
             - "--tool-call-parser=qwen3_coder"
+            # Temporary: debug logging to diagnose Agent SDK tool calling issue
+            - "--log-level=debug"
           ports:
             - containerPort: 8000
           env:
