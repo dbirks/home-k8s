@@ -90,6 +90,8 @@ spec:
             - "--tool-call-parser=qwen3_coder"
             # Reasoning/thinking mode parser for <think> blocks
             - "--reasoning-parser=qwen3"
+            # GatedDeltaNet Mamba cache requires block_size <= max_num_batched_tokens
+            - "--max-num-batched-tokens=2096"
           ports:
             - containerPort: 8000
           env:
