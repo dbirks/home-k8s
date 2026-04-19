@@ -1,12 +1,16 @@
 # =====================================================================
-# vLLM Deployment - Qwen3.6-35B-A3B (AWQ 4-bit)
+# vLLM Multi-Model Setup (single GPU, one model active at a time)
 # =====================================================================
-# Architecture: GatedDeltaNet hybrid MoE (35B total, 3B active per token)
-# VRAM: ~24GB weights (AWQ), leaves ~6GB for KV cache on RTX 5090
-# Tool calling: qwen3_coder parser + qwen3 reasoning parser
-# Anthropic /v1/messages API: native in vLLM v0.19+
+# Both deployments share the same Service/Ingress/PVC and the `app: vllm`
+# label, so vllm.hoam.lan always routes to whichever model is running.
+# Only one can hold the GPU — K8s keeps the other Pending if both are scaled up.
 #
-# Claude Code connection:
+# Switch models:
+#   kubectl scale deploy/vllm-qwen36 --replicas=0
+#   kubectl scale deploy/vllm-gemma4 --replicas=1
+#   (wait ~2-5 min for model load, or reverse to switch back)
+#
+# Claude Code / Agent SDK connection (unchanged regardless of model):
 #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
 #   ANTHROPIC_API_KEY=dummy
 #   ANTHROPIC_AUTH_TOKEN=dummy
@@ -14,10 +18,7 @@
 #   ANTHROPIC_DEFAULT_SONNET_MODEL=main
 #   ANTHROPIC_DEFAULT_HAIKU_MODEL=main
 #   DISABLE_PROMPT_CACHING=1
-#   claude
 #
-# To switch models, change the command args below and commit.
-# See commented alternatives at the bottom of this file.
 # Docs: https://docs.vllm.ai/en/latest/serving/integrations/claude_code/
 ---
 apiVersion: v1
@@ -33,28 +34,34 @@ spec:
     requests:
       # Shared model cache - holds multiple models across switches
       storage: 150Gi
+
+# =====================================================================
+# Model A: Qwen3.6-35B-A3B (AWQ 4-bit) — ACTIVE
+# =====================================================================
+# GatedDeltaNet hybrid MoE (35B total, 3B active per token)
+# VRAM: ~24GB weights, ~6GB for KV cache
+# Better agentic performance, thinking-before-tools mode
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: vllm
+  name: vllm-qwen36
   namespace: default
 spec:
   replicas: 1
-  # Recreate strategy - only one pod can hold the GPU at a time
   strategy:
     type: Recreate
   selector:
     matchLabels:
       app: vllm
+      model: qwen36
   template:
     metadata:
       labels:
         app: vllm
+        model: qwen36
     spec:
       runtimeClassName: nvidia
-      # CRITICAL: disable K8s service links injection. The service named "vllm"
-      # creates VLLM_PORT env var which conflicts with vLLM's own VLLM_PORT env.
       enableServiceLinks: false
       containers:
         - name: vllm
@@ -65,32 +72,20 @@ spec:
             - cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
             - "--host=0.0.0.0"
             - "--port=8000"
-            # "main" is the stable alias - point all agents here so you can
-            # swap the underlying model without updating agent configs.
             - "--served-model-name"
             - "main"
             - "qwen36"
-            # Native 256K context - vLLM dynamically allocates KV cache per request
             - "--max-model-len=262144"
             - "--dtype=bfloat16"
-            # 95% GPU memory for max KV cache
             - "--gpu-memory-utilization=0.95"
-            # Reduced from 8 — model weights are ~24GB, less KV cache headroom
             - "--max-num-seqs=4"
-            # FP8 E4M3 KV cache - doubles KV capacity vs BF16
             - "--kv-cache-dtype=fp8_e4m3"
-            # Prefix caching - reuses KV cache for repeated system prompts
             - "--enable-prefix-caching"
-            # Required for Qwen model architecture code
             - "--trust-remote-code"
-            # Skip vision encoder — text-only use saves VRAM for KV cache
             - "--language-model-only"
-            # Enable tool calling (required for Claude Code / Agent SDK)
             - "--enable-auto-tool-choice"
             - "--tool-call-parser=qwen3_coder"
-            # Reasoning/thinking mode parser for <think> blocks
             - "--reasoning-parser=qwen3"
-            # GatedDeltaNet Mamba cache requires block_size <= max_num_batched_tokens
             - "--max-num-batched-tokens=2096"
           ports:
             - containerPort: 8000
@@ -108,7 +103,6 @@ spec:
               mountPath: /data
             - name: shm
               mountPath: /dev/shm
-          # Generous startup probe - model download can take a while
           startupProbe:
             httpGet:
               path: /health
@@ -131,6 +125,98 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 8Gi
+
+# =====================================================================
+# Model B: Gemma 4 26B-A4B (AWQ 4-bit) — INACTIVE
+# =====================================================================
+# Standard transformer MoE (26B total, ~4B active per token)
+# VRAM: ~15GB weights, ~15GB for KV cache
+# Apache 2.0, multimodal (vision+text), dedicated gemma4 tool parser
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-gemma4
+  namespace: default
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+      model: gemma4
+  template:
+    metadata:
+      labels:
+        app: vllm
+        model: gemma4
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.19.1
+          command:
+            - vllm
+            - serve
+            - cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--served-model-name"
+            - "main"
+            - "gemma4"
+            - "--max-model-len=131072"
+            - "--dtype=bfloat16"
+            - "--gpu-memory-utilization=0.95"
+            - "--max-num-seqs=8"
+            - "--kv-cache-dtype=fp8_e4m3"
+            - "--enable-prefix-caching"
+            - "--trust-remote-code"
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser=gemma4"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 8Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+
+# =====================================================================
+# Shared Service & Ingress — routes to whichever model pod is running
+# =====================================================================
 ---
 apiVersion: v1
 kind: Service
@@ -167,22 +253,10 @@ spec:
 # FALLBACK: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
 # =====================================================================
 # Standard transformer MoE, proven stable. ~15GB weights leaves plenty
-# of KV cache. Use if Qwen3.6 GatedDeltaNet architecture has issues.
-# Replace the command args above with:
+# of KV cache. To add as a third deployment, copy the Qwen3.6 block and:
 #   - cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
 #   + stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
+#   Change name to vllm-qwen3coder, model label to qwen3coder
 #   Change --served-model-name to "main" "qwen3-coder"
 #   Change --max-num-seqs to 8
-#   Remove --language-model-only
-#   Remove --reasoning-parser=qwen3
-
-# =====================================================================
-# ALTERNATIVE: Gemma 4 26B-A4B (AWQ 4-bit)
-# =====================================================================
-# Multimodal (vision+text), Apache 2.0 license
-# Replace the command args above with:
-#   - cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
-#   + cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
-#   Change --served-model-name to gemma4
-#   Change --tool-call-parser to gemma4
-#   Remove --reasoning-parser and --language-model-only
+#   Remove --language-model-only, --reasoning-parser, --max-num-batched-tokens
