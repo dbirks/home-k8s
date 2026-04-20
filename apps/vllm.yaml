@@ -88,8 +88,6 @@ spec:
             - "--reasoning-parser=qwen3"
             # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
             - "--max-num-batched-tokens=8192"
-            # MTP speculative decoding — predicts 1 token ahead for faster generation
-            - "--speculative-config={\"method\": \"mtp\", \"num_speculative_tokens\": 1}"
           ports:
             - containerPort: 8000
           env:
