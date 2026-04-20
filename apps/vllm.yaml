@@ -69,7 +69,7 @@ spec:
           command:
             - vllm
             - serve
-            - cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
+            - QuantTrio/Qwen3.6-35B-A3B-AWQ
             - "--host=0.0.0.0"
             - "--port=8000"
             - "--served-model-name"
@@ -86,7 +86,10 @@ spec:
             - "--enable-auto-tool-choice"
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
-            - "--max-num-batched-tokens=2096"
+            # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
+            - "--max-num-batched-tokens=8192"
+            # MTP speculative decoding — predicts 1 token ahead for faster generation
+            - "--speculative-config={\"method\": \"mtp\", \"num_speculative_tokens\": 1}"
           ports:
             - containerPort: 8000
           env:
