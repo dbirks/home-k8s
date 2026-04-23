@@ -1,13 +1,13 @@
 # =====================================================================
 # vLLM Multi-Model Setup (single GPU, one model active at a time)
 # =====================================================================
-# Both deployments share the same Service/Ingress/PVC and the `app: vllm`
+# All deployments share the same Service/Ingress/PVC and the `app: vllm`
 # label, so vllm.hoam.lan always routes to whichever model is running.
 # Only one can hold the GPU — K8s keeps the other Pending if both are scaled up.
 #
 # Switch models:
-#   kubectl scale deploy/vllm-qwen36 --replicas=0
-#   kubectl scale deploy/vllm-gemma4 --replicas=1
+#   kubectl scale deploy/vllm-qwen27 --replicas=0
+#   kubectl scale deploy/vllm-qwen36 --replicas=1
 #   (wait ~2-5 min for model load, or reverse to switch back)
 #
 # Claude Code / Agent SDK connection (unchanged regardless of model):
@@ -36,11 +36,102 @@ spec:
       storage: 150Gi
 
 # =====================================================================
-# Model A: Qwen3.6-35B-A3B (AWQ 4-bit) — ACTIVE
+# Model A: Qwen3.6-27B Dense (GPTQ 4-bit) — ACTIVE
+# =====================================================================
+# GatedDeltaNet hybrid dense (27B total, all active per token)
+# VRAM: ~17GB weights, ~13GB for KV cache
+# Best benchmarks (SWE-bench, LiveCodeBench, Terminal-Bench), multimodal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-qwen27
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+      model: qwen27
+  template:
+    metadata:
+      labels:
+        app: vllm
+        model: qwen27
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.19.1
+          command:
+            - vllm
+            - serve
+            - LibertAIDAI/Qwen3.6-27B-W4A16-G128
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--served-model-name"
+            - "main"
+            - "qwen27"
+            - "--max-model-len=131072"
+            - "--dtype=bfloat16"
+            - "--gpu-memory-utilization=0.95"
+            - "--max-num-seqs=4"
+            - "--kv-cache-dtype=fp8_e4m3"
+            - "--enable-prefix-caching"
+            - "--trust-remote-code"
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser=qwen3_coder"
+            - "--reasoning-parser=qwen3"
+            # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
+            - "--max-num-batched-tokens=8192"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 8Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+
+# =====================================================================
+# Model B: Qwen3.6-35B-A3B (AWQ 4-bit) — INACTIVE
 # =====================================================================
 # GatedDeltaNet hybrid MoE (35B total, 3B active per token)
-# VRAM: ~24GB weights, ~6GB for KV cache
-# Better agentic performance, thinking-before-tools mode
+# VRAM: ~22GB weights, ~8GB for KV cache
+# Faster generation (3B active), thinking-before-tools mode
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -48,7 +139,7 @@ metadata:
   name: vllm-qwen36
   namespace: default
 spec:
-  replicas: 1
+  replicas: 0
   strategy:
     type: Recreate
   selector:
@@ -127,7 +218,7 @@ spec:
             sizeLimit: 8Gi
 
 # =====================================================================
-# Model B: Gemma 4 26B-A4B (AWQ 4-bit) — INACTIVE
+# Model C: Gemma 4 26B-A4B (AWQ 4-bit) — INACTIVE
 # =====================================================================
 # Standard transformer MoE (26B total, ~4B active per token)
 # VRAM: ~15GB weights, ~15GB for KV cache
