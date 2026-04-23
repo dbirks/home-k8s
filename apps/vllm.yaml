@@ -77,7 +77,7 @@ spec:
             - "qwen27"
             - "--max-model-len=196608"
             - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.965"
+            - "--gpu-memory-utilization=0.95"
             - "--max-num-seqs=4"
             - "--kv-cache-dtype=fp8_e4m3"
             - "--enable-prefix-caching"
