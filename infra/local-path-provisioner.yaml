@@ -8,7 +8,7 @@ spec:
   interval: 1h
   url: https://github.com/rancher/local-path-provisioner
   ref:
-    tag: v0.0.31
+    tag: v0.0.35
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
