@@ -36,11 +36,11 @@ spec:
       storage: 150Gi
 
 # =====================================================================
-# Model A: Qwen3.6-27B Dense (NVFP4 W4A4) — ACTIVE
+# Model A: Qwen3.6-27B Dense (GPTQ 4-bit) — ACTIVE
 # =====================================================================
 # GatedDeltaNet hybrid dense (27B total, all active per token)
-# VRAM: ~11GB weights, ~19GB for KV cache
-# Blackwell-native FP4 tensor cores (SM120), W4A4 for max throughput
+# VRAM: ~17.5GB weights, ~6.5GB for KV cache
+# Best balance of speed (49 tok/s), context (192K), and quality
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -69,13 +69,13 @@ spec:
           command:
             - vllm
             - serve
-            - sakamakismile/Qwen3.6-27B-NVFP4
+            - LibertAIDAI/Qwen3.6-27B-W4A16-G128
             - "--host=0.0.0.0"
             - "--port=8000"
             - "--served-model-name"
             - "main"
             - "qwen27"
-            - "--max-model-len=131072"
+            - "--max-model-len=196608"
             - "--dtype=bfloat16"
             - "--gpu-memory-utilization=0.95"
             - "--max-num-seqs=4"
