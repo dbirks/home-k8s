@@ -70,7 +70,7 @@ spec:
           command:
             - vllm
             - serve
-            - LibertAIDAI/Qwen3.6-27B-W4A16-G128
+            - Intel/Qwen3.6-27B-int4-AutoRound
             - "--host=0.0.0.0"
             - "--port=8000"
             - "--served-model-name"
