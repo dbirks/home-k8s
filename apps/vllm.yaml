@@ -8,6 +8,7 @@
 # Switch models:
 #   kubectl scale deploy/vllm-qwen27 --replicas=0
 #   kubectl scale deploy/vllm-qwen36 --replicas=1
+#   kubectl scale deploy/vllm-tts --replicas=1
 #   (wait ~2-5 min for model load, or reverse to switch back)
 #
 # Claude Code / Agent SDK connection (unchanged regardless of model):
@@ -36,7 +37,7 @@ spec:
       storage: 150Gi
 
 # =====================================================================
-# Model A: Qwen3.6-27B Dense (GPTQ 4-bit) — ACTIVE
+# Model A: Qwen3.6-27B Dense (GPTQ 4-bit) — INACTIVE
 # =====================================================================
 # GatedDeltaNet hybrid dense (27B total, all active per token)
 # VRAM: ~17.5GB weights, ~6.5GB for KV cache
@@ -48,7 +49,7 @@ metadata:
   name: vllm-qwen27
   namespace: default
 spec:
-  replicas: 1
+  replicas: 0
   strategy:
     type: Recreate
   selector:
@@ -266,6 +267,88 @@ spec:
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
             - "--tool-call-parser=gemma4"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 8Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+
+# =====================================================================
+# Model D: Qwen3-TTS VoiceDesign 1.7B (vLLM-Omni) — ACTIVE
+# =====================================================================
+# Text-to-speech voice design model via vLLM-Omni
+# VRAM: ~7GB weights, lightweight inference
+# OpenAI-compatible /v1/audio/speech API
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-tts
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+      model: tts
+  template:
+    metadata:
+      labels:
+        app: vllm
+        model: tts
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-omni:v0.18.0
+          command:
+            - vllm
+            - serve
+            - Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+            - "--omni"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--served-model-name"
+            - "main"
+            - "tts"
+            - "--gpu-memory-utilization=0.95"
+            - "--trust-remote-code"
           ports:
             - containerPort: 8000
           env:
