@@ -65,7 +65,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          image: vllm/vllm-openai:v0.19.1
+          image: vllm/vllm-openai:cu129-nightly
           command:
             - vllm
             - serve
@@ -79,7 +79,7 @@ spec:
             - "--dtype=bfloat16"
             - "--gpu-memory-utilization=0.95"
             - "--max-num-seqs=4"
-            - "--kv-cache-dtype=fp8_e4m3"
+            - "--kv-cache-dtype=turboquant_k8v4"
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
