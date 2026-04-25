@@ -37,7 +37,7 @@ spec:
       storage: 150Gi
 
 # =====================================================================
-# Model A: Qwen3.6-27B Dense (GPTQ 4-bit) — INACTIVE
+# Model A: Qwen3.6-27B Dense (GPTQ 4-bit) — ACTIVE
 # =====================================================================
 # GatedDeltaNet hybrid dense (27B total, all active per token)
 # VRAM: ~17.5GB weights, ~6.5GB for KV cache
@@ -49,7 +49,7 @@ metadata:
   name: vllm-qwen27
   namespace: default
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: Recreate
   selector:
@@ -307,7 +307,7 @@ spec:
             sizeLimit: 8Gi
 
 # =====================================================================
-# Model D: Qwen3-TTS VoiceDesign 1.7B (vLLM-Omni) — ACTIVE
+# Model D: Qwen3-TTS VoiceDesign 1.7B (vLLM-Omni) — INACTIVE
 # =====================================================================
 # Text-to-speech voice design model via vLLM-Omni
 # VRAM: ~7GB weights, lightweight inference
@@ -319,7 +319,7 @@ metadata:
   name: vllm-tts
   namespace: default
 spec:
-  replicas: 1
+  replicas: 0
   strategy:
     type: Recreate
   selector:
