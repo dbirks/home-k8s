@@ -409,6 +409,8 @@ kind: Ingress
 metadata:
   name: vllm
   namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
 spec:
   ingressClassName: private
   rules:
