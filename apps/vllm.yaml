@@ -87,7 +87,6 @@ spec:
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
-            - "--max-num-partial-prefills=2"
             # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
             - "--max-num-batched-tokens=8192"
           ports:
@@ -180,7 +179,6 @@ spec:
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
-            - "--max-num-partial-prefills=2"
             # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
             - "--max-num-batched-tokens=8192"
           ports:
@@ -272,7 +270,6 @@ spec:
             - "--enable-auto-tool-choice"
             - "--tool-call-parser=gemma4"
             - "--performance-mode=throughput"
-            - "--max-num-partial-prefills=2"
           ports:
             - containerPort: 8000
           env:
