@@ -66,7 +66,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          image: vllm/vllm-openai:v0.19.1
+          image: vllm/vllm-openai:v0.20.0
           command:
             - vllm
             - serve
@@ -79,13 +79,15 @@ spec:
             - "--max-model-len=196608"
             - "--dtype=bfloat16"
             - "--gpu-memory-utilization=0.95"
-            - "--max-num-seqs=4"
+            - "--max-num-seqs=12"
             - "--kv-cache-dtype=fp8_e4m3"
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
+            - "--performance-mode=throughput"
+            - "--max-num-partial-prefills=2"
             # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
             - "--max-num-batched-tokens=8192"
           ports:
@@ -157,7 +159,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          image: vllm/vllm-openai:v0.19.1
+          image: vllm/vllm-openai:v0.20.0
           command:
             - vllm
             - serve
@@ -170,13 +172,15 @@ spec:
             - "--max-model-len=131072"
             - "--dtype=bfloat16"
             - "--gpu-memory-utilization=0.95"
-            - "--max-num-seqs=4"
+            - "--max-num-seqs=12"
             - "--kv-cache-dtype=fp8_e4m3"
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
+            - "--performance-mode=throughput"
+            - "--max-num-partial-prefills=2"
             # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
             - "--max-num-batched-tokens=8192"
           ports:
@@ -248,7 +252,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          image: vllm/vllm-openai:v0.19.1
+          image: vllm/vllm-openai:v0.20.0
           command:
             - vllm
             - serve
@@ -261,12 +265,14 @@ spec:
             - "--max-model-len=131072"
             - "--dtype=bfloat16"
             - "--gpu-memory-utilization=0.95"
-            - "--max-num-seqs=8"
+            - "--max-num-seqs=12"
             - "--kv-cache-dtype=fp8_e4m3"
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
             - "--tool-call-parser=gemma4"
+            - "--performance-mode=throughput"
+            - "--max-num-partial-prefills=2"
           ports:
             - containerPort: 8000
           env:
