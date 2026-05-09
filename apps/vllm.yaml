@@ -124,7 +124,7 @@ spec:
             - "--served-model-name=granite-speech"
             - "--max-model-len=2048"
             - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.05"
+            - "--gpu-memory-utilization=0.15"
             - "--trust-remote-code"
           ports:
             - containerPort: 8001
