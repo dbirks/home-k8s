@@ -1,26 +1,23 @@
-# =====================================================================
-# vLLM Multi-Model Setup (single GPU, one model active at a time)
-# =====================================================================
-# All deployments share the same Service/Ingress/PVC and the `app: vllm`
-# label, so vllm.hoam.lan always routes to whichever model is running.
-# Only one can hold the GPU — K8s keeps the other Pending if both are scaled up.
+# vLLM Deployment - Qwen3.6-27B + Granite Speech sidecar
 #
-# Switch models:
-#   kubectl scale deploy/vllm-qwen27 --replicas=0
-#   kubectl scale deploy/vllm-qwen36 --replicas=1
-#   kubectl scale deploy/vllm-tts --replicas=1
-#   (wait ~2-5 min for model load, or reverse to switch back)
+# Main model: unsloth/Qwen3.6-27B-NVFP4 (coding LLM)
+#   - Hybrid DeltaNet+Attention architecture, 27B dense, NVFP4 quantization
+#   - 77.2% SWE-bench Verified (base model)
+#   - Served as "main" and "qwen27" on port 8000
 #
-# Claude Code / Agent SDK connection (unchanged regardless of model):
+# Sidecar: ibm-granite/granite-speech-4.1-2b (speech-to-text)
+#   - 2B params, ~4GB VRAM
+#   - OpenAI-compatible /v1/audio/transcriptions endpoint
+#   - Served as "granite-speech" on port 8001
+#
+# Claude Code connection:
 #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
 #   ANTHROPIC_API_KEY=dummy
 #   ANTHROPIC_AUTH_TOKEN=dummy
 #   ANTHROPIC_DEFAULT_OPUS_MODEL=main
 #   ANTHROPIC_DEFAULT_SONNET_MODEL=main
 #   ANTHROPIC_DEFAULT_HAIKU_MODEL=main
-#   DISABLE_PROMPT_CACHING=1
-#
-# Docs: https://docs.vllm.ai/en/latest/serving/integrations/claude_code/
+#   claude
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -33,15 +30,7 @@ spec:
   storageClassName: local-path
   resources:
     requests:
-      # Shared model cache - holds multiple models across switches
       storage: 150Gi
-
-# =====================================================================
-# Model A: Qwen3.6-27B Dense (GPTQ 4-bit) — ACTIVE
-# =====================================================================
-# GatedDeltaNet hybrid dense (27B total, all active per token)
-# VRAM: ~17.5GB weights, ~6.5GB for KV cache
-# Best balance of speed (49 tok/s), context (192K), and quality
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -66,19 +55,19 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          image: vllm/vllm-openai:v0.20.0
+          image: vllm/vllm-openai:v0.20.1
           command:
             - vllm
             - serve
-            - Intel/Qwen3.6-27B-int4-AutoRound
+            - unsloth/Qwen3.6-27B-NVFP4
             - "--host=0.0.0.0"
             - "--port=8000"
             - "--served-model-name"
-            - "main"
-            - "qwen27"
+            - main
+            - qwen27
             - "--max-model-len=196608"
             - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.95"
+            - "--gpu-memory-utilization=0.85"
             - "--max-num-seqs=12"
             - "--kv-cache-dtype=fp8_e4m3"
             - "--enable-prefix-caching"
@@ -87,13 +76,18 @@ spec:
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
-            # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
             - "--max-num-batched-tokens=8192"
           ports:
             - containerPort: 8000
           env:
             - name: HF_HOME
               value: /data
+            # Authenticated HF downloads (faster, no rate limits)
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
           resources:
             limits:
               nvidia.com/gpu: 1
@@ -119,79 +113,32 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 30
             failureThreshold: 5
-      volumes:
-        - name: models
-          persistentVolumeClaim:
-            claimName: vllm-models
-        - name: shm
-          emptyDir:
-            medium: Memory
-            sizeLimit: 8Gi
-
-# =====================================================================
-# Model B: Qwen3.6-35B-A3B (AWQ 4-bit) — INACTIVE
-# =====================================================================
-# GatedDeltaNet hybrid MoE (35B total, 3B active per token)
-# VRAM: ~22GB weights, ~8GB for KV cache
-# Faster generation (3B active), thinking-before-tools mode
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: vllm-qwen36
-  namespace: default
-spec:
-  replicas: 0
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: vllm
-      model: qwen36
-  template:
-    metadata:
-      labels:
-        app: vllm
-        model: qwen36
-    spec:
-      runtimeClassName: nvidia
-      enableServiceLinks: false
-      containers:
-        - name: vllm
-          image: vllm/vllm-openai:v0.20.0
+        - name: granite-speech
+          image: vllm/vllm-openai:v0.20.1
           command:
             - vllm
             - serve
-            - QuantTrio/Qwen3.6-35B-A3B-AWQ
+            - ibm-granite/granite-speech-4.1-2b
             - "--host=0.0.0.0"
-            - "--port=8000"
-            - "--served-model-name"
-            - "main"
-            - "qwen36"
-            - "--max-model-len=131072"
+            - "--port=8001"
+            - "--served-model-name=granite-speech"
+            - "--max-model-len=2048"
             - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.95"
-            - "--max-num-seqs=12"
-            - "--kv-cache-dtype=fp8_e4m3"
-            - "--enable-prefix-caching"
+            - "--gpu-memory-utilization=0.05"
             - "--trust-remote-code"
-            - "--enable-auto-tool-choice"
-            - "--tool-call-parser=qwen3_coder"
-            - "--reasoning-parser=qwen3"
-            - "--performance-mode=throughput"
-            # Must be >= 2096 for GDN Mamba cache alignment; higher improves TTFT
-            - "--max-num-batched-tokens=8192"
           ports:
-            - containerPort: 8000
+            - containerPort: 8001
           env:
             - name: HF_HOME
               value: /data
-          resources:
-            limits:
-              nvidia.com/gpu: 1
-            requests:
-              cpu: "1"
-              memory: 8Gi
+            # Authenticated HF downloads (faster, no rate limits)
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
           volumeMounts:
             - name: models
               mountPath: /data
@@ -200,15 +147,14 @@ spec:
           startupProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: 8001
             initialDelaySeconds: 30
-            periodSeconds: 30
-            failureThreshold: 120
+            periodSeconds: 15
+            failureThreshold: 40
           livenessProbe:
             httpGet:
               path: /health
-              port: 8000
-            initialDelaySeconds: 30
+              port: 8001
             periodSeconds: 30
             failureThreshold: 5
       volumes:
@@ -219,181 +165,6 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 8Gi
-
-# =====================================================================
-# Model C: Gemma 4 26B-A4B (AWQ 4-bit) — INACTIVE
-# =====================================================================
-# Standard transformer MoE (26B total, ~4B active per token)
-# VRAM: ~15GB weights, ~15GB for KV cache
-# Apache 2.0, multimodal (vision+text), dedicated gemma4 tool parser
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: vllm-gemma4
-  namespace: default
-spec:
-  replicas: 0
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: vllm
-      model: gemma4
-  template:
-    metadata:
-      labels:
-        app: vllm
-        model: gemma4
-    spec:
-      runtimeClassName: nvidia
-      enableServiceLinks: false
-      containers:
-        - name: vllm
-          image: vllm/vllm-openai:v0.20.0
-          command:
-            - vllm
-            - serve
-            - cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
-            - "--host=0.0.0.0"
-            - "--port=8000"
-            - "--served-model-name"
-            - "main"
-            - "gemma4"
-            - "--max-model-len=131072"
-            - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.95"
-            - "--max-num-seqs=12"
-            - "--kv-cache-dtype=fp8_e4m3"
-            - "--enable-prefix-caching"
-            - "--trust-remote-code"
-            - "--enable-auto-tool-choice"
-            - "--tool-call-parser=gemma4"
-            - "--performance-mode=throughput"
-          ports:
-            - containerPort: 8000
-          env:
-            - name: HF_HOME
-              value: /data
-          resources:
-            limits:
-              nvidia.com/gpu: 1
-            requests:
-              cpu: "1"
-              memory: 8Gi
-          volumeMounts:
-            - name: models
-              mountPath: /data
-            - name: shm
-              mountPath: /dev/shm
-          startupProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            failureThreshold: 120
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            failureThreshold: 5
-      volumes:
-        - name: models
-          persistentVolumeClaim:
-            claimName: vllm-models
-        - name: shm
-          emptyDir:
-            medium: Memory
-            sizeLimit: 8Gi
-
-# =====================================================================
-# Model D: Qwen3-TTS VoiceDesign 1.7B (vLLM-Omni) — INACTIVE
-# =====================================================================
-# Text-to-speech voice design model via vLLM-Omni
-# VRAM: ~7GB weights, lightweight inference
-# OpenAI-compatible /v1/audio/speech API
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: vllm-tts
-  namespace: default
-spec:
-  replicas: 0
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: vllm
-      model: tts
-  template:
-    metadata:
-      labels:
-        app: vllm
-        model: tts
-    spec:
-      runtimeClassName: nvidia
-      enableServiceLinks: false
-      containers:
-        - name: vllm
-          image: vllm/vllm-omni:v0.18.0
-          command:
-            - vllm
-            - serve
-            - Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
-            - "--omni"
-            - "--host=0.0.0.0"
-            - "--port=8000"
-            - "--served-model-name"
-            - "main"
-            - "tts"
-            - "--gpu-memory-utilization=0.95"
-            - "--trust-remote-code"
-          ports:
-            - containerPort: 8000
-          env:
-            - name: HF_HOME
-              value: /data
-          resources:
-            limits:
-              nvidia.com/gpu: 1
-            requests:
-              cpu: "1"
-              memory: 8Gi
-          volumeMounts:
-            - name: models
-              mountPath: /data
-            - name: shm
-              mountPath: /dev/shm
-          startupProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            failureThreshold: 120
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            failureThreshold: 5
-      volumes:
-        - name: models
-          persistentVolumeClaim:
-            claimName: vllm-models
-        - name: shm
-          emptyDir:
-            medium: Memory
-            sizeLimit: 8Gi
-
-# =====================================================================
-# Shared Service & Ingress — routes to whichever model pod is running
-# =====================================================================
 ---
 apiVersion: v1
 kind: Service
@@ -403,17 +174,29 @@ metadata:
 spec:
   selector:
     app: vllm
+    model: qwen27
   ports:
     - port: 80
       targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: granite-speech
+  namespace: default
+spec:
+  selector:
+    app: vllm
+    model: qwen27
+  ports:
+    - port: 80
+      targetPort: 8001
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: vllm
   namespace: default
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
 spec:
   ingressClassName: private
   rules:
@@ -427,15 +210,22 @@ spec:
                 name: vllm
                 port:
                   number: 80
-
-# =====================================================================
-# FALLBACK: Qwen3-Coder-30B-A3B-Instruct (AWQ 4-bit)
-# =====================================================================
-# Standard transformer MoE, proven stable. ~15GB weights leaves plenty
-# of KV cache. To add as a third deployment, copy the Qwen3.6 block and:
-#   - cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit
-#   + stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ
-#   Change name to vllm-qwen3coder, model label to qwen3coder
-#   Change --served-model-name to "main" "qwen3-coder"
-#   Change --max-num-seqs to 8
-#   Remove --language-model-only, --reasoning-parser, --max-num-batched-tokens
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: granite-speech
+  namespace: default
+spec:
+  ingressClassName: private
+  rules:
+    - host: speech.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: granite-speech
+                port:
+                  number: 80

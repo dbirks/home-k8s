@@ -1,0 +1,77 @@
+# vLLM TTS - Qwen3-TTS-12Hz-1.7B-VoiceDesign
+# Scaled down - enable by setting replicas to 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-tts
+  namespace: default
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+      model: tts
+  template:
+    metadata:
+      labels:
+        app: vllm
+        model: tts
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.20.1
+          command:
+            - vllm
+            - serve
+            - Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+            - "--omni"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--served-model-name"
+            - main
+            - tts
+            - "--gpu-memory-utilization=0.95"
+            - "--trust-remote-code"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 4Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi

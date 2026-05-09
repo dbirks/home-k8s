@@ -6,12 +6,12 @@ Single-node k8s cluster running on Talos Linux.
 
 Running Talos v1.12.6 on a 256GB SSD.
 
-Control plane: `10.0.0.30` (or DHCP-assigned, check after boot)
+Control plane: `10.0.0.177` (DHCP-assigned, may change with motherboard swaps)
 
 ### Hardware
 
 - 256GB SSD as install disk
-- NVIDIA RTX 5090 (Blackwell) with open-source GPU drivers
+- NVIDIA GPU (Blackwell) with open-source GPU drivers
 
 ### Talos install image
 
@@ -135,6 +135,35 @@ flux bootstrap github --owner dbirks --repository home-k8s --branch main --perso
 This adds a deploy key to the repo and commits Flux manifests to `flux-system/`.
 
 Flux reconciles in dependency order: `prereqs` -> `infra` -> `apps`
+
+### Secrets management (SOPS + age)
+
+Secrets are encrypted in-repo using [SOPS](https://github.com/getsops/sops) with [age](https://github.com/FiloSottile/age) encryption. Flux decrypts them automatically at apply time.
+
+**How it works:**
+- `.sops.yaml` in repo root configures encryption (only `data`/`stringData` fields are encrypted)
+- Encrypted secret files use the `.enc.yaml` suffix by convention
+- Flux's kustomize-controller decrypts using the `sops-age` secret in `flux-system`
+
+**Creating a new encrypted secret:**
+
+```bash
+kubectl create secret generic my-secret --namespace=default \
+  --from-literal=KEY=value \
+  --dry-run=client -o yaml \
+  | sops encrypt --input-type yaml --output-type yaml /dev/stdin \
+  > apps/my-secret.enc.yaml
+```
+
+**After a cluster wipe**, the only manual step is recreating the age key secret:
+
+```bash
+kubectl create secret generic sops-age \
+  --namespace=flux-system \
+  --from-file=age.agekey=$HOME/.config/sops/age/keys.txt
+```
+
+The age private key lives at `~/.config/sops/age/keys.txt` — back this up somewhere safe (password manager, etc.).
 
 ### Suspended apps (.yaml.hold)
 

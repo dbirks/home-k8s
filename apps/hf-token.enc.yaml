@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    HF_TOKEN: ENC[AES256_GCM,data:FzyUM+XV2QXkaQcz+C+EakwYiMK2KRfvt/jy4k+1dRGw6t8BscLiHYDaXtKgzTJXTSNfUA==,iv:Iezve1vbQpn2RzwUKMqnw3pHFuAKpnROEIXPh6m2ZzA=,tag:x6i13PdlOqRkaCtn+C/Ang==,type:str]
+kind: Secret
+metadata:
+    name: hf-token
+    namespace: default
+sops:
+    age:
+        - recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA5V3pHU2FvOUJxaDB5ZW9u
+            Q3lDYWhhS2xoM3BSVXFSNXY1czRzVWI5bFZ3ClluWHNaZitJSHpocUlLT25NUTE4
+            b3FuUmJTb1dKWTZPYzdUaCtJVGJpcFEKLS0tIEg0RDlOM3BFVmlwZSsxVW5CYWhn
+            cmdDRFR6RTRXcERBWGF2YU83eW9nb2MKwIwELwUT4HazOrRaog4TRX8xgGcqPX1i
+            O3wXtNttszQpoEqau+LDaTsB2IG93gWlMfmM5Dsk1LmM2W8TNRvMyw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-05-09T03:55:26Z"
+    mac: ENC[AES256_GCM,data:1vEjSRHOv4YjRIWoWAii0hzWgzKyjQtQyTtzaSDSWaUHeGE66utuoQNt/CCDCFOR34y5OycffCVm8sr9ye2V0cxSHJ2kZEfjWZLpgW2ZB1clvRRcuV1vAsGPnbY0IduCM7ladPYgtD0zrJtyGEtx3m8PC4Q69erCaTYHZ4N899E=,iv:3Plo1yoMQHRWk6I2xm9PTkftkOzc3D7s0yNSmTHjNSg=,tag:I1+KRWI+vihlvWjIjL+iKg==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.12.2
