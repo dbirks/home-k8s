@@ -60,18 +60,20 @@ spec:
           restartPolicy: Always
           image: vllm/vllm-openai:v0.20.1
           command:
-            - vllm
-            - serve
-            - ibm-granite/granite-speech-4.1-2b
-            - "--host=0.0.0.0"
-            - "--port=8001"
-            - "--served-model-name=granite-speech"
-            - "--max-model-len=2048"
-            - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.20"
-            - "--enforce-eager"
-            - "--skip-mm-profiling"
-            - "--trust-remote-code"
+            - sh
+            - -c
+            - >-
+              pip install --no-cache-dir librosa soundfile &&
+              exec vllm serve ibm-granite/granite-speech-4.1-2b
+              --host=0.0.0.0
+              --port=8001
+              --served-model-name=granite-speech
+              --max-model-len=2048
+              --dtype=bfloat16
+              --gpu-memory-utilization=0.20
+              --enforce-eager
+              --skip-mm-profiling
+              --trust-remote-code
           ports:
             - containerPort: 8001
           env:
@@ -221,6 +223,8 @@ kind: Ingress
 metadata:
   name: granite-speech
   namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
 spec:
   ingressClassName: private
   rules:
