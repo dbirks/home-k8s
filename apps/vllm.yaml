@@ -5,10 +5,12 @@
 #   - 77.2% SWE-bench Verified (base model)
 #   - Served as "main" and "qwen27" on port 8000
 #
-# Sidecar: ibm-granite/granite-speech-4.1-2b (speech-to-text)
+# Native sidecar: ibm-granite/granite-speech-4.1-2b (speech-to-text)
 #   - 2B params, ~4GB VRAM
 #   - OpenAI-compatible /v1/audio/transcriptions endpoint
 #   - Served as "granite-speech" on port 8001
+#   - Starts FIRST via K8s native sidecar (initContainer + restartPolicy: Always)
+#   - Must pass startupProbe before main model begins loading
 #
 # Claude Code connection:
 #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
@@ -53,6 +55,52 @@ spec:
     spec:
       runtimeClassName: nvidia
       enableServiceLinks: false
+      initContainers:
+        - name: granite-speech
+          restartPolicy: Always
+          image: vllm/vllm-openai:v0.20.1
+          command:
+            - vllm
+            - serve
+            - ibm-granite/granite-speech-4.1-2b
+            - "--host=0.0.0.0"
+            - "--port=8001"
+            - "--served-model-name=granite-speech"
+            - "--max-model-len=2048"
+            - "--dtype=bfloat16"
+            - "--gpu-memory-utilization=0.15"
+            - "--enforce-eager"
+            - "--trust-remote-code"
+          ports:
+            - containerPort: 8001
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            periodSeconds: 30
+            failureThreshold: 5
       containers:
         - name: vllm
           image: vllm/vllm-openai:v0.20.1
@@ -67,7 +115,7 @@ spec:
             - qwen27
             - "--max-model-len=196608"
             - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.75"
+            - "--gpu-memory-utilization=0.80"
             - "--max-num-seqs=12"
             - "--kv-cache-dtype=fp8_e4m3"
             - "--enable-prefix-caching"
@@ -111,50 +159,6 @@ spec:
               path: /health
               port: 8000
             initialDelaySeconds: 30
-            periodSeconds: 30
-            failureThreshold: 5
-        - name: granite-speech
-          image: vllm/vllm-openai:v0.20.1
-          command:
-            - vllm
-            - serve
-            - ibm-granite/granite-speech-4.1-2b
-            - "--host=0.0.0.0"
-            - "--port=8001"
-            - "--served-model-name=granite-speech"
-            - "--max-model-len=2048"
-            - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.15"
-            - "--trust-remote-code"
-          ports:
-            - containerPort: 8001
-          env:
-            - name: HF_HOME
-              value: /data
-            # Authenticated HF downloads (faster, no rate limits)
-            - name: HF_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: hf-token
-                  key: HF_TOKEN
-            - name: NVIDIA_VISIBLE_DEVICES
-              value: "all"
-          volumeMounts:
-            - name: models
-              mountPath: /data
-            - name: shm
-              mountPath: /dev/shm
-          startupProbe:
-            httpGet:
-              path: /health
-              port: 8001
-            initialDelaySeconds: 30
-            periodSeconds: 15
-            failureThreshold: 40
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8001
             periodSeconds: 30
             failureThreshold: 5
       volumes:
