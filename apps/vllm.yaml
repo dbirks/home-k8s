@@ -55,55 +55,10 @@ spec:
     spec:
       runtimeClassName: nvidia
       enableServiceLinks: false
-      initContainers:
-        - name: granite-speech
-          restartPolicy: Always
-          image: vllm/vllm-openai:v0.20.1
-          command:
-            - sh
-            - -c
-            - >-
-              pip install --no-cache-dir librosa soundfile &&
-              exec vllm serve ibm-granite/granite-speech-4.1-2b
-              --host=0.0.0.0
-              --port=8001
-              --served-model-name=granite-speech
-              --max-model-len=2048
-              --dtype=bfloat16
-              --gpu-memory-utilization=0.10
-              --enforce-eager
-              --skip-mm-profiling
-              --trust-remote-code
-          ports:
-            - containerPort: 8001
-          env:
-            - name: HF_HOME
-              value: /data
-            - name: HF_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: hf-token
-                  key: HF_TOKEN
-            - name: NVIDIA_VISIBLE_DEVICES
-              value: "all"
-          volumeMounts:
-            - name: models
-              mountPath: /data
-            - name: shm
-              mountPath: /dev/shm
-          startupProbe:
-            httpGet:
-              path: /health
-              port: 8001
-            initialDelaySeconds: 30
-            periodSeconds: 15
-            failureThreshold: 40
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8001
-            periodSeconds: 30
-            failureThreshold: 5
+      # granite-speech sidecar disabled — sharing one GPU between two vLLM
+      # processes causes unrecoverable GPU device handle errors when the main
+      # container crashes. Revisit when vLLM adds multi-model support or
+      # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
           image: vllm/vllm-openai:v0.20.1
@@ -118,7 +73,7 @@ spec:
             - qwen27
             - "--max-model-len=196608"
             - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.85"
+            - "--gpu-memory-utilization=0.95"
             - "--max-num-seqs=12"
             - "--kv-cache-dtype=fp8_e4m3"
             - "--enable-prefix-caching"
