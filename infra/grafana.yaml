@@ -33,6 +33,11 @@ spec:
       accessModes:
         - ReadWriteOnce
 
+    # PVC contents already correctly owned; init-chown-data fails under restricted
+    # PSA caps (Permission denied on chown). Disable since the volume is fine.
+    initChownData:
+      enabled: false
+
     ingress:
       enabled: true
       ingressClassName: private
