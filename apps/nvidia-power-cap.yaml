@@ -1,0 +1,71 @@
+# NVIDIA GPU power cap + persistence mode DaemonSet
+#
+# Mitigation for GSP firmware crashes (Xid 79) on RTX PRO 6000 Blackwell.
+# See issue #46.
+#
+# Pulsedmedia and NVIDIA forum thread 365739 report that capping the card
+# from 600W -> 450W stops the GSP-cascade crash for most affected units.
+# Perf cost on inference workloads is ~5-15%.
+#
+# This DaemonSet:
+#   1. Runs on any GPU-bearing node (matches the device plugin's NFD label)
+#   2. Enables persistence mode (-pm 1) so the driver stays loaded
+#   3. Sets power limit to 450W (-pl 450)
+#   4. Re-asserts every hour in case anything resets it
+#
+# Shared-GPU note: this pod uses NVIDIA_VISIBLE_DEVICES=all instead of
+# `nvidia.com/gpu: 1` as its resource request, so it does NOT take the
+# scheduler's exclusive GPU reservation away from vLLM. CUDA-level
+# sharing works for the brief nvidia-smi calls; no kernel launches.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-power-cap
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-power-cap
+  template:
+    metadata:
+      labels:
+        app: nvidia-power-cap
+    spec:
+      runtimeClassName: nvidia
+      nodeSelector:
+        feature.node.kubernetes.io/pci-10de.present: "true"
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      containers:
+        - name: power-cap
+          image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: utility
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "[$(date -u +%FT%TZ)] Enabling persistence mode (-pm 1)..."
+              nvidia-smi -pm 1
+              echo "[$(date -u +%FT%TZ)] Capping power to 450W (-pl 450)..."
+              nvidia-smi -pl 450
+              echo "[$(date -u +%FT%TZ)] Current state:"
+              nvidia-smi --query-gpu=name,power.limit,power.max_limit,persistence_mode --format=csv
+              echo "[$(date -u +%FT%TZ)] Re-asserting every hour..."
+              while true; do
+                sleep 3600
+                nvidia-smi -pl 450 >/dev/null 2>&1 || echo "[$(date -u +%FT%TZ)] WARNING: re-assert failed"
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
