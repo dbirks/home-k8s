@@ -1,0 +1,31 @@
+# NVIDIA driver kernel module options
+#
+# Mitigation for GSP firmware crashes (Xid 79 + Xid 154) on RTX PRO 6000 Blackwell
+# under sustained vLLM inference load. See issue #46 for full context.
+#
+# NVreg_DynamicPowerManagement=0x00 disables RTD3 runtime power management
+# (the GPU never enters GC6/D3cold). Confirmed to stop the GSP heartbeat-
+# after-GC6 bug that surfaces as Xid 79 — see NVIDIA forum thread 366591.
+#
+# Apply (from repo root, requires talosctl):
+#   talosctl --talosconfig talos/talosconfig \
+#     patch mc --nodes 10.0.0.177 \
+#     --patch @talos/nvidia-module-options-patch.yaml
+#
+# Then reboot the node for the new module parameters to take effect:
+#   talosctl --talosconfig talos/talosconfig -n 10.0.0.177 reboot
+#
+# Verify after reboot:
+#   talosctl --talosconfig talos/talosconfig -n 10.0.0.177 \
+#     read /proc/driver/nvidia/params | grep DynamicPowerManagement
+#   # expect:  DynamicPowerManagement: 0
+#
+machine:
+  kernel:
+    modules:
+      - name: nvidia
+        parameters:
+          - NVreg_DynamicPowerManagement=0x00
+      - name: nvidia_uvm
+      - name: nvidia_drm
+      - name: nvidia_modeset
