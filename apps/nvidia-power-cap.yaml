@@ -41,6 +41,10 @@ spec:
       containers:
         - name: power-cap
           image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
+          # nvidia-smi -pl writes to a privileged GPU register; requires either
+          # privileged: true or CAP_SYS_ADMIN. Privileged is simplest here.
+          securityContext:
+            privileged: true
           env:
             - name: NVIDIA_VISIBLE_DEVICES
               value: all
