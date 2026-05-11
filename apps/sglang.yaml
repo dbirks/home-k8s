@@ -1,0 +1,157 @@
+# SGLang Deployment - alternative inference engine for Qwen3.6-27B-NVFP4
+#
+# Side-by-side with vLLM for experimentation. Scaled down (replicas: 0) by default
+# since both can't hold the GPU at the same time.
+#
+# To swap from vLLM to SGLang:
+#   kubectl scale deploy/vllm-qwen27 --replicas=0
+#   kubectl scale deploy/sglang-qwen27 --replicas=1
+#
+# Endpoints: sglang.hoam.lan (OpenAI-compatible /v1/chat/completions)
+# Model: same unsloth/Qwen3.6-27B-NVFP4, cached on shared vllm-models PVC
+#
+# Notable SGLang features active here:
+#   - RadixAttention prefix cache (radix-tree shared across requests) — biggest win
+#     for concurrent coding agents that share system prompts / tool definitions
+#   - Piecewise CUDA graphs (default since v0.5.10)
+#   - FA3 attention backend (stable on SM120; FA4 is SM100-only currently)
+#   - Spec Decoding V2 + DFLASH kernels available (not enabled — EAGLE on NVFP4 is
+#     untested; measure baseline before turning on)
+#
+# Known risks (research notes):
+#   - unsloth/Qwen3.6-27B-NVFP4 is not officially validated on SGLang; smoke-test
+#     output for garbage tokens after first start (see sgl-project/sglang#24321)
+#   - SM120 (consumer Blackwell) has open optimization items in #19637
+#   - Shares the same GSP firmware bug surface as vLLM (driver-level, not engine)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-qwen27
+  namespace: default
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sglang
+      model: qwen27
+  template:
+    metadata:
+      labels:
+        app: sglang
+        model: qwen27
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: sglang
+          image: lmsysorg/sglang:v0.5.11-cu130
+          command:
+            - python3
+            - -m
+            - sglang.launch_server
+            - "--model-path=unsloth/Qwen3.6-27B-NVFP4"
+            - "--served-model-name=main"
+            - "--host=0.0.0.0"
+            - "--port=30000"
+            - "--tp=1"
+            - "--quantization=modelopt_fp4"
+            - "--kv-cache-dtype=fp8_e4m3"
+            - "--context-length=196608"
+            # SGLang's static memory pre-allocation fraction (not vLLM's gpu-mem-util)
+            - "--mem-fraction-static=0.88"
+            - "--max-running-requests=16"
+            - "--chunked-prefill-size=8192"
+            - "--page-size=32"
+            # FA3 is stable on SM120; FA4 is SM100-only as of v0.5.11
+            - "--attention-backend=fa3"
+            - "--enable-torch-compile"
+            - "--tool-call-parser=qwen3_coder"
+            - "--reasoning-parser=qwen3"
+            - "--trust-remote-code"
+            - "--watchdog-timeout=600"
+          ports:
+            - containerPort: 30000
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HUGGINGFACE_HUB_CACHE
+              value: /data/hub
+            - name: SGLANG_USE_MODELSCOPE
+              value: "false"
+            - name: FLASHINFER_DISABLE_VERSION_CHECK
+              value: "1"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 8Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 30000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 30000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang
+  namespace: default
+spec:
+  selector:
+    app: sglang
+    model: qwen27
+  ports:
+    - port: 80
+      targetPort: 30000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sglang
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+spec:
+  ingressClassName: private
+  rules:
+    - host: sglang.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sglang
+                port:
+                  number: 80
