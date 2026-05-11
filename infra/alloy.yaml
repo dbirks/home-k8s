@@ -1,0 +1,109 @@
+# Alloy - log collection agent (DaemonSet, one per node)
+# Tails pod logs from /var/log/pods and ships them to Loki.
+# Chart values: https://github.com/grafana/alloy/tree/main/operations/helm/charts/alloy
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alloy
+  namespace: monitoring
+spec:
+  interval: 5m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: alloy
+      version: "1.8.1"
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+      interval: 5m
+  values:
+    alloy:
+      # Mount /var/log from each node so we can read pod logs
+      mounts:
+        varlog: true
+        dockercontainers: false
+
+      # Inline Alloy (River) config - discover pods, tail logs, ship to Loki
+      configMap:
+        create: true
+        content: |
+          // Discover all pods in the cluster
+          discovery.kubernetes "pods" {
+            role = "pod"
+          }
+
+          // Convert pod metadata into log labels
+          discovery.relabel "pods" {
+            targets = discovery.kubernetes.pods.targets
+
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_node_name"]
+              target_label  = "node"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+              target_label  = "app"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+              separator     = "/"
+              action        = "replace"
+              replacement   = "/var/log/pods/*$1/*.log"
+              target_label  = "__path__"
+            }
+          }
+
+          // Tail pod log files on disk
+          local.file_match "pod_logs" {
+            path_targets = discovery.relabel.pods.output
+          }
+
+          loki.source.file "pod_logs" {
+            targets    = local.file_match.pod_logs.targets
+            forward_to = [loki.process.pod_logs.receiver]
+          }
+
+          // Strip CRI/Docker log envelope, keep the inner log line
+          loki.process "pod_logs" {
+            forward_to = [loki.write.default.receiver]
+
+            stage.cri {}
+          }
+
+          // Ship to in-cluster Loki
+          loki.write "default" {
+            endpoint {
+              url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+            }
+          }
+
+    # Run one Alloy pod per node
+    controller:
+      type: daemonset
+
+    # Create ClusterRole/Binding so Alloy can list pods/nodes for discovery
+    rbac:
+      create: true
+
+    serviceAccount:
+      create: true
