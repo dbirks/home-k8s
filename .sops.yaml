@@ -1,3 +1,7 @@
 creation_rules:
-  - encrypted_regex: "^(data|stringData)$"
+  # Talhelper secret/env bundles: encrypt the entire file
+  - path_regex: ^talos/tal(secret|env)\.sops\.yaml$
+    age: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+  # Kubernetes Secret manifests: encrypt only data/stringData fields
+  - encrypted_regex: ^(data|stringData)$
     age: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49

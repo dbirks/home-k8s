@@ -1,0 +1,47 @@
+# Talhelper config for the home cluster
+#
+# Renders machine configs into ./clusterconfig/ (gitignored) from this
+# declarative spec + the encrypted talsecret.sops.yaml.
+#
+# Day-2 workflow:
+#   talhelper genconfig                              # render configs
+#   talhelper gencommand apply --extra-flags --dry-run | bash   # preview
+#   talhelper gencommand apply | bash                # apply to live cluster
+#   talhelper gencommand upgrade | bash              # OS upgrade
+#
+# Bootstrap from scratch (new cluster):
+#   talhelper gensecret > talsecret.yaml
+#   sops -e -i talsecret.yaml && mv talsecret.yaml talsecret.sops.yaml
+#   talhelper genconfig
+#   talhelper gencommand apply --extra-flags --insecure | bash   # first apply
+#   talhelper gencommand bootstrap | bash
+#   talhelper gencommand kubeconfig | bash
+---
+clusterName: home
+talosVersion: v1.12.6
+kubernetesVersion: v1.35.0
+endpoint: https://10.0.0.30:6443
+
+# Talos Image Factory schematic — installer image with NVIDIA extensions
+# (siderolabs/nvidia-open-gpu-kernel-modules, siderolabs/nvidia-container-toolkit).
+# Regenerate at https://factory.talos.dev if the extension set changes; the ID
+# is content-addressable so any change produces a new ID.
+imageFactory:
+  schematicEndpoint: https://factory.talos.dev
+
+nodes:
+  - hostname: talos-210-73x
+    ipAddress: 10.0.0.177
+    controlPlane: true
+    installDiskSelector:
+      busPath: /dev/sda
+    schematic:
+      customization:
+        systemExtensions:
+          officialExtensions:
+            - siderolabs/nvidia-open-gpu-kernel-modules
+            - siderolabs/nvidia-container-toolkit
+    # Per-node patches
+    patches:
+      - "@./patches/local-storage.yaml"
+      - "@./patches/nvidia-module-options.yaml"

@@ -15,6 +15,8 @@ Flux reconciles in order: `prereqs` -> `infra` -> `apps`
 
 ## Secrets (SOPS + age)
 
+**This repo is PUBLIC on GitHub. No unencrypted secrets ever go in git, period.** Plaintext machine configs that contain cluster CAs / tokens / encryption keys (`controlplane.yaml`, `worker.yaml`, `talosconfig`, etc.) are gitignored. Anything sensitive that does need to live in git must be SOPS-encrypted first.
+
 Secrets are encrypted in-repo with SOPS + age. Flux decrypts automatically.
 
 - Config: `.sops.yaml` in repo root

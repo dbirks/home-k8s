@@ -1,4 +1,13 @@
 metal-amd64.iso
+
+# Talos rendered/secret bundles — never committed
+# (talsecret.sops.yaml IS committed once SOPS-encrypted; plaintext talsecret.yaml is not)
 controlplane.yaml
 worker.yaml
 talosconfig
+talsecret.yaml
+talenv.yaml
+talos/clusterconfig/
+
+# Old pre-talhelper config dir
+_newconfig/
