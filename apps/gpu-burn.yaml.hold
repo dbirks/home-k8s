@@ -1,0 +1,61 @@
+# GPU stress-test Job (wilicc/gpu-burn) — diagnostic, not running by default.
+#
+# Held out of Flux reconciliation by the `.yaml.hold` suffix. Two ways to use:
+#
+#   A) Run via Flux (rename + commit + push):
+#        git mv apps/gpu-burn.yaml.hold apps/gpu-burn.yaml
+#        # ...wait for reconcile...
+#        # When the Job completes, mv back to .hold or `kubectl delete job`.
+#
+#   B) Run directly (preferred for one-off diagnostics):
+#        kubectl scale -n default deploy/vllm-qwen27 --replicas=0
+#        kubectl apply -f apps/gpu-burn.yaml.hold     # apply works fine with .hold suffix
+#        kubectl logs -n default -l app=gpu-burn -f
+#        kubectl delete -f apps/gpu-burn.yaml.hold
+#        kubectl scale -n default deploy/vllm-qwen27 --replicas=1
+#
+# Builds wilicc/gpu-burn from source for sm_120 (Blackwell GB202) at run time,
+# then runs the burn for 3600s (1 hour). Adjust the trailing `3600` arg to change.
+#
+# Conclusion threshold (community consensus, see issue #46):
+#   - Crashes <30 min: card is defective, file RMA.
+#   - Runs 60+ min with `GPU 0: OK`, errors: 0: universal Blackwell GSP bug, not RMA-able.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gpu-burn
+  namespace: default
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: gpu-burn
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      containers:
+        - name: gpu-burn
+          image: nvcr.io/nvidia/cuda:13.0.1-devel-ubi9
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "[$(date -u +%FT%TZ)] Installing build deps + cloning gpu-burn..."
+              dnf install -y -q git make gcc-c++ findutils >/dev/null
+              cd /tmp
+              git clone --depth=1 https://github.com/wilicc/gpu-burn.git
+              cd gpu-burn
+              # Build with compute capability 12.0 (Blackwell GB202)
+              echo "[$(date -u +%FT%TZ)] Building for sm_120..."
+              sed -i 's/COMPUTE ?= .*/COMPUTE ?= 12.0/' Makefile || true
+              make CUDA_VERSION=13.0 COMPUTE=12.0
+              echo "[$(date -u +%FT%TZ)] Starting gpu_burn for 3600s..."
+              ./gpu_burn 3600
+              echo "[$(date -u +%FT%TZ)] gpu_burn finished cleanly."
