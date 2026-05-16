@@ -7,10 +7,15 @@
 # from 600W -> 450W stops the GSP-cascade crash for most affected units.
 # Perf cost on inference workloads is ~5-15%.
 #
+# 2026-05-16: dropped further to 400W after crashes #8 and #9 hit within
+# ~5 min of real inference load at 450W (issue #46). Forum reports 400W
+# is the level that holds for most units with sustained inference workloads.
+# Perf cost ~20-25% vs stock TGP.
+#
 # This DaemonSet:
 #   1. Runs on any GPU-bearing node (matches the device plugin's NFD label)
 #   2. Enables persistence mode (-pm 1) so the driver stays loaded
-#   3. Sets power limit to 450W (-pl 450)
+#   3. Sets power limit to 400W (-pl 400)
 #   4. Re-asserts every hour in case anything resets it
 #
 # Shared-GPU note: this pod uses NVIDIA_VISIBLE_DEVICES=all instead of
@@ -57,14 +62,14 @@ spec:
               set -e
               echo "[$(date -u +%FT%TZ)] Enabling persistence mode (-pm 1)..."
               nvidia-smi -pm 1
-              echo "[$(date -u +%FT%TZ)] Capping power to 450W (-pl 450)..."
-              nvidia-smi -pl 450
+              echo "[$(date -u +%FT%TZ)] Capping power to 400W (-pl 400)..."
+              nvidia-smi -pl 400
               echo "[$(date -u +%FT%TZ)] Current state:"
               nvidia-smi --query-gpu=name,power.limit,power.max_limit,persistence_mode --format=csv
               echo "[$(date -u +%FT%TZ)] Re-asserting every hour..."
               while true; do
                 sleep 3600
-                nvidia-smi -pl 450 >/dev/null 2>&1 || echo "[$(date -u +%FT%TZ)] WARNING: re-assert failed"
+                nvidia-smi -pl 400 >/dev/null 2>&1 || echo "[$(date -u +%FT%TZ)] WARNING: re-assert failed"
               done
           resources:
             requests:
