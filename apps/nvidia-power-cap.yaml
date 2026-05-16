@@ -12,11 +12,19 @@
 # is the level that holds for most units with sustained inference workloads.
 # Perf cost ~20-25% vs stock TGP.
 #
+# 2026-05-16 (later): 400W cap alone didn't prevent crash #10 — confirmed
+# the bug is driven by dI/dt transients (idle->boost swings on each decode
+# batch) rather than the power ceiling. Added `nvidia-smi -lgc 1500,2100`
+# to clamp the SM clock range: prevents boost from oscillating up toward
+# the stock ~2.6 GHz, which is where the rail-transient amplitude is
+# worst. Range still allows decent inference perf.
+#
 # This DaemonSet:
 #   1. Runs on any GPU-bearing node (matches the device plugin's NFD label)
 #   2. Enables persistence mode (-pm 1) so the driver stays loaded
 #   3. Sets power limit to 400W (-pl 400)
-#   4. Re-asserts every hour in case anything resets it
+#   4. Locks SM clock range to 1500-2100 MHz (-lgc 1500,2100)
+#   5. Re-asserts every hour in case anything resets it
 #
 # Shared-GPU note: this pod uses NVIDIA_VISIBLE_DEVICES=all instead of
 # `nvidia.com/gpu: 1` as its resource request, so it does NOT take the
@@ -64,12 +72,15 @@ spec:
               nvidia-smi -pm 1
               echo "[$(date -u +%FT%TZ)] Capping power to 400W (-pl 400)..."
               nvidia-smi -pl 400
+              echo "[$(date -u +%FT%TZ)] Locking SM clock range to 1500-2100 MHz (-lgc 1500,2100)..."
+              nvidia-smi -lgc 1500,2100
               echo "[$(date -u +%FT%TZ)] Current state:"
-              nvidia-smi --query-gpu=name,power.limit,power.max_limit,persistence_mode --format=csv
+              nvidia-smi --query-gpu=name,power.limit,power.max_limit,clocks.gr,clocks.max.gr,persistence_mode --format=csv
               echo "[$(date -u +%FT%TZ)] Re-asserting every hour..."
               while true; do
                 sleep 3600
-                nvidia-smi -pl 400 >/dev/null 2>&1 || echo "[$(date -u +%FT%TZ)] WARNING: re-assert failed"
+                nvidia-smi -pl 400 >/dev/null 2>&1 || echo "[$(date -u +%FT%TZ)] WARNING: re-assert power failed"
+                nvidia-smi -lgc 1500,2100 >/dev/null 2>&1 || echo "[$(date -u +%FT%TZ)] WARNING: re-assert clock failed"
               done
           resources:
             requests:
