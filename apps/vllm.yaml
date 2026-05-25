@@ -74,8 +74,13 @@ spec:
             - "--max-model-len=196608"
             - "--dtype=bfloat16"
             - "--gpu-memory-utilization=0.90"
-            - "--max-num-seqs=12"
+            - "--max-num-seqs=16"
             - "--kv-cache-dtype=fp8_e4m3"
+            # Narrow CUDA Graph capture to decode only — research suggests
+            # full-graph replay is a stressor on the Blackwell GSP firmware
+            # bug (see issue #46). Keeps decode-loop perf with eager prefill.
+            - "--compilation-config"
+            - '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
