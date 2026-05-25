@@ -75,7 +75,7 @@ spec:
             - "--dtype=bfloat16"
             - "--gpu-memory-utilization=0.90"
             - "--max-num-seqs=12"
-            - "--kv-cache-dtype=nvfp4"
+            - "--kv-cache-dtype=fp8_e4m3"
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
