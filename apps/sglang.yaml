@@ -30,7 +30,7 @@ metadata:
   name: sglang-qwen27
   namespace: default
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: Recreate
   selector:
@@ -47,7 +47,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: sglang
-          image: lmsysorg/sglang:v0.5.11-cu130
+          image: lmsysorg/sglang:v0.5.13-cu130
           command:
             - python3
             - -m
