@@ -4,9 +4,7 @@ Single-node k8s cluster running on Talos Linux.
 
 ## Current setup
 
-Running Talos v1.12.6 on a 256GB SSD.
-
-Control plane: `10.0.0.177` (DHCP-assigned, may change with motherboard swaps)
+Running Talos v1.12.6.
 
 ### Hardware
 
