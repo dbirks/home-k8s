@@ -64,8 +64,9 @@ spec:
             - "--max-running-requests=16"
             - "--chunked-prefill-size=8192"
             - "--page-size=32"
-            # FA3 is stable on SM120; FA4 is SM100-only as of v0.5.11
-            - "--attention-backend=fa3"
+            # FlashInfer is the correct backend for SM120 (Blackwell);
+            # FA3 requires SM80-90, FA4 is SM100-only.
+            - "--attention-backend=flashinfer"
             - "--enable-torch-compile"
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
