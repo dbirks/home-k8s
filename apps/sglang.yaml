@@ -105,6 +105,7 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 30
             failureThreshold: 120
+            timeoutSeconds: 30
           livenessProbe:
             httpGet:
               path: /health
@@ -112,6 +113,7 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 30
             failureThreshold: 5
+            timeoutSeconds: 30
       volumes:
         - name: models
           persistentVolumeClaim:
