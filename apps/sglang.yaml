@@ -67,7 +67,6 @@ spec:
             # FlashInfer is the correct backend for SM120 (Blackwell);
             # FA3 requires SM80-90, FA4 is SM100-only.
             - "--attention-backend=flashinfer"
-            - "--enable-torch-compile"
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
             - "--trust-remote-code"
