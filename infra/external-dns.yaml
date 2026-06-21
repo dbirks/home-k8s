@@ -33,3 +33,6 @@ spec:
     extraArgs:
       # Pi-hole v6 API support (merged upstream, v5 is deprecated)
       - "--pihole-api-version=6"
+      # Only watch private-class ingresses (10.0.0.200) — prevents oscillation
+      # with the public ingress controller (10.0.0.201)
+      - "--ingress-class=private"
