@@ -20,8 +20,10 @@ spec:
   # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml
   values:
     controller:
+      electionID: ingress-controller-leader-public
       ingressClassResource:
         name: public
+        default: false
       ingressClass: public
       service:
         annotations:
