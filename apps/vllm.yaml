@@ -71,7 +71,7 @@ spec:
             - "--served-model-name"
             - main
             - qwen27
-            - "--max-model-len=196608"
+            - "--max-model-len=262144"
             - "--dtype=bfloat16"
             - "--gpu-memory-utilization=0.90"
             - "--max-num-seqs=16"
