@@ -1,0 +1,154 @@
+# OpenHands Agent Canvas
+#
+# Agent Canvas is OpenHands' all-in-one container: React frontend, agent server,
+# and automation backend — all behind a single port (8000). No Docker socket
+# needed; agents connect to external LLM APIs directly.
+#
+# FIRST-TIME SETUP (after pod comes up):
+#   1. Open http://openhands.hoam.lan
+#   2. Settings → LLM → Add profile:
+#        Provider:  OpenAI-compatible
+#        Base URL:  http://vllm.hoam.lan/v1
+#        Model:     main
+#        API Key:   dummy
+#   3. Save and start a conversation
+#
+# Storage: two local-path PVCs
+#   openhands-state    — settings, secrets, conversation history, automation DB
+#   openhands-projects — code workspaces the agent reads/edits
+#
+# OH_SECRET_KEY / LOCAL_BACKEND_API_KEY are auto-generated on first start
+# and stored inside the state PVC, so they survive pod restarts.
+#
+# Endpoints: openhands.hoam.lan (private ingress)
+#
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openhands-state
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openhands-projects
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openhands
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: openhands
+  template:
+    metadata:
+      labels:
+        app: openhands
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: openhands
+          image: ghcr.io/openhands/agent-canvas:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: PORT
+              value: "8000"
+            - name: AUTOMATION_BASE_URL
+              value: "http://openhands.hoam.lan"
+          volumeMounts:
+            - name: state
+              mountPath: /home/openhands/.openhands
+            - name: projects
+              mountPath: /projects
+          livenessProbe:
+            httpGet:
+              path: /alive
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: openhands-state
+        - name: projects
+          persistentVolumeClaim:
+            claimName: openhands-projects
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openhands
+  namespace: default
+spec:
+  selector:
+    app: openhands
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openhands
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # WebSocket + SSE support — required for live agent event streaming
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: private
+  rules:
+    - host: openhands.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openhands
+                port:
+                  number: 80
