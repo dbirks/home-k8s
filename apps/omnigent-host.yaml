@@ -1,15 +1,44 @@
 # Omnigent persistent K8s host
 #
 # Runs `omnigent host` pointed at the in-cluster server. When you create
-# a session in the Omnigent web UI and pick this host, it spawns a runner
-# subprocess here (Claude Code or Codex) using the local vLLM endpoint.
+# a session in the Omnigent web UI and pick Pi harness, it spawns a Pi
+# subprocess here configured to talk to local vLLM via llm.hoam.lan.
 #
-# The omnigent-host image ships with claude, codex, git, tmux pre-baked.
-# IS_SANDBOX=1 is already set in the image ENV — tells Claude Code to
-# allow --dangerously-skip-permissions under root.
+# Agent/runner distinction:
+#   Pi   → configured via models.json → llm.hoam.lan (local vLLM, always free)
+#   claude → subscription auth (no API key in this pod — use locally)
+#   codex  → subscription auth (no API key in this pod — use locally)
 #
-# Agent workspaces are ephemeral (emptyDir). Agents should clone repos,
-# do work, and push. Add GIT_TOKEN secret if you need private repo access.
+# IS_SANDBOX=1 is already set in the image ENV.
+# Pi config is written from the ConfigMap below at container start.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pi-models-config
+  namespace: omnigent
+data:
+  models.json: |
+    {
+      "providers": {
+        "vllm": {
+          "baseUrl": "http://llm.hoam.lan/v1",
+          "api": "openai-completions",
+          "apiKey": "dummy",
+          "models": [
+            {
+              "id": "main",
+              "name": "Qwen3.6-27B (local vLLM)",
+              "reasoning": false,
+              "input": ["text", "image"],
+              "contextWindow": 262144,
+              "maxTokens": 65536,
+              "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+            }
+          ]
+        }
+      }
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -28,7 +57,21 @@ spec:
       labels:
         app: omnigent-host
     spec:
-      # Override the default `sleep infinity` CMD to connect to the server
+      initContainers:
+        # Write Pi config before the host process starts so Pi finds its
+        # models.json immediately. The directory must exist first — Pi
+        # doesn't create it until the first /model command.
+        - name: pi-config-init
+          image: busybox:1.37
+          command:
+            - /bin/sh
+            - -c
+            - "mkdir -p /root/.pi/agent && cp /etc/pi-config/models.json /root/.pi/agent/models.json"
+          volumeMounts:
+            - name: pi-config
+              mountPath: /etc/pi-config
+            - name: home
+              mountPath: /root
       containers:
         - name: host
           image: ghcr.io/omnigent-ai/omnigent-host:latest
@@ -38,26 +81,9 @@ spec:
             - host
             - "--server"
             - "http://omnigent.omnigent.svc.cluster.local"
-          env:
-            # Route Claude Code / Pi / Kiro through the traveling ingress.
-            # Switch llm.hoam.lan between vllm/sglang in llm-ingress.yaml
-            # and all agent runners here flip automatically.
-            - name: ANTHROPIC_BASE_URL
-              value: "http://llm.hoam.lan/v1"
-            - name: ANTHROPIC_API_KEY
-              value: "dummy"
-            # Route all Claude model tiers to our local model
-            - name: ANTHROPIC_DEFAULT_OPUS_MODEL
-              value: "main"
-            - name: ANTHROPIC_DEFAULT_SONNET_MODEL
-              value: "main"
-            - name: ANTHROPIC_DEFAULT_HAIKU_MODEL
-              value: "main"
-            # Point Codex at local vLLM (OpenAI-compatible endpoint)
-            - name: OPENAI_BASE_URL
-              value: "http://llm.hoam.lan/v1"
-            - name: OPENAI_API_KEY
-              value: "dummy"
+          # No ANTHROPIC_API_KEY or OPENAI_API_KEY here intentionally.
+          # Pi reads from ~/.pi/agent/models.json (see initContainer above).
+          # Claude Code and Codex use subscription auth on local machines.
           resources:
             requests:
               memory: 2Gi
@@ -66,15 +92,21 @@ spec:
               memory: 8Gi
               cpu: 4000m
           volumeMounts:
+            - name: home
+              mountPath: /root
             - name: workspace
               mountPath: /root/workspace
             - name: shm
               mountPath: /dev/shm
       volumes:
-        # Ephemeral workspace for agent file operations
+        - name: pi-config
+          configMap:
+            name: pi-models-config
+        # Shared home dir so initContainer's Pi config persists to main container
+        - name: home
+          emptyDir: {}
         - name: workspace
           emptyDir: {}
-        # Shared memory for Claude Code subprocess operations
         - name: shm
           emptyDir:
             medium: Memory
