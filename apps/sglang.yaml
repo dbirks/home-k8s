@@ -36,7 +36,7 @@ metadata:
   name: sglang-qwen27
   namespace: default
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: Recreate
   selector:
@@ -53,7 +53,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: sglang
-          image: lmsysorg/sglang:v0.5.13-cu130
+          image: lmsysorg/sglang:v0.5.13.post1-cu130
           command:
             - python3
             - -m
@@ -148,6 +148,8 @@ metadata:
   name: sglang
   namespace: default
   annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
 spec:
   ingressClassName: private

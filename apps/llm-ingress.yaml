@@ -1,0 +1,30 @@
+# Traveling LLM ingress — llm.hoam.lan
+#
+# Points to whichever inference backend is currently active.
+# To switch backends, change the service name below and commit:
+#   sglang  → SGLang (sglang.yaml, port 80)
+#   vllm    → vLLM   (vllm.yaml, port 80)
+#
+# Current: sglang
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+spec:
+  ingressClassName: private
+  rules:
+    - host: llm.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sglang
+                port:
+                  number: 80
