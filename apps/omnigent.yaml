@@ -1,0 +1,227 @@
+# Omnigent — coding agent orchestration server
+#
+# Mode A: server in Kubernetes, external hosts connect via `omnigent host`.
+# Run an agent host from any machine (including this cluster node) with:
+#   omnigent login http://omnigent.hoam.lan
+#   omnigent host --server http://omnigent.hoam.lan
+#
+# First-boot admin password is printed to pod logs and saved to
+# /data/admin-credentials on the PVC. Retrieve it with:
+#   kubectl logs -n omnigent deploy/omnigent | grep -i password
+#   kubectl exec -n omnigent deploy/omnigent -- cat /data/admin-credentials
+#
+# Endpoint: omnigent.hoam.lan (private ingress)
+# Auth: built-in accounts
+# Storage: local-path PVC (omnigent-data for server, postgres-data for DB)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: omnigent
+---
+# PVC for /data — persists artifacts, admin-credentials, and config
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: omnigent-data
+  namespace: omnigent
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+# In-cluster Postgres
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: omnigent
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omnigent-postgres
+  template:
+    metadata:
+      labels:
+        app: omnigent-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              value: omnigent
+            - name: POSTGRES_USER
+              value: omnigent
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: omnigent-secrets
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "omnigent"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "omnigent"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: omnigent
+spec:
+  type: ClusterIP
+  selector:
+    app: omnigent-postgres
+  ports:
+    - port: 5432
+      targetPort: postgres
+      name: postgres
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omnigent-config
+  namespace: omnigent
+data:
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  ARTIFACT_DIR: "/data/artifacts"
+  # Keep admin-credentials on the PVC so they survive restarts
+  OMNIGENT_ADMIN_CREDENTIALS_PATH: "/data/admin-credentials"
+  OMNIGENT_AUTH_ENABLED: "1"
+  OMNIGENT_AUTH_PROVIDER: "accounts"
+  OMNIGENT_ACCOUNTS_AUTO_OPEN: "0"
+  OMNIGENT_ACCOUNTS_BASE_URL: "http://omnigent.hoam.lan"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omnigent
+  namespace: omnigent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: omnigent
+  template:
+    metadata:
+      labels:
+        app: omnigent
+    spec:
+      containers:
+        - name: omnigent
+          image: ghcr.io/omnigent-ai/omnigent-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: omnigent-config
+            - secretRef:
+                name: omnigent-secrets
+          volumeMounts:
+            # Mount at /data (not /data/artifacts) to match docker-compose —
+            # admin-credentials lives at /data/admin-credentials, outside artifacts/
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: 2000m
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: omnigent-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omnigent
+  namespace: omnigent
+spec:
+  type: ClusterIP
+  selector:
+    app: omnigent
+  ports:
+    - port: 80
+      targetPort: http
+      name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omnigent
+  namespace: omnigent
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+spec:
+  ingressClassName: private
+  rules:
+    - host: omnigent.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omnigent
+                port:
+                  name: http
