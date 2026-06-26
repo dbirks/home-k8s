@@ -53,7 +53,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: sglang
-          image: lmsysorg/sglang:v0.5.13.post1-cu130
+          image: lmsysorg/sglang:v0.5.13-cu130
           command:
             - python3
             - -m
