@@ -35,7 +35,3 @@ spec:
       - "--pihole-api-version=6"
       # Only watch private-class ingresses (10.0.0.200)
       - "--ingress-class=private"
-      # Force all records to 10.0.0.200 regardless of ingress status —
-      # both nginx controllers race to write their IP into ingress status;
-      # this bypasses that conflict until the electionID fix takes hold
-      - "--target=10.0.0.200"
