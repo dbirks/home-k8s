@@ -77,13 +77,25 @@ spec:
           image: ghcr.io/omnigent-ai/omnigent-host:latest
           imagePullPolicy: Always
           command:
-            - omnigent
-            - host
-            - "--server"
-            - "http://omnigent.omnigent.svc.cluster.local"
-          # No ANTHROPIC_API_KEY or OPENAI_API_KEY here intentionally.
-          # Pi reads from ~/.pi/agent/models.json (see initContainer above).
-          # Claude Code and Codex use subscription auth on local machines.
+            - /bin/sh
+            - -c
+            - |
+              printf '%s\n%s\n' "$OMNIGENT_USERNAME" "$OMNIGENT_PASSWORD" \
+                | omnigent login http://omnigent.omnigent.svc.cluster.local \
+                && omnigent host --server http://omnigent.omnigent.svc.cluster.local
+          env:
+            - name: OMNIGENT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: omnigent-host-creds
+                  key: OMNIGENT_USERNAME
+            - name: OMNIGENT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: omnigent-host-creds
+                  key: OMNIGENT_PASSWORD
+          # No ANTHROPIC_API_KEY or OPENAI_API_KEY — Pi uses models.json (see
+          # initContainer), Claude Code and Codex use subscription auth locally.
           resources:
             requests:
               memory: 2Gi

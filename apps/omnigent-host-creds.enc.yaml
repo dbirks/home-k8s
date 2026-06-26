@@ -1,0 +1,23 @@
+apiVersion: v1
+data:
+    OMNIGENT_PASSWORD: ENC[AES256_GCM,data:p3rOqJ8FfC1GMkTsrDlDDw==,iv:z5rSg4Uy7i6ke7omIV45XFBZIHmXpkLuWctMFCYA47c=,tag:zi5U8a/a2FIJYKOcKD43Yw==,type:str]
+    OMNIGENT_USERNAME: ENC[AES256_GCM,data:Eia5e5gg0Uo=,iv:8B8cp3YJBnaZSAuR9vj3lq0eHRQ9MjyJpLKxMi6ACTc=,tag:rxOmC4d6yrMBUfgOeh2NIg==,type:str]
+kind: Secret
+metadata:
+    name: omnigent-host-creds
+    namespace: omnigent
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB1TVorbmdzSlFpNnpHdzB2
+            eVZIb0VLdWFsMGtGL3YzZkUxd3pvR0l1QlJnCkduRUI2c3JnVTlPclh3R3VjZGk5
+            Y3UyQmgrZlc0cGVxeTY2MU9TcFd4emcKLS0tIFpLYmpzSFMwaHB2QlFNSVZtbmlZ
+            aHZIYVA3Mk1uK3dJekxzblRhQXp4ZHcKanN9lgmVwVEIaFVlFkpouUX/gexUqBrI
+            io1PQ3ebAoIuietMJYoOyY8T/YSCVsXD1bzOGDXIw8AQvSdbeig21g==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-06-26T22:29:32Z"
+    mac: ENC[AES256_GCM,data:9NT6To0lwJ3+O+FPSLAjNKRCz6Y0OjghWFrSU89Igrqi4yNMBknqFkz0UdbG/6L7hKjND9pkPAzhD5W3lk+J1q9GWe3S2cocv1gkD76m6MT07QUaiLJKXgTHkbRvW03cLdBejgZge708TMPcysUIHMAvkKIPhaUsLbZXYe0RkHM=,iv:4a2x5lD+zOUacfHH73WLmyzs/s1Nbb3sEsEoqIU6UFs=,tag:SLg3KbBGEOHc2IhPHwc+UA==,type:str]
+    version: 3.13.0
