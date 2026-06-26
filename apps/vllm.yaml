@@ -40,7 +40,7 @@ metadata:
   name: vllm-qwen27
   namespace: default
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: Recreate
   selector:
