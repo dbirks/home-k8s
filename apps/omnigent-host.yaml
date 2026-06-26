@@ -1,0 +1,81 @@
+# Omnigent persistent K8s host
+#
+# Runs `omnigent host` pointed at the in-cluster server. When you create
+# a session in the Omnigent web UI and pick this host, it spawns a runner
+# subprocess here (Claude Code or Codex) using the local vLLM endpoint.
+#
+# The omnigent-host image ships with claude, codex, git, tmux pre-baked.
+# IS_SANDBOX=1 is already set in the image ENV — tells Claude Code to
+# allow --dangerously-skip-permissions under root.
+#
+# Agent workspaces are ephemeral (emptyDir). Agents should clone repos,
+# do work, and push. Add GIT_TOKEN secret if you need private repo access.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omnigent-host
+  namespace: omnigent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: omnigent-host
+  template:
+    metadata:
+      labels:
+        app: omnigent-host
+    spec:
+      # Override the default `sleep infinity` CMD to connect to the server
+      containers:
+        - name: host
+          image: ghcr.io/omnigent-ai/omnigent-host:latest
+          imagePullPolicy: Always
+          command:
+            - omnigent
+            - host
+            - "--server"
+            - "http://omnigent.omnigent.svc.cluster.local"
+          env:
+            # Route Claude Code / Pi / Kiro through the traveling ingress.
+            # Switch llm.hoam.lan between vllm/sglang in llm-ingress.yaml
+            # and all agent runners here flip automatically.
+            - name: ANTHROPIC_BASE_URL
+              value: "http://llm.hoam.lan/v1"
+            - name: ANTHROPIC_API_KEY
+              value: "dummy"
+            # Route all Claude model tiers to our local model
+            - name: ANTHROPIC_DEFAULT_OPUS_MODEL
+              value: "main"
+            - name: ANTHROPIC_DEFAULT_SONNET_MODEL
+              value: "main"
+            - name: ANTHROPIC_DEFAULT_HAIKU_MODEL
+              value: "main"
+            # Point Codex at local vLLM (OpenAI-compatible endpoint)
+            - name: OPENAI_BASE_URL
+              value: "http://llm.hoam.lan/v1"
+            - name: OPENAI_API_KEY
+              value: "dummy"
+          resources:
+            requests:
+              memory: 2Gi
+              cpu: 500m
+            limits:
+              memory: 8Gi
+              cpu: 4000m
+          volumeMounts:
+            - name: workspace
+              mountPath: /root/workspace
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        # Ephemeral workspace for agent file operations
+        - name: workspace
+          emptyDir: {}
+        # Shared memory for Claude Code subprocess operations
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
