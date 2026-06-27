@@ -2,15 +2,17 @@
 #
 # Runs `omnigent host` pointed at the in-cluster server. When you create
 # a session in the Omnigent web UI and pick Pi harness, it spawns a Pi
-# subprocess here configured to talk to local vLLM via llm.hoam.lan.
+# subprocess here configured to talk to local vLLM via in-cluster DNS.
 #
 # Agent/runner distinction:
-#   Pi   → configured via models.json → llm.hoam.lan (local vLLM, always free)
+#   Pi   → models.json → vllm.default.svc.cluster.local (local vLLM)
 #   claude → subscription auth (no API key in this pod — use locally)
 #   codex  → subscription auth (no API key in this pod — use locally)
 #
 # IS_SANDBOX=1 is already set in the image ENV.
 # Pi config is written from the ConfigMap below at container start.
+# A wrapper around the pi binary pre-selects vllm/main so Pi doesn't
+# fall back to its default google provider when spawned headlessly.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -22,7 +24,7 @@ data:
     {
       "providers": {
         "vllm": {
-          "baseUrl": "http://llm.hoam.lan/v1",
+          "baseUrl": "http://vllm.default.svc.cluster.local/v1",
           "api": "openai-completions",
           "apiKey": "dummy",
           "models": [
@@ -82,7 +84,11 @@ spec:
             - |
               printf '%s\n%s\n' "$OMNIGENT_USERNAME" "$OMNIGENT_PASSWORD" \
                 | omnigent login http://omnigent.omnigent.svc.cluster.local \
-                && omnigent host --server http://omnigent.omnigent.svc.cluster.local
+              && cp /usr/local/bin/pi /tmp/pi-real \
+              && printf '#!/bin/sh\nexec /tmp/pi-real --model vllm/main "$@"\n' \
+                   > /usr/local/bin/pi \
+              && chmod +x /usr/local/bin/pi \
+              && omnigent host --server http://omnigent.omnigent.svc.cluster.local
           env:
             - name: OMNIGENT_USERNAME
               valueFrom:
