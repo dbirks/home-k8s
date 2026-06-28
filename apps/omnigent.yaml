@@ -124,6 +124,10 @@ data:
   # (runner token doesn't carry user identity → 403 on every tunnel attempt).
   # Private ingress + Tailscale is the security boundary.
   OMNIGENT_AUTH_ENABLED: "0"
+  # When AUTH_ENABLED=0 the entrypoint sets LOCAL_SINGLE_USER=1, which only
+  # allows loopback WS origins. Explicitly allowlist the ingress hostname so
+  # the browser UI can connect.
+  OMNIGENT_WS_ALLOWED_ORIGINS: "http://omnigent.hoam.lan"
   # Sandbox provider config file — kubernetes runner Pods
   OMNIGENT_CONFIG: "/etc/omnigent/config.yaml"
 ---
