@@ -147,8 +147,9 @@ spec:
     spec:
       containers:
         - name: omnigent
-          image: ghcr.io/omnigent-ai/omnigent-server:latest
-          imagePullPolicy: Always
+          # v0.3.0 (latest-rc as of 2026-06-27; versioned tag not yet on GHCR)
+          image: ghcr.io/omnigent-ai/omnigent-server@sha256:89a539eeee327f5475e87850e88dad978b5ed5f53207edd9a786daabac948a77
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
               name: http
