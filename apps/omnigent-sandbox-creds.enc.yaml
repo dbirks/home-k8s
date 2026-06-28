@@ -1,0 +1,25 @@
+apiVersion: v1
+data:
+    ANTHROPIC_API_KEY: ENC[AES256_GCM,data:0sXpjxYHEx8=,iv:CqkQstffEjJDKq+H6yZZ5tg0QTSwkkcp8oiqbtThKkE=,tag:m4DHArOwrnsZ5VgYoAOfrQ==,type:str]
+    ANTHROPIC_BASE_URL: ENC[AES256_GCM,data:WXSaXfo73rGqDKRQmLOa5ThY/iLNG9peJEZXYHN+lpZdCcBWiVqsKE2iqt8lKcJVvmx+CvlJ464=,iv:b4sq57oIeLZzw4uIckxSg6XiDEghy1wZ+3TaiiUnIWQ=,tag:tfG1eZZoaa2+eydBZKw8CQ==,type:str]
+    OPENAI_API_KEY: ENC[AES256_GCM,data:296GpZSnZks=,iv:ui84ZUwrjiHmooIZqx9Azlg/Y1Lf7DQlncLJ9N+3fWQ=,tag:9vnpafxLmaK84bAFByto0g==,type:str]
+    OPENAI_BASE_URL: ENC[AES256_GCM,data:NIQBO7KV3SYA6VILO+0phwKqiQbaOv7k0BzhGSHolSiDgUCOL8TOOSYi6C9HvwAR80X2kdm//EU=,iv:YNuGqOjevsfVfKwZfWVRmcP8HH7Kad2sxm/SUC1g7YU=,tag:dO2oKiEBQLdtW/zYMbAfoQ==,type:str]
+kind: Secret
+metadata:
+    name: omnigent-creds
+    namespace: omnigent-sandboxes
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBIYmlxd2p5RnJuRCtwWkZI
+            L2l2ZStnRzlvZGtFYUgrazJYR0dab3RQM3lZCjR4L0trQXpVWUpod2dTZ0RGRHBs
+            WktWZThEQTVkdGIwNDFCczhERlBKUGsKLS0tIE9LTW8zd0VORmRKZ2lzZ2MzMVAv
+            QjN4M2pTTFJYN1JmZTl6N1dXSGlRTEEKzZBqPns44QJLSjH7DyRl6VFAYqaMy3ut
+            K2IE8wHTa2P3WPv118+38N8lje3vADxZOjGpJ17/c5Pg2XB1fBGfLQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-06-28T04:12:30Z"
+    mac: ENC[AES256_GCM,data:V5UhbTW5tpgL7zNUiG1OJIyD3ZTHWzGCgUdHSEfZo9EJKgukhV9wESrYhGAylK6R5+U7W3NNgTNBdIlfCKFBtDiVRxxHVb6s0puPusVJnB9jR6Pdcv39wus5WUO/CKvEmiKcNe4AR/cVFc/cq/8vzyfFH0vwO46atauX+ftBX4s=,iv:me7aY+wjltDsaqdQbVvtRKZ8T5e6xOWDXULnIeKW3aE=,tag:yQXav5bQDws5xhL6NiAaVA==,type:str]
+    version: 3.13.0

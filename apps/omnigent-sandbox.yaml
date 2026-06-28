@@ -1,0 +1,130 @@
+# Omnigent on-demand Kubernetes runner Pod sandbox
+#
+# Each session spawns a fresh isolated Pod in omnigent-sandboxes; the Pod runs
+# `omnigent host` as its entrypoint and dials back to the server over the
+# launch-token tunnel. Pod is deleted when the session ends.
+#
+# Two-namespace design: server + DB stay in `omnigent`; runner Pods land in
+# `omnigent-sandboxes`. The server SA's Pod/Secret rights are a namespaced Role
+# scoped to the runner namespace only — no access to the server's own namespace.
+#
+# Auth: accounts mode is incompatible with managed sandbox runner dial-back
+# (runner token doesn't carry user identity → 403). Server runs single-user
+# (no-auth) mode instead; the private ingress + Tailscale is the auth layer.
+---
+# Runner namespace — isolated from the server namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: omnigent-sandboxes
+  labels:
+    app.kubernetes.io/name: omnigent
+    app.kubernetes.io/component: runner
+    # Enforce restricted Pod Security so the server SA can't create
+    # privileged Pods even if compromised
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# Server SA — the server Deployment runs as this; bound via cross-namespace
+# RoleBinding to the sandbox-manager Role in omnigent-sandboxes
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omnigent-server
+  namespace: omnigent
+  labels:
+    app.kubernetes.io/name: omnigent
+    app.kubernetes.io/component: server
+---
+# Runner SA — intentionally powerless; automountServiceAccountToken: false
+# so the token is never even mounted in runner Pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omnigent-runner
+  namespace: omnigent-sandboxes
+  labels:
+    app.kubernetes.io/name: omnigent
+    app.kubernetes.io/component: runner
+automountServiceAccountToken: false
+---
+# Namespaced Role in the RUNNER namespace — scoped to exactly what the
+# entrypoint-as-host launcher calls. No watch, no list, no pods/exec.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: omnigent-sandbox-manager
+  namespace: omnigent-sandboxes
+  labels:
+    app.kubernetes.io/name: omnigent
+    app.kubernetes.io/component: server
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+---
+# Cross-namespace RoleBinding: grants the server SA (in omnigent) the
+# sandbox-manager Role scoped to omnigent-sandboxes only
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omnigent-sandbox-manager
+  namespace: omnigent-sandboxes
+  labels:
+    app.kubernetes.io/name: omnigent
+    app.kubernetes.io/component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: omnigent-sandbox-manager
+subjects:
+  - kind: ServiceAccount
+    name: omnigent-server
+    namespace: omnigent
+---
+# Sandbox provider config — mounted at /etc/omnigent/config.yaml in the
+# server Pod; OMNIGENT_CONFIG env var (set in omnigent.yaml) points at it
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omnigent-sandbox-config
+  namespace: omnigent
+  labels:
+    app.kubernetes.io/name: omnigent
+    app.kubernetes.io/component: server
+data:
+  config.yaml: |
+    sandbox:
+      provider: kubernetes
+      # Runner Pods dial back to the server via in-cluster DNS
+      server_url: http://omnigent.omnigent.svc.cluster.local
+      kubernetes:
+        namespace: omnigent-sandboxes
+        # LLM + git creds secret — projected into every runner Pod via envFrom
+        # (see omnigent-sandbox-creds.enc.yaml)
+        secret_name: omnigent-creds
+        service_account: omnigent-runner
+        # Pin runner Pods to the same image version as the persistent host
+        image: ghcr.io/omnigent-ai/omnigent-host@sha256:76304ca58945c12cb72e6d16f1026c940abb81eb1c7d19b2c40623538bb950d1
+        # Single-node cluster — pin to this node
+        node_selector:
+          kubernetes.io/hostname: talos-210-73x
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "4"
+            memory: "8Gi"
+        in_cluster: true

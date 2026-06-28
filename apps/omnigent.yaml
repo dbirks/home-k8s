@@ -1,17 +1,14 @@
 # Omnigent — coding agent orchestration server
 #
-# Mode A: server in Kubernetes, external hosts connect via `omnigent host`.
-# Run an agent host from any machine (including this cluster node) with:
-#   omnigent login http://omnigent.hoam.lan
-#   omnigent host --server http://omnigent.hoam.lan
+# On-demand Kubernetes sandbox is enabled — the server spawns ephemeral runner
+# Pods in the `omnigent-sandboxes` namespace (see omnigent-sandbox.yaml for the
+# RBAC and config). `omnigent[kubernetes]` is installed at server startup.
 #
-# First-boot admin password is printed to pod logs and saved to
-# /data/admin-credentials on the PVC. Retrieve it with:
-#   kubectl logs -n omnigent deploy/omnigent | grep -i password
-#   kubectl exec -n omnigent deploy/omnigent -- cat /data/admin-credentials
+# Auth is disabled (single-user / home-lab mode). The private nginx ingress and
+# Tailscale subnet router act as the security perimeter. accounts mode is
+# incompatible with the sandbox runner dial-back token model.
 #
 # Endpoint: omnigent.hoam.lan (private ingress)
-# Auth: built-in accounts
 # Storage: local-path PVC (omnigent-data for server, postgres-data for DB)
 ---
 apiVersion: v1
@@ -123,10 +120,12 @@ data:
   ARTIFACT_DIR: "/data/artifacts"
   # Keep admin-credentials on the PVC so they survive restarts
   OMNIGENT_ADMIN_CREDENTIALS_PATH: "/data/admin-credentials"
-  OMNIGENT_AUTH_ENABLED: "1"
-  OMNIGENT_AUTH_PROVIDER: "accounts"
-  OMNIGENT_ACCOUNTS_AUTO_OPEN: "0"
-  OMNIGENT_ACCOUNTS_BASE_URL: "http://omnigent.hoam.lan"
+  # Auth disabled — accounts mode is incompatible with sandbox runner dial-back
+  # (runner token doesn't carry user identity → 403 on every tunnel attempt).
+  # Private ingress + Tailscale is the security boundary.
+  OMNIGENT_AUTH_ENABLED: "0"
+  # Sandbox provider config file — kubernetes runner Pods
+  OMNIGENT_CONFIG: "/etc/omnigent/config.yaml"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -145,11 +144,18 @@ spec:
       labels:
         app: omnigent
     spec:
+      # Server SA has cross-namespace pod-create rights in omnigent-sandboxes
+      serviceAccountName: omnigent-server
       containers:
         - name: omnigent
           # v0.3.0 (latest-rc as of 2026-06-27; versioned tag not yet on GHCR)
           image: ghcr.io/omnigent-ai/omnigent-server@sha256:89a539eeee327f5475e87850e88dad978b5ed5f53207edd9a786daabac948a77
           imagePullPolicy: IfNotPresent
+          # Install kubernetes client before starting — not baked into the image
+          command:
+            - /bin/sh
+            - -c
+            - pip install 'omnigent[kubernetes]' --quiet && exec python /app/entrypoint.py
           ports:
             - containerPort: 8000
               name: http
@@ -163,6 +169,10 @@ spec:
             # admin-credentials lives at /data/admin-credentials, outside artifacts/
             - name: data
               mountPath: /data
+            # Sandbox provider config read by OMNIGENT_CONFIG env var
+            - name: sandbox-config
+              mountPath: /etc/omnigent
+              readOnly: true
           resources:
             requests:
               memory: 512Mi
@@ -174,7 +184,7 @@ spec:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 5
@@ -182,13 +192,16 @@ spec:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: omnigent-data
+        - name: sandbox-config
+          configMap:
+            name: omnigent-sandbox-config
 ---
 apiVersion: v1
 kind: Service

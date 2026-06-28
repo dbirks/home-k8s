@@ -83,24 +83,12 @@ spec:
             - /bin/sh
             - -c
             - |
-              printf '%s\n%s\n' "$OMNIGENT_USERNAME" "$OMNIGENT_PASSWORD" \
-                | omnigent login http://omnigent.omnigent.svc.cluster.local \
-              && cp /usr/local/bin/pi /tmp/pi-real \
+              cp /usr/local/bin/pi /tmp/pi-real \
               && printf '#!/bin/sh\nexec /tmp/pi-real --model vllm/main "$@"\n' \
                    > /usr/local/bin/pi \
               && chmod +x /usr/local/bin/pi \
               && omnigent host --server http://omnigent.omnigent.svc.cluster.local
-          env:
-            - name: OMNIGENT_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: omnigent-host-creds
-                  key: OMNIGENT_USERNAME
-            - name: OMNIGENT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: omnigent-host-creds
-                  key: OMNIGENT_PASSWORD
+          # No auth env vars — server runs in no-auth mode (single-user home lab)
           # No ANTHROPIC_API_KEY or OPENAI_API_KEY — Pi uses models.json (see
           # initContainer), Claude Code and Codex use subscription auth locally.
           resources:
