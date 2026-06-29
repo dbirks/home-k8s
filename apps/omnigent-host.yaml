@@ -76,8 +76,8 @@ spec:
               mountPath: /root
       containers:
         - name: host
-          # v0.3.0 (latest-rc as of 2026-06-27; versioned tag not yet on GHCR)
-          image: ghcr.io/omnigent-ai/omnigent-host@sha256:76304ca58945c12cb72e6d16f1026c940abb81eb1c7d19b2c40623538bb950d1
+          # v0.3.0 (rebuilt 2026-06-28)
+          image: ghcr.io/omnigent-ai/omnigent-host@sha256:d0f5bd972c089f4fc745c4b43b56d49761fd110d0719c4faba69a49a81cb32c7
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
