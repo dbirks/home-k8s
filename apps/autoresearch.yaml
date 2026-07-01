@@ -2,6 +2,10 @@
 # Agent edits train.py, runs 5-min experiments, evaluates val_bpb
 # Image: ghcr.io/dbirks/autoresearch (built from GitHub Actions)
 # Data: ~/.cache/autoresearch/ (PVC, ~few GB after first prepare.py run)
+#
+# GPU: MIG 2g.48gb slice (half of RTX PRO 6000 Blackwell)
+#   Other half: vllm pod
+#   MIG profile: 2g.48gb × 2 (hardware-isolated)
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -32,6 +36,7 @@ spec:
       labels:
         app: autoresearch
     spec:
+      runtimeClassName: nvidia
       restartPolicy: OnFailure
       containers:
         - name: autoresearch
@@ -46,11 +51,11 @@ spec:
           resources:
             limits:
               nvidia.com/gpu: 1
-              memory: 120Gi
+              memory: 60Gi
               cpu: "16"
             requests:
               nvidia.com/gpu: 1
-              memory: 80Gi
+              memory: 48Gi
               cpu: "8"
           volumeMounts:
             - name: data-cache
