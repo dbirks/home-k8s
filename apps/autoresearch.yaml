@@ -1,0 +1,61 @@
+# Autoresearch - Autonomous ML experiment framework (Karpathy)
+# Agent edits train.py, runs 5-min experiments, evaluates val_bpb
+# Image: ghcr.io/dbirks/autoresearch (built from GitHub Actions)
+# Data: ~/.cache/autoresearch/ (PVC, ~few GB after first prepare.py run)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: autoresearch-data
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: autoresearch
+  namespace: default
+spec:
+  serviceName: autoresearch
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autoresearch
+  template:
+    metadata:
+      labels:
+        app: autoresearch
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: autoresearch
+          image: ghcr.io/dbirks/autoresearch:master
+          imagePullPolicy: Always
+          command: ["uv", "run", "train.py"]
+          env:
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: PYTORCH_ALLOC_CONF
+              value: "expandable_segments:True"
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: 120Gi
+              cpu: "16"
+            requests:
+              nvidia.com/gpu: 1
+              memory: 80Gi
+              cpu: "8"
+          volumeMounts:
+            - name: data-cache
+              mountPath: /root/.cache/autoresearch
+      volumes:
+        - name: data-cache
+          persistentVolumeClaim:
+            claimName: autoresearch-data
