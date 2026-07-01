@@ -12,9 +12,10 @@
 #   - Starts FIRST via K8s native sidecar (initContainer + restartPolicy: Always)
 #   - Must pass startupProbe before main model begins loading
 #
-# GPU: MIG 2g.48gb slice (half of RTX PRO 6000 Blackwell)
-#   Other half: autoresearch pod
-#   --gpu-memory-utilization reduced to 0.65 for 48GB slice
+# GPU: shares the single physical RTX PRO 6000 Blackwell with the
+#   autoresearch pod via k8s device-plugin time-slicing (this workstation
+#   SKU has no MIG support — see prereqs/nvidia-device-plugin.yaml).
+#   --gpu-memory-utilization reduced to 0.50 to leave ~48GB free.
 #
 # Claude Code connection:
 #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
@@ -77,7 +78,12 @@ spec:
             - qwen27
             - "--max-model-len=262144"
             - "--dtype=bfloat16"
-            - "--gpu-memory-utilization=0.65"
+            # Dropped from 0.90 — the autoresearch StatefulSet time-slices this
+            # same physical GPU (see prereqs/nvidia-device-plugin.yaml) and
+            # needs ~45GB free. Weights+cudagraph are ~25GB, so 0.50 (~48GB)
+            # still leaves ~700K tokens of fp8 KV cache, well above what
+            # coding-agent traffic needs.
+            - "--gpu-memory-utilization=0.50"
             - "--max-num-seqs=16"
             - "--kv-cache-dtype=fp8_e4m3"
             # Narrow CUDA Graph capture to decode only — research suggests

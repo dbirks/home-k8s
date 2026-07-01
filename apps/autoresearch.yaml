@@ -1,16 +1,18 @@
-# Autoresearch - Autonomous ML experiment framework (Karpathy)
-# Agent edits train.py, runs 5-min experiments, evaluates val_bpb
-# Image: ghcr.io/dbirks/autoresearch (built from GitHub Actions)
-# Data: ~/.cache/autoresearch/ (PVC, ~few GB after first prepare.py run)
+# autoresearch — nanochat-style small-GPT research loop
 #
-# GPU: MIG 2g.48gb slice (half of RTX PRO 6000 Blackwell)
-#   Other half: vllm pod
-#   MIG profile: 2g.48gb × 2 (hardware-isolated)
----
+# The pod idles (sleep) by default; the coding agent drives experiments via
+# `kubectl exec` per SETUP.md in the autoresearch-playground repo:
+#   kubectl exec autoresearch-0 -- uv run prepare.py   # one-time data prep
+#   kubectl exec autoresearch-0 -- uv run train.py     # each experiment
+#
+# Shares the single physical GPU with vllm-qwen27 via time-slicing (see
+# prereqs/nvidia-device-plugin.yaml — this card has no MIG support). vllm's
+# --gpu-memory-utilization was dropped to 0.50 to leave ~48GB free; the
+# baseline training run here uses ~45GB.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: autoresearch-data
+  name: autoresearch-cache
   namespace: default
 spec:
   accessModes:
@@ -37,30 +39,35 @@ spec:
         app: autoresearch
     spec:
       runtimeClassName: nvidia
-      restartPolicy: OnFailure
+      enableServiceLinks: false
       containers:
         - name: autoresearch
           image: ghcr.io/dbirks/autoresearch:master
           imagePullPolicy: Always
-          command: ["uv", "run", "train.py"]
+          command: ["sleep", "infinity"]
           env:
-            - name: CUDA_VISIBLE_DEVICES
-              value: "0"
             - name: PYTORCH_ALLOC_CONF
               value: "expandable_segments:True"
           resources:
             limits:
               nvidia.com/gpu: 1
-              memory: 60Gi
-              cpu: "16"
             requests:
-              nvidia.com/gpu: 1
-              memory: 48Gi
-              cpu: "8"
+              cpu: "2"
+              memory: 8Gi
           volumeMounts:
-            - name: data-cache
+            - name: cache
               mountPath: /root/.cache/autoresearch
       volumes:
-        - name: data-cache
+        - name: cache
           persistentVolumeClaim:
-            claimName: autoresearch-data
+            claimName: autoresearch-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autoresearch
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    app: autoresearch

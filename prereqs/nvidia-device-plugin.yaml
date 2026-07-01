@@ -1,3 +1,26 @@
+# Time-slicing config: the single RTX PRO 6000 Blackwell doesn't support MIG
+# (workstation SKU), so we replicate nvidia.com/gpu into 2 schedulable slots
+# to let vllm-qwen27 and autoresearch share the physical card. This is
+# compute time-slicing only — no memory isolation between processes, so
+# each workload's own memory ceiling (e.g. vllm's --gpu-memory-utilization)
+# must be sized to leave room for the other. See apps/autoresearch.yaml and
+# apps/vllm.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nvidia-device-plugin-configs
+  namespace: kube-system
+data:
+  time-slicing-config: |-
+    version: v1
+    flags:
+      migStrategy: none
+    sharing:
+      timeSlicing:
+        resources:
+        - name: nvidia.com/gpu
+          replicas: 2
+---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -20,3 +43,6 @@ spec:
   # https://github.com/NVIDIA/k8s-device-plugin/blob/main/deployments/helm/nvidia-device-plugin/values.yaml
   values:
     runtimeClassName: nvidia
+    config:
+      name: nvidia-device-plugin-configs
+      default: time-slicing-config
