@@ -100,6 +100,8 @@ spec:
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
             - "--max-num-batched-tokens=8192"
+            - "--speculative-config"
+            - '{"method":"dflash","model":"z-lab/Qwen3.6-27B-DFlash","num_speculative_tokens":16}'
           ports:
             - containerPort: 8000
           env:
