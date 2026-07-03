@@ -152,8 +152,8 @@ spec:
       serviceAccountName: omnigent-server
       containers:
         - name: omnigent
-          # v0.3.0 (rebuilt 2026-06-28)
-          image: ghcr.io/omnigent-ai/omnigent-server@sha256:c52f8732d0c5ae1775e2992731fa5dceedd0ebd2aa55909f9e3e4d7ee9d899e2
+          # v0.4.0
+          image: ghcr.io/omnigent-ai/omnigent-server@sha256:fe083a76b6c81d9e3350fccfefc8345a6a14efed907cc7bf66b9fbf38b138b4d
           imagePullPolicy: IfNotPresent
           # Install kubernetes client before starting — not baked into the image
           command:
