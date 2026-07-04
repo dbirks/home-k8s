@@ -76,7 +76,7 @@ spec:
             - "--served-model-name"
             - main
             - qwen27
-            - "--max-model-len=131072"
+            - "--max-model-len=262144"
             - "--dtype=bfloat16"
             # Dropped from 0.90 — the autoresearch StatefulSet time-slices this
             # same physical GPU (see prereqs/nvidia-device-plugin.yaml). 0.50
