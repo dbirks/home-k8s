@@ -78,14 +78,7 @@ spec:
             - qwen27
             - "--max-model-len=262144"
             - "--dtype=bfloat16"
-            # Dropped from 0.90 — the autoresearch StatefulSet time-slices this
-            # same physical GPU (see prereqs/nvidia-device-plugin.yaml). 0.50
-            # (~48GB) wasn't enough headroom: autoresearch's baseline actually
-            # peaks around ~48-50GB shared on this card (not the ~45GB
-            # SETUP.md quoted from an unshared H100 run), and OOM'd on step 1.
-            # 0.45 (~43GB) still leaves a large fp8 KV cache, well above what
-            # coding-agent traffic needs.
-            - "--gpu-memory-utilization=0.45"
+            - "--gpu-memory-utilization=0.90"
             - "--max-num-seqs=16"
             - "--kv-cache-dtype=fp8_e4m3"
             # Narrow CUDA Graph capture to decode only — research suggests
