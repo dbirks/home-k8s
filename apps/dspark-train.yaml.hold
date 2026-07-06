@@ -1,0 +1,255 @@
+# DSpark Speculator Training Job — Qwen3.6-27B
+#
+# This file uses the .hold suffix so Flux ignores it.
+# Run this when you're ready to train (typically overnight):
+#
+#   STEP 1 — scale down vLLM to free the GPU:
+#     kubectl scale deployment vllm-qwen27 --replicas=0 -n default
+#     kubectl scale deployment vllm-qwen4b --replicas=0 -n default
+#
+#   STEP 2 — apply:
+#     kubectl apply -f apps/dspark-train.yaml.hold
+#
+#   STEP 3 — watch logs:
+#     kubectl logs -n default -f job/dspark-train-qwen27
+#
+#   STEP 4 — when done, scale vLLM back up and clean up the job:
+#     kubectl scale deployment vllm-qwen27 --replicas=1 -n default
+#     kubectl scale deployment vllm-qwen4b --replicas=1 -n default
+#     kubectl delete job dspark-train-qwen27 -n default
+#
+# Checkpoint behavior:
+#   - Saves every 25% of an epoch (--checkpoint-freq 0.25)
+#   - Resume is ON BY DEFAULT — if the pod restarts, trainer looks in
+#     --save-path for existing checkpoints and continues from the latest
+#
+# Estimated time: 15-30 hrs for ~50K samples (5 epochs, online mode)
+# VRAM: vLLM util=0.35 (~33.6 GB) + trainer (~24-33 GB) = fits in 96 GB
+#
+# After training:
+#   1. Upload /output/checkpoints to HuggingFace (huggingface-cli upload)
+#   2. In vllm.yaml, change speculative-config model from
+#      z-lab/Qwen3.6-27B-DFlash to your new checkpoint repo
+---
+# Output PVC — survives pod restarts, stores checkpoints + logs
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dspark-output
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 50Gi
+---
+# Training script mounted into the container.
+# No custom Docker image — uses vllm/vllm-openai as base, installs speculators
+# at runtime (the image is already cached on the node so startup is fast).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-train-script
+  namespace: default
+data:
+  train.sh: |
+    #!/bin/bash
+    # DSpark online training — vLLM generates hidden states, trainer consumes
+    # them immediately (--on-generate delete keeps disk usage near zero).
+    #
+    # Resume behavior: automatic. train.py checks --save-path for existing
+    # checkpoints and resumes from the latest one on restart (no extra flag needed).
+    set -euo pipefail
+
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    echo "=== [$(date)] DSpark training job started ==="
+
+    # speculators PyPI package — pip install speculators (NOT vllm-speculators)
+    echo "=== Installing speculators ==="
+    pip install speculators hf_transfer --quiet
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+
+    # Find the scripts/ directory that ships with the pip package
+    SPEC_SCRIPTS=$(python3 -c "
+    import speculators, os, pathlib
+    pkg = pathlib.Path(speculators.__file__).parent
+    for candidate in [pkg.parent / 'scripts', pkg / '..' / 'scripts']:
+        if (candidate / 'train.py').exists():
+            print(str(candidate.resolve()))
+            break
+    " 2>/dev/null || true)
+
+    if [ -z "$SPEC_SCRIPTS" ] || [ ! -f "$SPEC_SCRIPTS/train.py" ]; then
+        echo "Scripts not bundled with pip install — cloning repo"
+        git clone --depth 1 https://github.com/vllm-project/speculators.git /tmp/speculators
+        SPEC_SCRIPTS=/tmp/speculators/scripts
+    fi
+    echo "Using scripts: $SPEC_SCRIPTS"
+
+    mkdir -p /output/hidden-states /output/checkpoints /output/logs
+
+    # ----------------------------------------------------------------
+    # Launch vLLM with hidden-state extraction
+    #
+    # launch_vllm.py wraps vllm serve with:
+    #   --speculative_config '{"method":"extract_hidden_states",...}'
+    #   --kv_transfer_config '{"kv_connector":"ExampleHiddenStatesConnector",...}'
+    #
+    # target-layer-ids for 64-layer Qwen3.6-27B: [2, 32, 61, 64]
+    # Formula: [2, num_layers//2, num_layers-3, num_layers]
+    # ----------------------------------------------------------------
+    echo "=== [$(date)] Starting vLLM (util=0.35, port 8001) ==="
+    python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
+        --target-layer-ids 2 32 61 64 \
+        --hidden-states-path /output/hidden-states \
+        -- \
+        --gpu-memory-utilization 0.35 \
+        --port 8001 \
+        --max-model-len 32768 \
+        --dtype bfloat16 \
+        --trust-remote-code \
+        --served-model-name main \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 \
+        --mamba-ssm-cache-dtype float16 \
+        > /output/logs/vllm.log 2>&1 &
+    VLLM_PID=$!
+    trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
+
+    echo "=== Waiting for vLLM health (up to 90 min) ==="
+    for i in $(seq 1 540); do
+        if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+            echo "[$(date)] vLLM healthy after $((i * 10))s"
+            break
+        fi
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "ERROR: vLLM process died. Last 60 log lines:"
+            tail -60 /output/logs/vllm.log
+            exit 1
+        fi
+        [ "$i" -eq 540 ] && echo "ERROR: vLLM health timeout (90 min)" && exit 1
+        sleep 10
+    done
+
+    # Show if we're resuming
+    if [ -d /output/checkpoints ] && [ "$(ls -A /output/checkpoints 2>/dev/null)" ]; then
+        echo "[$(date)] Resuming from existing checkpoint (automatic)"
+        ls -lh /output/checkpoints/
+    else
+        echo "[$(date)] Starting fresh training run"
+    fi
+
+    # ----------------------------------------------------------------
+    # DSpark training — online mode
+    #   --on-missing generate   : call vLLM to produce hidden states
+    #   --on-generate delete    : discard immediately, no disk buildup
+    #   --checkpoint-freq 0.25  : save every 25% of epoch (~4/epoch)
+    #   Resume is automatic: train.py checks --save-path on startup
+    # ----------------------------------------------------------------
+    echo "=== [$(date)] Running train.py ==="
+    python3 "$SPEC_SCRIPTS/train.py" \
+        --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \
+        --vllm-endpoint http://localhost:8001/v1 \
+        --speculator-type dspark \
+        --num-layers 3 \
+        --block-size 8 \
+        --max-anchors 3072 \
+        --target-layer-ids 2 32 61 64 \
+        --draft-vocab-size 32000 \
+        --markov-rank 256 \
+        --markov-head-type vanilla \
+        --enable-confidence-head \
+        --confidence-head-with-markov \
+        --loss-fn '{"ce": 0.1, "tv": 0.9}' \
+        --confidence-head-alpha 1.0 \
+        --total-seq-len 4096 \
+        --epochs 5 \
+        --lr 3e-4 \
+        --on-missing generate \
+        --on-generate delete \
+        --data-path /output \
+        --hidden-states-path /output/hidden-states \
+        --save-path /output/checkpoints \
+        --checkpoint-freq 0.25 \
+        2>&1 | tee /output/logs/trainer.log
+
+    echo "=== [$(date)] Training complete! ==="
+    echo "Checkpoint contents:"
+    ls -lh /output/checkpoints/
+    echo ""
+    echo "Next: upload /output/checkpoints to HuggingFace, then update"
+    echo "vllm.yaml speculative-config to point to your new checkpoint."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-qwen27
+  namespace: default
+spec:
+  # 5 retries with exponential backoff; train.py resumes from checkpoint automatically
+  backoffLimit: 5
+  # 48 hr hard limit; increase to 432000 (5 days) for a 200K-sample run
+  activeDeadlineSeconds: 172800
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      # Prevents K8s injecting VLLM_PORT env var from the vllm Service
+      enableServiceLinks: false
+      containers:
+        - name: trainer
+          # Reuse the image already on the node — no re-pull needed.
+          # speculators is pip-installed at job start (~30s).
+          image: vllm/vllm-openai:v0.24.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "4"
+              memory: 32Gi
+          volumeMounts:
+            # Re-use existing model cache — avoids re-downloading 27B model
+            # Requires vllm-qwen27 scaled to 0 first (ReadWriteOnce constraint)
+            - name: models
+              mountPath: /data
+            # Checkpoint-safe output — survives pod restarts
+            - name: output
+              mountPath: /output
+            # Training script from ConfigMap
+            - name: scripts
+              mountPath: /scripts
+            # Large /dev/shm for PyTorch shared memory
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output
+        - name: scripts
+          configMap:
+            name: dspark-train-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
