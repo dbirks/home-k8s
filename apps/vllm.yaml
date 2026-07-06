@@ -82,7 +82,7 @@ spec:
             # PIECEWISE is the correct mode for FlashInfer + speculative decoding;
             # FULL_DECODE_ONLY is incompatible with the FlashInfer attention backend.
             - "--compilation-config"
-            - '{"cudagraph_mode":"PIECEWISE","cudagraph_capture_size":2048}'
+            - '{"cudagraph_mode":"PIECEWISE"}'
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
