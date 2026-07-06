@@ -76,11 +76,13 @@ spec:
             - "--gpu-memory-utilization=0.90"
             - "--max-num-seqs=16"
             - "--kv-cache-dtype=fp8_e4m3"
-            # Narrow CUDA Graph capture to decode only — research suggests
-            # full-graph replay is a stressor on the Blackwell GSP firmware
-            # bug (see issue #46). Keeps decode-loop perf with eager prefill.
+            # DeltaNet recurrent state cannot be FP8 — must be float16
+            - "--mamba-cache-dtype=float16"
+            - "--mamba-ssm-cache-dtype=float16"
+            # PIECEWISE is the correct mode for FlashInfer + speculative decoding;
+            # FULL_DECODE_ONLY is incompatible with the FlashInfer attention backend.
             - "--compilation-config"
-            - '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+            - '{"cudagraph_mode":"PIECEWISE","cudagraph_capture_size":2048}'
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
@@ -89,7 +91,7 @@ spec:
             - "--performance-mode=throughput"
             - "--max-num-batched-tokens=8192"
             - "--speculative-config"
-            - '{"method":"dflash","model":"z-lab/Qwen3.6-27B-DFlash","num_speculative_tokens":16}'
+            - '{"method":"dflash","model":"z-lab/Qwen3.6-27B-DFlash","num_speculative_tokens":16,"dynamic":true}'
           ports:
             - containerPort: 8000
           env:
@@ -101,6 +103,19 @@ spec:
                 secretKeyRef:
                   name: hf-token
                   key: HF_TOKEN
+            # Enable FlashInfer CUTLASS NVFP4 MoE kernel path on SM120
+            - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: latency
+            # Ensure FlashInfer JIT targets SM120 explicitly across upgrades
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: 12.0f
+            - name: FLASHINFER_FORCE_SM
+              value: 120f
+            # Reduce allocator fragmentation under prefix caching
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
           resources:
             limits:
               nvidia.com/gpu: 1
