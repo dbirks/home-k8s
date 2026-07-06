@@ -1,0 +1,174 @@
+# vLLM Semantic Router v0.3
+#
+# Envoy ExtProc router that sits in front of the two vLLM instances:
+#   - large: vllm:80       (Qwen3.6-27B-NVFP4, 0.60 GPU util)
+#   - small: vllm-small:80 (Qwen3.5-4B-Instruct, 0.28 GPU util)
+#
+# Client sends to vllm.hoam.lan → nginx → this router:8080
+# Router classifies using mmBERT, then proxies to the right backend.
+#
+# Default decision: all traffic → large model (safe baseline).
+# Add routing decisions via the dashboard: semantic-router.hoam.lan
+#
+# Model downloads happen automatically at startup (mmBERT + classifiers).
+# First startup takes 10-30 minutes depending on network speed.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: semantic-router
+  namespace: default
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: semantic-router
+      version: "0.3.0"
+      sourceRef:
+        kind: HelmRepository
+        name: semantic-router
+        namespace: flux-system
+      interval: 1m
+  # Pin to a specific image tag instead of relying on appVersion
+  values:
+    fullnameOverride: "semantic-router"
+    image:
+      tag: "v0.3.0"
+      pullPolicy: IfNotPresent
+
+    replicaCount: 1
+
+    resources:
+      limits:
+        memory: "8Gi"
+        cpu: "4"
+      requests:
+        memory: "3Gi"
+        cpu: "1"
+
+    persistence:
+      enabled: true
+      storageClassName: "local-path"
+      accessMode: ReadWriteOnce
+      size: 10Gi
+
+    # HF token for downloading mmBERT and classifier models
+    envFromSecrets:
+      - hf-token
+
+    # Built-in ingress disabled — vllm.hoam.lan points here via vllm.yaml ingress
+    ingress:
+      enabled: false
+
+    # Dashboard: accessible at semantic-router.hoam.lan (Ingress below)
+    dashboard:
+      enabled: true
+      image:
+        tag: "v0.3.0"
+      podSecurityContext:
+        fsGroup: 65532
+      persistence:
+        enabled: true
+        storageClassName: "local-path"
+        size: 2Gi
+
+    # Allow 60 min for mmBERT + classifier downloads on first start
+    startupProbe:
+      enabled: true
+      periodSeconds: 10
+      failureThreshold: 360
+
+    # Routing config: two backends, default to large model.
+    # Use the dashboard to add complexity/domain routing decisions.
+    config:
+      version: v0.3
+      listeners:
+        - name: "grpc-50051"
+          address: "0.0.0.0"
+          port: 50051
+          timeout: "300s"
+        - name: "http-8080"
+          address: "0.0.0.0"
+          port: 8080
+          timeout: "300s"
+      providers:
+        defaults:
+          default_model: "main"
+          reasoning_families:
+            deepseek:
+              type: "chat_template_kwargs"
+              parameter: "thinking"
+            qwen3:
+              type: "chat_template_kwargs"
+              parameter: "enable_thinking"
+          default_reasoning_effort: high
+        models:
+          - name: "main"
+            provider_model_id: "main"
+            backend_refs:
+              - name: "qwen27"
+                endpoint: "vllm:80"
+                protocol: "http"
+                weight: 100
+          - name: "qwen4b"
+            provider_model_id: "main"
+            backend_refs:
+              - name: "qwen4b"
+                endpoint: "vllm-small:80"
+                protocol: "http"
+                weight: 100
+      routing:
+        modelCards:
+          - name: "main"
+            param_size: "27B"
+            description: "Qwen3.6-27B-NVFP4 — full-context coding model"
+          - name: "qwen4b"
+            param_size: "4B"
+            description: "Qwen3.5-4B-Instruct — fast small model for simple queries"
+        signals:
+          domains:
+            - name: "general"
+              description: "Catch-all domain"
+              mmlu_categories: ["other"]
+        decisions:
+          - name: "default-to-large"
+            description: "Route all requests to Qwen3.6-27B. Add decisions via dashboard to route simple queries to qwen4b."
+            priority: 100
+            rules:
+              operator: "AND"
+              conditions: []
+            modelRefs:
+              - model: "main"
+      global:
+        stores:
+          semantic_cache:
+            enabled: true
+            backend_type: "memory"
+            similarity_threshold: 0.85
+            max_entries: 500
+            ttl_seconds: 3600
+            eviction_policy: "fifo"
+            embedding_model: mmbert
+---
+# Dashboard ingress — navigate to http://semantic-router.hoam.lan to configure routing
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: semantic-router-dashboard
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: private
+  rules:
+    - host: semantic-router.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: semantic-router-dashboard
+                port:
+                  number: 8700

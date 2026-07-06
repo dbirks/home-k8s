@@ -1,0 +1,125 @@
+# vLLM Small Model - Qwen3.5-4B-Instruct
+#
+# Lightweight backend for the semantic router, serving simple/short requests.
+# Routes from vllm.hoam.lan → semantic-router → this pod for "easy" queries.
+#
+# GPU budget: 0.28 × 96GB = 26.9GB VRAM reserved
+# Combined with large model (0.60): 0.88 total — 11.5GB headroom
+#
+# Served as model "main" so the semantic router can forward transparently.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-small-models
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-qwen4b
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+      model: qwen4b
+  template:
+    metadata:
+      labels:
+        app: vllm
+        model: qwen4b
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.24.0
+          command:
+            - vllm
+            - serve
+            - Qwen/Qwen3.5-4B-Instruct
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--served-model-name"
+            - main
+            - qwen4b
+            - "--max-model-len=32768"
+            - "--dtype=bfloat16"
+            - "--gpu-memory-utilization=0.28"
+            - "--max-num-seqs=8"
+            - "--max-num-batched-tokens=4096"
+            - "--enable-prefix-caching"
+            - "--trust-remote-code"
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser=qwen3_coder"
+            - "--reasoning-parser=qwen3"
+            - "--performance-mode=throughput"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 4Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-small-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-small
+  namespace: default
+spec:
+  selector:
+    app: vllm
+    model: qwen4b
+  ports:
+    - port: 80
+      targetPort: 8000

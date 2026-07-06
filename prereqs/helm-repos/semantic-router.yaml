@@ -1,0 +1,9 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: semantic-router
+  namespace: flux-system
+spec:
+  type: oci
+  url: oci://ghcr.io/vllm-project/charts
+  interval: 12h
