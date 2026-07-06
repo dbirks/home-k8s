@@ -12,11 +12,6 @@
 #   - Starts FIRST via K8s native sidecar (initContainer + restartPolicy: Always)
 #   - Must pass startupProbe before main model begins loading
 #
-# GPU: shares the single physical RTX PRO 6000 Blackwell with the
-#   autoresearch pod via k8s device-plugin time-slicing (this workstation
-#   SKU has no MIG support — see prereqs/nvidia-device-plugin.yaml).
-#   --gpu-memory-utilization reduced to 0.50 to leave ~48GB free.
-#
 # Claude Code connection:
 #   ANTHROPIC_BASE_URL=http://vllm.hoam.lan
 #   ANTHROPIC_API_KEY=dummy

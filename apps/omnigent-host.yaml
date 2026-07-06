@@ -77,7 +77,7 @@ spec:
       containers:
         - name: host
           # v0.4.0
-          image: ghcr.io/omnigent-ai/omnigent-host@sha256:d1b47a67a3a7edbda182b090b35f582f123c2f11ad4a08a4a6b3b159f38f84ac
+          image: ghcr.io/omnigent-ai/omnigent-host@sha256:7ceb4b0f11c5ccc8a9d7c71b574a5a0575e172709802931ef45ff62fc2ef3625
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
