@@ -44,7 +44,7 @@ kubectl create secret generic sops-age --namespace=flux-system \
 - **All changes must go through GitOps** — edit files in the repo, commit, and let Flux reconcile. Do not patch deployments directly with kubectl.
 - Suspended apps are renamed to `.yaml.hold` so Flux ignores them
 - Scaled-down deployments use `replicas: 0` in their yaml (e.g. `apps/vllm-tts.yaml`)
-- Node IP is DHCP-assigned (currently 10.0.0.177) — update talosconfig endpoints and kubeconfig cluster server if it changes
+- Node IP is DHCP-assigned (currently 10.0.0.198) — update talosconfig endpoints and kubeconfig cluster server if it changes
 - `enableServiceLinks: false` is required on vLLM pods (K8s service named "vllm" conflicts with vLLM's VLLM_PORT env var)
 - GPU workloads need `runtimeClassName: nvidia`
 - Node needs label `feature.node.kubernetes.io/pci-10de.present=true` for nvidia-device-plugin DaemonSet
