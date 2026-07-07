@@ -27,7 +27,7 @@ metadata:
   name: vllm-qwen4b
   namespace: default
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: Recreate
   selector:
