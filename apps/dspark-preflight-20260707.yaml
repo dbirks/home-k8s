@@ -1,0 +1,161 @@
+# DSpark Preflight Job — 2026-07-07
+#
+# Tests the setup steps (apt+uv+git install, speculators clone, prepare_data.py)
+# WITHOUT a GPU or vLLM, so it can run while vLLM is serving normally.
+#
+# Run this to validate the script before a full training run:
+#   kubectl apply -f apps/dspark-preflight-20260707.yaml
+#   kubectl logs -n default -f job/dspark-preflight-20260707
+#
+# If prepare_data.py passes: token_freq.pt + Arrow files land on dspark-output PVC.
+# Those files are shared with the real training job — so a successful preflight
+# means the training job can skip data prep entirely and jump straight to vLLM.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-preflight-script-20260707
+  namespace: default
+data:
+  preflight.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    trap 'echo "=== FAILED at line $LINENO, exit $? ==="; tail -20 /output/logs/prepare_data.log 2>/dev/null || true' ERR
+
+    export HF_HOME=/data
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+
+    echo "=== [$(date -u)] DSpark preflight started ==="
+    echo "Python: $(python3 --version)"
+    echo "HF_TOKEN set: $([ -n "${HF_TOKEN:-}" ] && echo yes || echo NO)"
+    echo "HF_HOME: $HF_HOME"
+
+    # ----------------------------------------------------------------
+    # Step 1: Install git via apt (not a curl workaround — proper package)
+    # ----------------------------------------------------------------
+    t0=$(date +%s)
+    echo ""
+    echo "=== [$(date -u)] Installing git ==="
+    apt-get update -qq 2>&1 | tail -3
+    apt-get install -y git --no-install-recommends -qq
+    echo "  git: $(git --version) (took $(($(date +%s)-t0))s)"
+
+    # ----------------------------------------------------------------
+    # Step 2: Install uv (fast Python package manager), then speculators
+    # ----------------------------------------------------------------
+    t0=$(date +%s)
+    echo ""
+    echo "=== [$(date -u)] Installing uv ==="
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"
+    hash -r
+    echo "  uv: $(uv --version) (took $(($(date +%s)-t0))s)"
+
+    # ----------------------------------------------------------------
+    # Step 3: Clone speculators repo — gets package AND scripts/ in one shot
+    # Falls back to pip + curl if clone fails
+    # ----------------------------------------------------------------
+    t0=$(date +%s)
+    echo ""
+    echo "=== [$(date -u)] Cloning speculators repo ==="
+    if git clone --depth=1 https://github.com/vllm-project/speculators /tmp/speculators-repo 2>&1; then
+        SPEC_SCRIPTS=/tmp/speculators-repo/scripts
+        echo "  Cloned. Installing from source via uv..."
+        uv pip install /tmp/speculators-repo hf_transfer --system --quiet
+    else
+        echo "  git clone failed — falling back to pip install + curl"
+        uv pip install speculators hf_transfer --system --quiet
+        SPEC_SCRIPTS=/tmp/speculators-scripts
+        mkdir -p "$SPEC_SCRIPTS/evaluate"
+        BASE="https://raw.githubusercontent.com/vllm-project/speculators/main/scripts"
+        curl -fsSL "$BASE/prepare_data.py"      -o "$SPEC_SCRIPTS/prepare_data.py"
+        curl -fsSL "$BASE/launch_vllm.py"       -o "$SPEC_SCRIPTS/launch_vllm.py"
+        curl -fsSL "$BASE/train.py"             -o "$SPEC_SCRIPTS/train.py"
+        curl -fsSL "$BASE/evaluate/evaluate.py" -o "$SPEC_SCRIPTS/evaluate/evaluate.py" || true
+    fi
+    echo "  speculators: $(python3 -c 'import speculators; print(speculators.__version__)' 2>/dev/null || pip show speculators | grep Version)"
+    echo "  Scripts: $(ls $SPEC_SCRIPTS/*.py | xargs -I{} basename {})"
+    echo "  Install+clone took $(($(date +%s)-t0))s"
+
+    mkdir -p /output/data /output/logs
+
+    # ----------------------------------------------------------------
+    # Step 4: Prepare training data (sharegpt 5K samples)
+    # Idempotent — skips if token_freq.pt already exists from prior run.
+    # ----------------------------------------------------------------
+    if [ -f /output/data/token_freq.pt ]; then
+        echo ""
+        echo "[$(date -u)] Skipping prepare_data — token_freq.pt already exists"
+        ls -lh /output/data/token_freq.pt
+    else
+        t0=$(date +%s)
+        echo ""
+        echo "=== [$(date -u)] Running prepare_data.py (sharegpt 5K, seq 8192) ==="
+        python3 "$SPEC_SCRIPTS/prepare_data.py" \
+            --model unsloth/Qwen3.6-27B-NVFP4 \
+            --data sharegpt \
+            --output /output/data \
+            --max-samples 5000 \
+            --seq-length 8192 \
+            2>&1 | tee /output/logs/prepare_data.log
+        echo "[$(date -u)] prepare_data done (took $(($(date +%s)-t0))s)"
+    fi
+
+    echo ""
+    echo "=== Preflight summary ==="
+    echo "  Arrow files: $(ls /output/data/*.arrow 2>/dev/null | wc -l)"
+    echo "  token_freq.pt: $(ls -lh /output/data/token_freq.pt 2>/dev/null | awk '{print $5}' || echo missing)"
+    echo "  /output/data total: $(du -sh /output/data 2>/dev/null | cut -f1)"
+    echo ""
+    echo "=== [$(date -u)] PREFLIGHT PASSED — ready for full training run ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-preflight-20260707
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      # No GPU needed — this job only runs data prep, not vLLM or training
+      enableServiceLinks: false
+      containers:
+        - name: preflight
+          image: vllm/vllm-openai:v0.24.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/preflight.sh"]
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          volumeMounts:
+            - name: models
+              mountPath: /data
+              readOnly: true
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+            readOnly: true
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output
+        - name: scripts
+          configMap:
+            name: dspark-preflight-script-20260707
+            defaultMode: 0755

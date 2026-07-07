@@ -42,28 +42,38 @@ data:
 
     echo "=== [$(date)] DSpark training job started (run 20260706) ==="
 
-    echo "=== Installing speculators ==="
-    pip install speculators hf_transfer --quiet --root-user-action ignore
-    export HF_HUB_ENABLE_HF_TRANSFER=1
-    pip show speculators | grep -E '^(Name|Version)'
+    # ----------------------------------------------------------------
+    # Step 0: Install git via apt, uv for fast package management,
+    #         then clone speculators repo (gets package + scripts/ in one shot).
+    # ----------------------------------------------------------------
+    echo "=== [$(date -u)] Installing git ==="
+    apt-get update -qq 2>&1 | tail -3
+    apt-get install -y git --no-install-recommends -qq
+    echo "  git: $(git --version)"
 
-    # Scripts are NOT bundled in the pip wheel — download them individually
-    # with curl (git is not installed in the vllm image).
-    # Idempotent: skips if train.py already downloaded.
-    SPEC_SCRIPTS=/tmp/speculators-scripts
-    if [ ! -f "$SPEC_SCRIPTS/train.py" ]; then
-        echo "=== Downloading speculators scripts from GitHub ==="
+    echo "=== [$(date -u)] Installing uv ==="
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"
+    hash -r
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+
+    echo "=== [$(date -u)] Cloning speculators repo ==="
+    if git clone --depth=1 https://github.com/vllm-project/speculators /tmp/speculators-repo 2>&1; then
+        SPEC_SCRIPTS=/tmp/speculators-repo/scripts
+        uv pip install /tmp/speculators-repo hf_transfer --system --quiet
+    else
+        echo "  git clone failed — falling back to pip install + curl"
+        uv pip install speculators hf_transfer --system --quiet
+        SPEC_SCRIPTS=/tmp/speculators-scripts
         mkdir -p "$SPEC_SCRIPTS/evaluate"
         BASE="https://raw.githubusercontent.com/vllm-project/speculators/main/scripts"
-        curl -fsSL "$BASE/prepare_data.py"          -o "$SPEC_SCRIPTS/prepare_data.py"
-        curl -fsSL "$BASE/launch_vllm.py"           -o "$SPEC_SCRIPTS/launch_vllm.py"
-        curl -fsSL "$BASE/train.py"                 -o "$SPEC_SCRIPTS/train.py"
-        curl -fsSL "$BASE/evaluate/evaluate.py"     -o "$SPEC_SCRIPTS/evaluate/evaluate.py"
-        curl -fsSL "$BASE/evaluate/perf_utils.py"   -o "$SPEC_SCRIPTS/evaluate/perf_utils.py" || true
-        echo "Downloaded scripts: $(ls $SPEC_SCRIPTS/*.py)"
-    else
-        echo "Scripts already present: $SPEC_SCRIPTS"
+        curl -fsSL "$BASE/prepare_data.py"      -o "$SPEC_SCRIPTS/prepare_data.py"
+        curl -fsSL "$BASE/launch_vllm.py"       -o "$SPEC_SCRIPTS/launch_vllm.py"
+        curl -fsSL "$BASE/train.py"             -o "$SPEC_SCRIPTS/train.py"
+        curl -fsSL "$BASE/evaluate/evaluate.py" -o "$SPEC_SCRIPTS/evaluate/evaluate.py" || true
     fi
+    echo "  speculators: $(python3 -c 'import speculators; print(speculators.__version__)' 2>/dev/null || true)"
+    echo "  Scripts: $(ls $SPEC_SCRIPTS/*.py | xargs -I{} basename {})"
 
     mkdir -p /output/data /output/data/hidden-states /output/checkpoints /output/logs
 
