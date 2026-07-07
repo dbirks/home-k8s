@@ -28,11 +28,16 @@ Training job: `dspark-train-qwen27-20260706` in namespace `default`.
 | 2026-07-07 02:30 UTC | Flux reconciled at `71949bf` — both vLLM deployments scaled to 0/0 |
 | 2026-07-07 02:32 UTC | First job pod `zpv8w` Pending — FailedScheduling: Insufficient memory (32Gi request) |
 | 2026-07-07 02:35 UTC | Fixed memory request 32Gi→8Gi, pushed `0f12863`, deleted old job |
-| 2026-07-07 02:57 UTC | New pod `kz686` Running — `pip install speculators` in progress |
-| | `pip install speculators` complete |
-| | `prepare_data.py` started (sharegpt 5K tokenization) |
-| | `prepare_data.py` complete |
-| | vLLM started on port 8001 for hidden-state extraction |
+| 2026-07-07 02:57 UTC | Pod `kz686` Running — `pip install speculators` started |
+| 2026-07-07 03:05 UTC | **CRASH** — `set -euo pipefail` tripped: scripts not in pip wheel, `git` not in vllm image |
+| 2026-07-07 03:05 UTC | Root cause: `speculators v0.6.0` wheel doesn't bundle `scripts/`; `git` absent in vllm image |
+| 2026-07-07 03:05 UTC | Job hit `BackoffLimitExceeded` after 5 container restarts in ~5 min |
+| 2026-07-07 03:08 UTC | Fix: replace `git clone` fallback with `curl` downloads of individual scripts from GitHub raw |
+| 2026-07-07 03:08 UTC | Pushed `3710258`, deleted failed job, triggered Flux reconcile |
+| 2026-07-07 03:12 UTC | Pod `wm47q` Running — `pip install speculators` started |
+| 2026-07-07 03:13 UTC | `speculators v0.6.0` installed OK; scripts downloaded via curl |
+| 2026-07-07 03:13 UTC | `prepare_data.py` skipped — `token_freq.pt` already on PVC from first run |
+| 2026-07-07 03:13 UTC | vLLM (port 8001, util=0.35) starting — loading Qwen3.6-27B-NVFP4 |
 | | vLLM healthy |
 | | Training started |
 | | Epoch 1/5 checkpoint (25%) |
@@ -77,7 +82,16 @@ Training job: `dspark-train-qwen27-20260706` in namespace `default`.
 
 ## Issues Encountered
 
-*(none yet)*
+### Issue 1: Memory request too large (32Gi)
+- **Symptom:** First pod `zpv8w` stuck in Pending with `Insufficient memory`
+- **Root cause:** Node has ~32GB total CPU RAM; 9GB already claimed by other pods; 32Gi request left no headroom
+- **Fix:** Reduced requests to `8Gi` — GPU VRAM handles model tensors, CPU RAM only needs ~8Gi for dataloader workers
+
+### Issue 2: `git` not installed in vllm image; scripts not in pip wheel
+- **Symptom:** Pod `kz686` CrashLoopBackOff, BackoffLimitExceeded after ~5 min
+- **Root cause:** `speculators v0.6.0` does not bundle `scripts/` in the PyPI wheel. The fallback `git clone` silently failed (git absent from `vllm/vllm-openai:v0.24.0`). `set -euo pipefail` then tripped when train.py was missing.
+- **Fix:** Replace git clone with curl downloads of individual script files from `raw.githubusercontent.com/vllm-project/speculators/main/scripts`
+- **Note:** `token_freq.pt` (from `prepare_data.py`) survived on the PVC — data prep step was completed before the crash, not wasted
 
 ## Next Steps After This Run
 
