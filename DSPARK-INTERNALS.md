@@ -352,24 +352,25 @@ The dataloader uses multiple workers with prefetch to hide vLLM generation laten
 
 A standard HuggingFace directory saved via `save_pretrained()`:
 
-**`config.json`** — Full `DSparkSpeculatorConfig`:
+**`config.json`** — Full `DSparkSpeculatorConfig` (corrected for Qwen3.6-27B):
 ```json
 {
   "speculators_model_type": "dspark",
   "architectures": ["DSparkSpeculator"],
-  "block_size": 8,
-  "draft_vocab_size": 32000,
-  "aux_hidden_state_layer_ids": [2, 32, 61, 64],
+  "block_size": 16,
+  "aux_hidden_state_layer_ids": [1, 16, 31, 46, 61],
   "markov_rank": 256,
   "markov_head_type": "vanilla",
   "enable_confidence_head": true,
   "confidence_head_with_markov": true,
   "speculators_config": {
-    "proposal_methods": [{"speculative_tokens": 7}],
+    "proposal_methods": [{"speculative_tokens": 15}],
     "verifier": {"name_or_path": "unsloth/Qwen3.6-27B-NVFP4"}
   }
 }
 ```
+
+Note: `block_size=16` → max `num_speculative_tokens=15` (block_size - 1). No `draft_vocab_size` field = full vocab (248320).
 
 **`model.safetensors`** — Trained weights:
 - `fc.weight`, `hidden_norm.weight` — verifier hidden state projection
@@ -377,10 +378,11 @@ A standard HuggingFace directory saved via `save_pretrained()`:
 - `norm.weight`, `lm_head.weight`, `embed_tokens.weight`
 - `markov_head.markov_w1.weight`, `markov_head.markov_w2.weight`
 - `confidence_head.proj.weight`, `confidence_head.proj.bias`
-- `d2t` tensor `[draft_vocab_size]`, `t2d` tensor `[verifier_vocab_size]` — vocab mappings
 
 **NOT saved:** `verifier_lm_head.weight`, `verifier_norm.weight` — reloaded from the
 verifier at inference time, saving ~2GB in the checkpoint.
+
+**NOT present** (full vocab mode): `d2t`, `t2d` vocab mapping tensors.
 
 ---
 
@@ -411,12 +413,73 @@ vLLM's speculative decoding engine will:
 
 - **64 transformer layers** (hybrid DeltaNet + standard attention)
 - `hidden_size = 5120`, `intermediate_size = 17408`
+- `vocab_size = 248320` (full Qwen3 vocabulary)
+- `mask_token_id = 248070` (`<|extra_0|>` — used as block mask token)
 - `Qwen3NextForCausalLM` implements `SupportsEagle3` ✅
-- Hidden state extraction works at both DeltaNet and attention layer outputs
-- Target layers for training: `2 32 61 64`
-- Draft model `fc` layer input dim: `4 × 5120 = 20480 → 5120`
-- At 3 draft layers: ~1.4B parameters; at 5 layers: ~2B (matching z-lab's DFlash model)
-- **Note on `--draft-vocab-size 32000`:** This is a reduced vocabulary for the draft head.
-  Qwen3's actual vocab is ~152K tokens. The draft model uses a compressed vocabulary
-  aligned via the `d2t`/`t2d` tensors (top-32K most frequent tokens). Verify this is
-  the correct value for your checkpoint by checking the z-lab DFlash config.
+- **Target layers (confirmed from z-lab DFlash config.json):** `1 16 31 46 61`
+  (5 layers, evenly distributed — NOT the generic `[2, num//2, num-3, num]` formula)
+- Draft model `fc` input dim: `5 × 5120 = 25600 → 5120`
+- At 3 draft layers: ~1.4B params; z-lab used 5 for DFlash
+- **`block_size = 16`** confirmed from z-lab (produces up to 15 speculative tokens/step)
+- **Do NOT use `--draft-vocab-size`** — z-lab uses full vocab, no compression
+
+## 15. Data Pipeline (prepare_data.py required before train.py)
+
+The pipeline has a mandatory tokenization step before training:
+
+```bash
+# Step 1: Tokenize conversations, compute token frequencies
+python3 scripts/prepare_data.py \
+    --model unsloth/Qwen3.6-27B-NVFP4 \
+    --data sharegpt \
+    --output ./output/data \
+    --max-samples 5000 \
+    --seq-length 8192
+# Outputs: output/data/*.arrow (tokenized), output/data/token_freq.pt
+
+# Step 2: Start vLLM via launch_vllm.py (hidden state extraction)
+# Step 3: Run train.py with --data-path ./output/data --on-missing generate
+```
+
+**Dataset options:**
+- `sharegpt` — 5K general instruct, good fast baseline (~5 min prep)
+- `ultrachat` — 200K diverse, longer prep
+- Custom JSONL (field: `"conversations"` list of `{from, value}` dicts)
+- Best for coding: `Magpie-Align/Magpie-Qwen3-Pro-200K-Filtered`
+
+## 16. Benchmarking a Trained DSpark Checkpoint
+
+```bash
+# With vLLM running the new speculator:
+python scripts/evaluate/evaluate.py throughput \
+    --target http://vllm.hoam.lan \
+    --dataset RedHatAI/speculator_benchmarks \
+    --output-dir ./benchmark_results
+```
+
+**Key metrics:**
+
+| Metric | Formula | Direction |
+|--------|---------|-----------|
+| `acceptance_length` | `1 + (accepted / drafts)` | ↑ higher |
+| `acceptance_at_pos_i` | per-position breakdown | ↑ higher |
+| `output_tps_median` | tokens/sec | ↑ higher |
+| `itl_median_ms` | inter-token latency | ↓ lower |
+
+**Published baselines (z-lab/Qwen3.5-27B-DFlash, block_size=16, @C=1):**
+
+| Dataset | accept_len | Throughput | Speedup |
+|---------|-----------|------------|---------|
+| HumanEval | **8.9** | 572 tok/s | 6.2× |
+| MBPP | 7.6 | 495 tok/s | 5.3× |
+| GSM8K | 7.5 | 461 tok/s | 5.0× |
+| MT-Bench | 5.6 | 350 tok/s | 3.8× |
+
+**DSpark first-pass target:** `acceptance_length > 4.0` at epoch 3
+(matches RedHatAI GLM-5.2 DSpark training result at that stage).
+
+**Iteration workflow:**
+1. Train 1–2 epochs → benchmark → check `acceptance_at_pos_i` for which positions decay fastest
+2. If pos_1 acceptance < 0.7, consider `--loss-fn '{"tv": 1.0}'` (pure TV) or lower LR
+3. If early positions good but later collapse, try `--num-layers 5` for more draft capacity
+4. Compare against z-lab DFlash baseline: `{"method":"dflash","model":"z-lab/Qwen3.6-27B-DFlash"}`

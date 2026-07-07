@@ -28,8 +28,20 @@
 #
 # After training:
 #   1. Upload /output/checkpoints to HuggingFace (huggingface-cli upload)
-#   2. In vllm.yaml, change speculative-config model from
-#      z-lab/Qwen3.6-27B-DFlash to your new checkpoint repo
+#   2. In vllm.yaml, change speculative-config method from "dflash" to "dspark"
+#      and point model to your new checkpoint repo
+#
+# Benchmarking (run while vLLM is up with the new speculator):
+#   pip install speculators
+#   python scripts/evaluate/evaluate.py throughput \
+#     --target http://vllm.hoam.lan \
+#     --dataset RedHatAI/speculator_benchmarks \
+#     --output-dir ./benchmark_results
+#   Key metric: acceptance_length (higher = better)
+#   Baseline: z-lab DFlash on Qwen3.5-27B got 5.6–8.9 accept_len on coding tasks
+#
+# Config source: target-layer-ids and block-size match z-lab/Qwen3.6-27B-DFlash
+# config.json (retrieved 2026-07-06). Full vocab (248320) used, no draft vocab reduction.
 ---
 # Output PVC — survives pod restarts, stores checkpoints + logs
 apiVersion: v1
@@ -91,22 +103,49 @@ data:
     fi
     echo "Using scripts: $SPEC_SCRIPTS"
 
-    mkdir -p /output/hidden-states /output/checkpoints /output/logs
+    mkdir -p /output/data /output/data/hidden-states /output/checkpoints /output/logs
 
     # ----------------------------------------------------------------
-    # Launch vLLM with hidden-state extraction
+    # Step 1: Prepare training data
     #
-    # launch_vllm.py wraps vllm serve with:
+    # prepare_data.py tokenizes conversations and writes Arrow files +
+    # token_freq.pt into --output. Must run before train.py.
+    #
+    # Dataset: sharegpt (5K samples) — good general coding coverage.
+    # To use a coding-focused dataset instead, replace --data sharegpt
+    # with --data /path/to/custom.jsonl (field: "conversations").
+    # Ref: z-lab used undisclosed data; RedHatAI used magpie+ultrachat.
+    #
+    # This step is fast (~5 min) and idempotent — safe to re-run.
+    # ----------------------------------------------------------------
+    if [ ! -f /output/data/token_freq.pt ]; then
+        echo "=== [$(date)] Preparing training data (sharegpt, 5K samples) ==="
+        python3 "$SPEC_SCRIPTS/prepare_data.py" \
+            --model unsloth/Qwen3.6-27B-NVFP4 \
+            --data sharegpt \
+            --output /output/data \
+            --max-samples 5000 \
+            --seq-length 8192 \
+            2>&1 | tee /output/logs/prepare_data.log
+        echo "[$(date)] Data prep complete"
+    else
+        echo "[$(date)] Skipping data prep — /output/data/token_freq.pt already exists"
+    fi
+
+    # ----------------------------------------------------------------
+    # Step 2: Launch vLLM with hidden-state extraction
+    #
+    # launch_vllm.py injects:
     #   --speculative_config '{"method":"extract_hidden_states",...}'
     #   --kv_transfer_config '{"kv_connector":"ExampleHiddenStatesConnector",...}'
     #
-    # target-layer-ids for 64-layer Qwen3.6-27B: [2, 32, 61, 64]
-    # Formula: [2, num_layers//2, num_layers-3, num_layers]
+    # target-layer-ids: [1, 16, 31, 46, 61] — matches z-lab DFlash config
+    # (5 layers evenly spread across the 64-layer Qwen3.6-27B).
     # ----------------------------------------------------------------
     echo "=== [$(date)] Starting vLLM (util=0.35, port 8001) ==="
     python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
-        --target-layer-ids 2 32 61 64 \
-        --hidden-states-path /output/hidden-states \
+        --target-layer-ids 1 16 31 46 61 \
+        --hidden-states-path /output/data/hidden-states \
         -- \
         --gpu-memory-utilization 0.35 \
         --port 8001 \
@@ -145,7 +184,13 @@ data:
     fi
 
     # ----------------------------------------------------------------
-    # DSpark training — online mode
+    # Step 3: DSpark training — online mode
+    #
+    # Key flags (corrected vs initial estimates based on z-lab DFlash):
+    #   --block-size 16         : matches z-lab DFlash (was 8)
+    #   --target-layer-ids      : [1,16,31,46,61] matches z-lab (was [2,32,61,64])
+    #   --max-anchors 1536      : 1536×16=24576 positions (same total as before)
+    #   no --draft-vocab-size   : use full Qwen3 vocab (248320), same as z-lab
     #   --on-missing generate   : call vLLM to produce hidden states
     #   --on-generate delete    : discard immediately, no disk buildup
     #   --checkpoint-freq 0.25  : save every 25% of epoch (~4/epoch)
@@ -157,23 +202,22 @@ data:
         --vllm-endpoint http://localhost:8001/v1 \
         --speculator-type dspark \
         --num-layers 3 \
-        --block-size 8 \
-        --max-anchors 3072 \
-        --target-layer-ids 2 32 61 64 \
-        --draft-vocab-size 32000 \
+        --block-size 16 \
+        --max-anchors 1536 \
+        --target-layer-ids 1 16 31 46 61 \
         --markov-rank 256 \
         --markov-head-type vanilla \
         --enable-confidence-head \
         --confidence-head-with-markov \
         --loss-fn '{"ce": 0.1, "tv": 0.9}' \
         --confidence-head-alpha 1.0 \
-        --total-seq-len 4096 \
+        --total-seq-len 8192 \
         --epochs 5 \
         --lr 3e-4 \
         --on-missing generate \
         --on-generate delete \
-        --data-path /output \
-        --hidden-states-path /output/hidden-states \
+        --data-path /output/data \
+        --hidden-states-path /output/data/hidden-states \
         --save-path /output/checkpoints \
         --checkpoint-freq 0.25 \
         2>&1 | tee /output/logs/trainer.log
