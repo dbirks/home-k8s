@@ -1,0 +1,229 @@
+# DSpark Training Run — 2026-07-06
+#
+# Iteration 1: first pass, sharegpt 5K samples, 5 epochs, online mode.
+# Job name is date-stamped so subsequent runs can coexist in git history.
+#
+# To run another iteration: copy this file, increment the date, adjust flags,
+# delete the old completed job (kubectl delete job dspark-train-qwen27-20260706),
+# then commit and push.
+#
+# Scale vLLM back up: set replicas: 1 in vllm.yaml + vllm-small.yaml, commit, push.
+---
+# Output PVC — shared across runs, checkpoints survive pod restarts
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dspark-output
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-train-script-20260706
+  namespace: default
+data:
+  train.sh: |
+    #!/bin/bash
+    # DSpark online training — vLLM generates hidden states on demand,
+    # trainer consumes + deletes immediately (zero disk accumulation).
+    # Resume is automatic: train.py scans --save-path for latest checkpoint.
+    set -euo pipefail
+
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    echo "=== [$(date)] DSpark training job started (run 20260706) ==="
+
+    echo "=== Installing speculators ==="
+    pip install speculators hf_transfer --quiet
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+
+    # Locate scripts/ from pip package, fall back to git clone
+    SPEC_SCRIPTS=$(python3 -c "
+    import speculators, pathlib
+    pkg = pathlib.Path(speculators.__file__).parent
+    for candidate in [pkg.parent / 'scripts', pkg / '..' / 'scripts']:
+        if (candidate / 'train.py').exists():
+            print(str(candidate.resolve()))
+            break
+    " 2>/dev/null || true)
+
+    if [ -z "$SPEC_SCRIPTS" ] || [ ! -f "$SPEC_SCRIPTS/train.py" ]; then
+        echo "Scripts not in pip package — cloning repo"
+        git clone --depth 1 https://github.com/vllm-project/speculators.git /tmp/speculators
+        SPEC_SCRIPTS=/tmp/speculators/scripts
+    fi
+    echo "Using scripts: $SPEC_SCRIPTS"
+    pip show speculators | grep -E '^(Name|Version)'
+
+    mkdir -p /output/data /output/data/hidden-states /output/checkpoints /output/logs
+
+    # ----------------------------------------------------------------
+    # Step 1: Prepare training data
+    # Tokenizes sharegpt (5K samples) → Arrow files + token_freq.pt
+    # Idempotent: skips if token_freq.pt already exists from a prior run.
+    # ----------------------------------------------------------------
+    if [ ! -f /output/data/token_freq.pt ]; then
+        echo "=== [$(date)] Preparing training data (sharegpt 5K, seq 8192) ==="
+        python3 "$SPEC_SCRIPTS/prepare_data.py" \
+            --model unsloth/Qwen3.6-27B-NVFP4 \
+            --data sharegpt \
+            --output /output/data \
+            --max-samples 5000 \
+            --seq-length 8192 \
+            2>&1 | tee /output/logs/prepare_data.log
+        echo "[$(date)] Data prep done — $(ls /output/data/*.arrow 2>/dev/null | wc -l) arrow files"
+    else
+        echo "[$(date)] Skipping data prep — token_freq.pt exists"
+    fi
+
+    # ----------------------------------------------------------------
+    # Step 2: Launch vLLM (hidden state extraction mode)
+    # target-layer-ids [1,16,31,46,61] — verified from z-lab DFlash config.json
+    # util=0.35 leaves ~62 GB for trainer
+    # ----------------------------------------------------------------
+    echo "=== [$(date)] Starting vLLM for hidden-state extraction (port 8001) ==="
+    python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
+        --target-layer-ids 1 16 31 46 61 \
+        --hidden-states-path /output/data/hidden-states \
+        -- \
+        --gpu-memory-utilization 0.35 \
+        --port 8001 \
+        --max-model-len 32768 \
+        --dtype bfloat16 \
+        --trust-remote-code \
+        --served-model-name main \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 \
+        --mamba-ssm-cache-dtype float16 \
+        > /output/logs/vllm.log 2>&1 &
+    VLLM_PID=$!
+    trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
+
+    echo "=== Waiting for vLLM /health (up to 90 min) ==="
+    for i in $(seq 1 540); do
+        if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+            echo "[$(date)] vLLM healthy after $((i * 10))s"
+            break
+        fi
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "ERROR: vLLM died. Last 80 lines:"
+            tail -80 /output/logs/vllm.log
+            exit 1
+        fi
+        [ "$i" -eq 540 ] && echo "ERROR: vLLM timeout 90 min" && exit 1
+        sleep 10
+    done
+
+    # Log model info
+    curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; m=json.load(sys.stdin); [print('  model:', x['id']) for x in m.get('data',[])]" 2>/dev/null || true
+
+    if [ -d /output/checkpoints ] && [ "$(ls -A /output/checkpoints 2>/dev/null)" ]; then
+        echo "[$(date)] Resuming from checkpoint:"
+        ls -lh /output/checkpoints/
+    else
+        echo "[$(date)] Fresh training run"
+    fi
+
+    # ----------------------------------------------------------------
+    # Step 3: Train
+    # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
+    # Full Qwen3 vocab (248320) — no draft vocab reduction
+    # ----------------------------------------------------------------
+    echo "=== [$(date)] Starting train.py ==="
+    python3 "$SPEC_SCRIPTS/train.py" \
+        --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \
+        --vllm-endpoint http://localhost:8001/v1 \
+        --speculator-type dspark \
+        --num-layers 3 \
+        --block-size 16 \
+        --max-anchors 1536 \
+        --target-layer-ids 1 16 31 46 61 \
+        --markov-rank 256 \
+        --markov-head-type vanilla \
+        --enable-confidence-head \
+        --confidence-head-with-markov \
+        --loss-fn '{"ce": 0.1, "tv": 0.9}' \
+        --confidence-head-alpha 1.0 \
+        --total-seq-len 8192 \
+        --epochs 5 \
+        --lr 3e-4 \
+        --on-missing generate \
+        --on-generate delete \
+        --data-path /output/data \
+        --hidden-states-path /output/data/hidden-states \
+        --save-path /output/checkpoints \
+        --checkpoint-freq 0.25 \
+        2>&1 | tee /output/logs/trainer.log
+
+    echo "=== [$(date)] Training complete! ==="
+    ls -lh /output/checkpoints/
+    echo "Upload: huggingface-cli upload <your-repo> /output/checkpoints"
+    echo "Then update vllm.yaml: method=dspark, model=<your-repo>"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-qwen27-20260706
+  namespace: default
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 172800
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: trainer
+          image: vllm/vllm-openai:v0.24.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "4"
+              memory: 32Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output
+        - name: scripts
+          configMap:
+            name: dspark-train-script-20260706
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
