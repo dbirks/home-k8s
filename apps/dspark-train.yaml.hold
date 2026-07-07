@@ -267,7 +267,7 @@ spec:
               nvidia.com/gpu: 1
             requests:
               cpu: "4"
-              memory: 32Gi
+              memory: 8Gi
           volumeMounts:
             # Re-use existing model cache — avoids re-downloading 27B model
             # Requires vllm-qwen27 scaled to 0 first (ReadWriteOnce constraint)
