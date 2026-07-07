@@ -24,15 +24,17 @@ Training job: `dspark-train-qwen27-20260706` in namespace `default`.
 
 | Time | Event |
 |------|-------|
-| 2026-07-06 ~20:30 | Committed replicas=0 for both vLLM deployments, applied job via Flux |
-| | Flux reconciled — vllm-qwen27 and vllm-qwen4b scaling to 0 |
-| | PVCs released: vllm-models (ReadWriteOnce), vllm-small-models |
-| | Job `dspark-train-qwen27-20260706` created |
-| | Pod scheduled, pulling/running vllm/vllm-openai:v0.24.0 |
-| | `pip install speculators` started |
-| | `prepare_data.py` started (sharegpt tokenization) |
+| 2026-07-07 02:30 UTC | Committed replicas=0 for vllm-qwen27 + vllm-qwen4b, created dspark-train-20260706.yaml |
+| 2026-07-07 02:30 UTC | Flux reconciled at `71949bf` — both vLLM deployments scaled to 0/0 |
+| 2026-07-07 02:32 UTC | First job pod `zpv8w` Pending — FailedScheduling: Insufficient memory (32Gi request) |
+| 2026-07-07 02:35 UTC | Fixed memory request 32Gi→8Gi, pushed `0f12863`, deleted old job |
+| 2026-07-07 02:57 UTC | New pod `kz686` Running — `pip install speculators` in progress |
+| | `pip install speculators` complete |
+| | `prepare_data.py` started (sharegpt 5K tokenization) |
+| | `prepare_data.py` complete |
 | | vLLM started on port 8001 for hidden-state extraction |
-| | vLLM healthy — training started |
+| | vLLM healthy |
+| | Training started |
 | | Epoch 1/5 checkpoint (25%) |
 | | Epoch 1/5 checkpoint (50%) |
 | | Epoch 1/5 checkpoint (75%) |
