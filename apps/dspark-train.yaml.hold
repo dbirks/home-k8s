@@ -141,7 +141,10 @@ data:
     #
     # target-layer-ids: [1, 16, 31, 46, 61] — matches z-lab DFlash config
     # (5 layers evenly spread across the 64-layer Qwen3.6-27B).
+    # NOTE: ExampleHiddenStatesConnector rejects expandable_segments:True at init.
+    # Unset before vLLM launch; restore before train.py so the trainer benefits.
     # ----------------------------------------------------------------
+    unset PYTORCH_CUDA_ALLOC_CONF
     echo "=== [$(date)] Starting vLLM (util=0.35, port 8001) ==="
     python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
         --target-layer-ids 1 16 31 46 61 \
@@ -196,6 +199,7 @@ data:
     #   --checkpoint-freq 0.25  : save every 25% of epoch (~4/epoch)
     #   Resume is automatic: train.py checks --save-path on startup
     # ----------------------------------------------------------------
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     echo "=== [$(date)] Running train.py ==="
     python3 "$SPEC_SCRIPTS/train.py" \
         --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \

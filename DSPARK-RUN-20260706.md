@@ -38,6 +38,10 @@ Training job: `dspark-train-qwen27-20260706` in namespace `default`.
 | 2026-07-07 03:13 UTC | `speculators v0.6.0` installed OK; scripts downloaded via curl |
 | 2026-07-07 03:13 UTC | `prepare_data.py` skipped — `token_freq.pt` already on PVC from first run |
 | 2026-07-07 03:13 UTC | vLLM (port 8001, util=0.35) starting — loading Qwen3.6-27B-NVFP4 |
+| 2026-07-07 03:22 UTC | **CRASH** — `VllmConfig` ValidationError: ExampleHiddenStatesConnector incompatible with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` |
+| 2026-07-07 03:22 UTC | Root cause confirmed via `dspark-real-test` pod (foreground vLLM + HF_TOKEN + GPU) |
+| 2026-07-07 04:10 UTC | Fix: unset PYTORCH_CUDA_ALLOC_CONF before vLLM launch, restore before train.py |
+| 2026-07-07 04:10 UTC | Pushed fix, deleted failed job, triggered new reconcile |
 | | vLLM healthy |
 | | Training started |
 | | Epoch 1/5 checkpoint (25%) |
@@ -81,6 +85,13 @@ Training job: `dspark-train-qwen27-20260706` in namespace `default`.
 | | | | | | |
 
 ## Issues Encountered
+
+### Issue 3: ExampleHiddenStatesConnector incompatible with expandable_segments:True
+- **Symptom:** Pod `wm47q` CrashLoopBackOff, vllm.log only showed warnings, no traceback
+- **Root cause:** vLLM v0.24.0 spawns the API server as a subprocess; subprocess output is NOT captured when vLLM runs backgrounded with `> vllm.log 2>&1`. Diagnosed with `dspark-real-test` pod (foreground, no output redirect).
+- **Actual error:** `pydantic_core.ValidationError: KV connector ExampleHiddenStatesConnector is incompatible with PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True unless enable_cumem_allocator is also enabled`
+- **Fix:** In train.sh, `unset PYTORCH_CUDA_ALLOC_CONF` before calling `launch_vllm.py`, then `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` before `train.py` (the trainer benefits from it, vLLM does not)
+- **Why capture failed:** `launch_vllm.py` uses `os.execvp()` to replace itself with vLLM; the spawned API server subprocess (pid=80) writes to its own stdout, which bypasses the `> vllm.log` redirect of the launcher process
 
 ### Issue 1: Memory request too large (32Gi)
 - **Symptom:** First pod `zpv8w` stuck in Pending with `Insufficient memory`

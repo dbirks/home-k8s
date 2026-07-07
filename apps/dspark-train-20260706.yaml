@@ -90,7 +90,10 @@ data:
     # Step 2: Launch vLLM (hidden state extraction mode)
     # target-layer-ids [1,16,31,46,61] — verified from z-lab DFlash config.json
     # util=0.35 leaves ~62 GB for trainer
+    # NOTE: ExampleHiddenStatesConnector rejects expandable_segments:True at init.
+    # Unset before vLLM launch; restore before train.py so the trainer benefits.
     # ----------------------------------------------------------------
+    unset PYTORCH_CUDA_ALLOC_CONF
     echo "=== [$(date)] Starting vLLM for hidden-state extraction (port 8001) ==="
     python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
         --target-layer-ids 1 16 31 46 61 \
@@ -139,6 +142,7 @@ data:
     # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
     # Full Qwen3 vocab (248320) — no draft vocab reduction
     # ----------------------------------------------------------------
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     echo "=== [$(date)] Starting train.py ==="
     python3 "$SPEC_SCRIPTS/train.py" \
         --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \
