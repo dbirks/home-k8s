@@ -109,9 +109,9 @@ data:
         --target-layer-ids 1 16 31 46 61 \
         --hidden-states-path /output/data/hidden-states \
         -- \
-        --gpu-memory-utilization 0.35 \
+        --gpu-memory-utilization 0.45 \
         --port 8001 \
-        --max-model-len 32768 \
+        --max-model-len 8192 \
         --dtype bfloat16 \
         --trust-remote-code \
         --served-model-name main \
