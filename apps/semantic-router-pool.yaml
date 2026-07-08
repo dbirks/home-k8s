@@ -1,0 +1,21 @@
+# IntelligentPool CR for the vLLM semantic router.
+#
+# The semantic-router Helm chart installs the CRD and RBAC but does NOT
+# create an IntelligentPool instance — the router's reconciler blocks
+# until one exists in its namespace ("no IntelligentPool found").
+#
+# Model names here must match config.providers.models[*].name in
+# apps/semantic-router.yaml.
+---
+apiVersion: vllm.ai/v1alpha1
+kind: IntelligentPool
+metadata:
+  name: vllm-pool
+  namespace: default
+spec:
+  defaultModel: "main"
+  models:
+    - name: "main"
+      reasoningFamily: "qwen3"
+    - name: "qwen4b"
+      reasoningFamily: "qwen3"
