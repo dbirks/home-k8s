@@ -1,0 +1,24 @@
+# IntelligentRoute CR for the vLLM semantic router.
+#
+# The router reconciler requires BOTH an IntelligentPool AND an IntelligentRoute
+# to exist in the namespace before it opens the HTTP API (port 8080) for traffic.
+# Neither is created by the Helm chart — they must be user-supplied.
+#
+# This mirrors the routing decisions already in the Helm values config
+# (apps/semantic-router.yaml) but expressed as a Kubernetes CR so the
+# controller can watch and reload them without a pod restart.
+---
+apiVersion: vllm.ai/v1alpha1
+kind: IntelligentRoute
+metadata:
+  name: vllm-route
+  namespace: default
+spec:
+  signals: {}
+  decisions:
+    - name: "default-to-large"
+      description: "Route all requests to Qwen3.6-27B. Add decisions via dashboard to route simple queries to qwen4b."
+      modelRefs:
+        - model: "main"
+          useReasoning: true
+          reasoningEffort: "high"
