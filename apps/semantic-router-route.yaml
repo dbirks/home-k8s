@@ -1,12 +1,13 @@
 # IntelligentRoute CR for the vLLM semantic router.
 #
-# The router reconciler requires BOTH an IntelligentPool AND an IntelligentRoute
-# to exist in the namespace before it opens the HTTP API (port 8080) for traffic.
-# Neither is created by the Helm chart — they must be user-supplied.
+# The router reconciler requires both IntelligentPool AND IntelligentRoute
+# to exist before it opens the HTTP/gRPC API for traffic. Neither is
+# created by the Helm chart.
 #
-# This mirrors the routing decisions already in the Helm values config
-# (apps/semantic-router.yaml) but expressed as a Kubernetes CR so the
-# controller can watch and reload them without a pod restart.
+# This is a catch-all route: any request matching the "general" domain
+# (which is the catch-all MMLU category) goes to the main model.
+# Add more specific decisions with higher priority to route subsets
+# to qwen4b when it's enabled.
 ---
 apiVersion: vllm.ai/v1alpha1
 kind: IntelligentRoute
@@ -14,10 +15,19 @@ metadata:
   name: vllm-route
   namespace: default
 spec:
-  signals: {}
+  signals:
+    domains:
+      - name: "general"
+        description: "Catch-all domain for all general requests"
   decisions:
     - name: "default-to-large"
-      description: "Route all requests to Qwen3.6-27B. Add decisions via dashboard to route simple queries to qwen4b."
+      description: "Route all requests to Qwen3.6-27B (27B). Add higher-priority decisions to divert simple queries to qwen4b."
+      priority: 100
+      signals:
+        operator: "OR"
+        conditions:
+          - name: "general"
+            type: "domain"
       modelRefs:
         - model: "main"
           useReasoning: true
