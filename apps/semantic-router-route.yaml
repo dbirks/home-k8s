@@ -17,8 +17,8 @@ metadata:
 spec:
   signals:
     domains:
-      - name: "general"
-        description: "Catch-all domain for all general requests"
+      - name: "other"
+        description: "Catch-all MMLU domain (all requests not matching a specific category)"
   decisions:
     - name: "default-to-large"
       description: "Route all requests to Qwen3.6-27B (27B). Add higher-priority decisions to divert simple queries to qwen4b."
@@ -26,7 +26,7 @@ spec:
       signals:
         operator: "OR"
         conditions:
-          - name: "general"
+          - name: "other"
             type: "domain"
       modelRefs:
         - model: "main"
