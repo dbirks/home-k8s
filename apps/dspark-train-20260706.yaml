@@ -200,6 +200,27 @@ spec:
       restartPolicy: OnFailure
       runtimeClassName: nvidia
       enableServiceLinks: false
+      initContainers:
+        - name: gpu-clock-lock
+          image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: utility
+          command:
+            - sh
+            - -c
+            - |
+              echo "[$(date -u +%FT%TZ)] Applying GPU mitigations before vLLM starts..."
+              nvidia-smi -pm 1
+              nvidia-smi -pl 400
+              nvidia-smi -lgc 1000,1500
+              echo "[$(date -u +%FT%TZ)] GPU state:"
+              nvidia-smi --query-gpu=name,power.limit,clocks.gr --format=csv,noheader
       containers:
         - name: trainer
           image: vllm/vllm-openai:v0.24.0
