@@ -149,13 +149,20 @@ data:
 
         curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; m=json.load(sys.stdin); [print('  model:', x['id']) for x in m.get('data',[])]" 2>/dev/null || true
 
-        echo "=== [$(date)] Running data_generation_offline.py ==="
+        # Clean up stale lock files and orphaned cmpl-*.safetensors from
+        # any prior crashed vLLM instance — these cause lock-wait timeouts.
+        echo "[$(date)] Cleaning stale vLLM temp files..."
+        find /output/data/hidden-states -maxdepth 1 -name "*.lock" -delete
+        find /output/data/hidden-states -maxdepth 1 -name "cmpl-*.safetensors" -delete
+        echo "[$(date)] Done. Running data_generation_offline.py..."
+
         python3 "$SPEC_SCRIPTS/data_generation_offline.py" \
             --endpoint http://localhost:8001/v1 \
             --preprocessed-data /output/data \
             --output /output/data/hidden-states \
             --max-samples 5000 \
             --concurrency 1 \
+            --max-consecutive-errors 10 \
             2>&1 | tee /output/logs/data_gen.log
 
         echo "[$(date)] Stopping vLLM..."
