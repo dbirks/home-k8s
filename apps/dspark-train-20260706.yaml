@@ -106,9 +106,12 @@ data:
     # NOTE: ExampleHiddenStatesConnector rejects expandable_segments:True.
     # Unset before vLLM launch; restore before Phase 2.
     # ----------------------------------------------------------------
+    # Sentinel written by data_generation_offline.py exiting 0 (all samples
+    # attempted — some may be skipped). Count check would never hit 5000 if
+    # any samples are permanently skipped, so use a sentinel file instead.
     EXISTING_HS=$(find /output/data/hidden-states -maxdepth 1 -name "hs_*.safetensors" 2>/dev/null | wc -l)
-    if [ "$EXISTING_HS" -ge 5000 ]; then
-        echo "[$(date)] Skipping Phase 1 — all 5000 hidden states already generated"
+    if [ -f /output/data/phase1_complete ]; then
+        echo "[$(date)] Skipping Phase 1 — sentinel exists ($EXISTING_HS hidden states)"
     else
         echo "=== [$(date)] Phase 1: Generating hidden states ($EXISTING_HS/5000 done) ==="
         unset PYTORCH_CUDA_ALLOC_CONF
@@ -165,11 +168,20 @@ data:
             --max-consecutive-errors 10 \
             2>&1 | tee /output/logs/data_gen.log
 
+        DATA_GEN_EXIT=${PIPESTATUS[0]}
         echo "[$(date)] Stopping vLLM..."
         kill $VLLM_PID 2>/dev/null
         wait $VLLM_PID 2>/dev/null || true
         trap - EXIT
-        echo "[$(date)] Phase 1 complete — $(ls /output/data/hidden-states/hs_*.safetensors 2>/dev/null | wc -l) hidden states generated"
+        HS_COUNT=$(find /output/data/hidden-states -maxdepth 1 -name "hs_*.safetensors" | wc -l)
+        echo "[$(date)] Phase 1 complete — $HS_COUNT hidden states generated"
+        if [ "$DATA_GEN_EXIT" -eq 0 ]; then
+            touch /output/data/phase1_complete
+            echo "[$(date)] Sentinel written — Phase 1 will be skipped on future restarts"
+        else
+            echo "[$(date)] data_generation_offline.py exited $DATA_GEN_EXIT — Phase 1 incomplete, will retry"
+            exit 1
+        fi
     fi
 
     # ----------------------------------------------------------------
@@ -223,7 +235,7 @@ metadata:
   name: dspark-train-qwen27-20260706
   namespace: default
 spec:
-  backoffLimit: 10
+  backoffLimit: 200
   activeDeadlineSeconds: 172800
   template:
     spec:
