@@ -31,9 +31,11 @@ metadata:
 data:
   train.sh: |
     #!/bin/bash
-    # DSpark online training — vLLM generates hidden states on demand,
-    # trainer consumes + deletes immediately (zero disk accumulation).
-    # Resume is automatic: train.py scans --save-path for latest checkpoint.
+    # DSpark two-phase training:
+    # Phase 1: vLLM generates + caches all hidden states (no training)
+    # Phase 2: trainer trains from cached files (no vLLM)
+    # Both phases are idempotent — restart the pod and it resumes from where
+    # it left off. The GPU is never under combined vLLM+trainer load.
     set -euo pipefail
 
     export HF_HOME=/data
@@ -67,13 +69,13 @@ data:
         SPEC_SCRIPTS=/tmp/speculators-scripts
         mkdir -p "$SPEC_SCRIPTS/evaluate"
         BASE="https://raw.githubusercontent.com/vllm-project/speculators/main/scripts"
-        curl -fsSL "$BASE/prepare_data.py"      -o "$SPEC_SCRIPTS/prepare_data.py"
-        curl -fsSL "$BASE/launch_vllm.py"       -o "$SPEC_SCRIPTS/launch_vllm.py"
-        curl -fsSL "$BASE/train.py"             -o "$SPEC_SCRIPTS/train.py"
-        curl -fsSL "$BASE/evaluate/evaluate.py" -o "$SPEC_SCRIPTS/evaluate/evaluate.py" || true
+        curl -fsSL "$BASE/prepare_data.py"            -o "$SPEC_SCRIPTS/prepare_data.py"
+        curl -fsSL "$BASE/launch_vllm.py"             -o "$SPEC_SCRIPTS/launch_vllm.py"
+        curl -fsSL "$BASE/data_generation_offline.py" -o "$SPEC_SCRIPTS/data_generation_offline.py"
+        curl -fsSL "$BASE/train.py"                   -o "$SPEC_SCRIPTS/train.py"
+        curl -fsSL "$BASE/evaluate/evaluate.py"       -o "$SPEC_SCRIPTS/evaluate/evaluate.py" || true
     fi
     echo "  speculators: $(python3 -c 'import speculators; print(speculators.__version__)' 2>/dev/null || true)"
-    echo "  Scripts: $(ls $SPEC_SCRIPTS/*.py | xargs -I{} basename {})"
 
     mkdir -p /output/data /output/data/hidden-states /output/checkpoints /output/logs
 
@@ -97,49 +99,79 @@ data:
     fi
 
     # ----------------------------------------------------------------
-    # Step 2: Launch vLLM (hidden state extraction mode)
-    # target-layer-ids [1,16,31,46,61] — verified from z-lab DFlash config.json
-    # util=0.35 leaves ~62 GB for trainer
-    # NOTE: ExampleHiddenStatesConnector rejects expandable_segments:True at init.
-    # Unset before vLLM launch; restore before train.py so the trainer benefits.
+    # Phase 1: Generate hidden states (vLLM only — no trainer running)
+    # --max-num-seqs 1: one sequence at a time, reduces GPU dI/dt transients.
+    # --concurrency 1: one in-flight request (matches max-num-seqs).
+    # util=0.75: trainer is not loaded, so vLLM can use more VRAM.
+    # NOTE: ExampleHiddenStatesConnector rejects expandable_segments:True.
+    # Unset before vLLM launch; restore before Phase 2.
     # ----------------------------------------------------------------
-    unset PYTORCH_CUDA_ALLOC_CONF
-    echo "=== [$(date)] Starting vLLM for hidden-state extraction (port 8001) ==="
-    python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
-        --target-layer-ids 1 16 31 46 61 \
-        --hidden-states-path /output/data/hidden-states \
-        -- \
-        --gpu-memory-utilization 0.45 \
-        --port 8001 \
-        --max-model-len 8192 \
-        --dtype bfloat16 \
-        --trust-remote-code \
-        --served-model-name main \
-        --kv-cache-dtype fp8_e4m3 \
-        --mamba-cache-dtype float16 \
-        --mamba-ssm-cache-dtype float16 \
-        --enforce-eager \
-        > /output/logs/vllm.log 2>&1 &
-    VLLM_PID=$!
-    trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
+    EXISTING_HS=$(ls /output/data/hidden-states/hs_*.safetensors 2>/dev/null | wc -l || echo 0)
+    if [ "$EXISTING_HS" -ge 5000 ]; then
+        echo "[$(date)] Skipping Phase 1 — all 5000 hidden states already generated"
+    else
+        echo "=== [$(date)] Phase 1: Generating hidden states ($EXISTING_HS/5000 done) ==="
+        unset PYTORCH_CUDA_ALLOC_CONF
 
-    echo "=== Waiting for vLLM /health (up to 90 min) ==="
-    for i in $(seq 1 540); do
-        if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
-            echo "[$(date)] vLLM healthy after $((i * 10))s"
-            break
-        fi
-        if ! kill -0 $VLLM_PID 2>/dev/null; then
-            echo "ERROR: vLLM died. Last 80 lines:"
-            tail -80 /output/logs/vllm.log
-            exit 1
-        fi
-        [ "$i" -eq 540 ] && echo "ERROR: vLLM timeout 90 min" && exit 1
-        sleep 10
-    done
+        python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
+            --target-layer-ids 1 16 31 46 61 \
+            --hidden-states-path /output/data/hidden-states \
+            -- \
+            --gpu-memory-utilization 0.75 \
+            --port 8001 \
+            --max-model-len 8192 \
+            --dtype bfloat16 \
+            --trust-remote-code \
+            --served-model-name main \
+            --kv-cache-dtype fp8_e4m3 \
+            --mamba-cache-dtype float16 \
+            --mamba-ssm-cache-dtype float16 \
+            --enforce-eager \
+            --max-num-seqs 1 \
+            > /output/logs/vllm.log 2>&1 &
+        VLLM_PID=$!
+        trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
 
-    # Log model info
-    curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; m=json.load(sys.stdin); [print('  model:', x['id']) for x in m.get('data',[])]" 2>/dev/null || true
+        echo "=== Waiting for vLLM /health (up to 90 min) ==="
+        for i in $(seq 1 540); do
+            if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+                echo "[$(date)] vLLM healthy after $((i * 10))s"
+                break
+            fi
+            if ! kill -0 $VLLM_PID 2>/dev/null; then
+                echo "ERROR: vLLM died. Last 80 lines:"
+                tail -80 /output/logs/vllm.log
+                exit 1
+            fi
+            [ "$i" -eq 540 ] && echo "ERROR: vLLM timeout 90 min" && exit 1
+            sleep 10
+        done
+
+        curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; m=json.load(sys.stdin); [print('  model:', x['id']) for x in m.get('data',[])]" 2>/dev/null || true
+
+        echo "=== [$(date)] Running data_generation_offline.py ==="
+        python3 "$SPEC_SCRIPTS/data_generation_offline.py" \
+            --endpoint http://localhost:8001/v1 \
+            --preprocessed-data /output/data \
+            --output /output/data/hidden-states \
+            --max-samples 5000 \
+            --concurrency 1 \
+            2>&1 | tee /output/logs/data_gen.log
+
+        echo "[$(date)] Stopping vLLM..."
+        kill $VLLM_PID 2>/dev/null
+        wait $VLLM_PID 2>/dev/null || true
+        trap - EXIT
+        echo "[$(date)] Phase 1 complete — $(ls /output/data/hidden-states/hs_*.safetensors 2>/dev/null | wc -l) hidden states generated"
+    fi
+
+    # ----------------------------------------------------------------
+    # Phase 2: Train from cached hidden states (no vLLM at all)
+    # --on-missing skip: samples with no cached .safetensors are dropped.
+    # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
+    # ----------------------------------------------------------------
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    echo "=== [$(date)] Phase 2: Training from cached hidden states ==="
 
     if [ -d /output/checkpoints ] && [ "$(ls -A /output/checkpoints 2>/dev/null)" ]; then
         echo "[$(date)] Resuming from checkpoint:"
@@ -148,16 +180,8 @@ data:
         echo "[$(date)] Fresh training run"
     fi
 
-    # ----------------------------------------------------------------
-    # Step 3: Train
-    # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
-    # Full Qwen3 vocab (248320) — no draft vocab reduction
-    # ----------------------------------------------------------------
-    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    echo "=== [$(date)] Starting train.py ==="
     python3 "$SPEC_SCRIPTS/train.py" \
         --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \
-        --vllm-endpoint http://localhost:8001/v1 \
         --speculator-type dspark \
         --num-layers 3 \
         --block-size 16 \
@@ -172,8 +196,7 @@ data:
         --total-seq-len 8192 \
         --epochs 5 \
         --lr 3e-4 \
-        --on-missing generate \
-        --on-generate delete \
+        --on-missing skip \
         --data-path /output/data \
         --hidden-states-path /output/data/hidden-states \
         --save-path /output/checkpoints \
@@ -215,12 +238,11 @@ spec:
             - sh
             - -c
             - |
-              echo "[$(date -u +%FT%TZ)] Applying GPU mitigations before vLLM starts..."
+              echo "[$(date -u +%FT%TZ)] Applying GPU mitigations before training starts..."
               nvidia-smi -pm 1
               nvidia-smi -pl 400
-              nvidia-smi -lgc 1000,1500
               echo "[$(date -u +%FT%TZ)] GPU state:"
-              nvidia-smi --query-gpu=name,power.limit,clocks.gr --format=csv,noheader
+              nvidia-smi --query-gpu=name,power.limit,persistence_mode --format=csv,noheader
       containers:
         - name: trainer
           image: vllm/vllm-openai:v0.24.0
