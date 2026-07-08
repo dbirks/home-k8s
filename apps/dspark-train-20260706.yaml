@@ -118,6 +118,7 @@ data:
         --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 \
         --mamba-ssm-cache-dtype float16 \
+        --enforce-eager \
         > /output/logs/vllm.log 2>&1 &
     VLLM_PID=$!
     trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
