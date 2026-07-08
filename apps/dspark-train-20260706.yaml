@@ -1,6 +1,7 @@
 # DSpark Training Run — 2026-07-06
 #
-# Iteration 1: first pass, sharegpt 5K samples, 5 epochs, online mode.
+# Iteration 1: sharegpt 5K samples, 5 epochs, online mode.
+# vLLM generates hidden states on-demand; --on-generate delete keeps disk near-zero.
 # Job name is date-stamped so subsequent runs can coexist in git history.
 #
 # To run another iteration: copy this file, increment the date, adjust flags,
@@ -31,11 +32,17 @@ metadata:
 data:
   train.sh: |
     #!/bin/bash
-    # DSpark two-phase training:
-    # Phase 1: vLLM generates + caches all hidden states (no training)
-    # Phase 2: trainer trains from cached files (no vLLM)
-    # Both phases are idempotent — restart the pod and it resumes from where
-    # it left off. The GPU is never under combined vLLM+trainer load.
+    # DSpark online training:
+    # vLLM and trainer run together — trainer calls vLLM on-demand for each
+    # missing hidden state, deletes it immediately after use. No disk
+    # accumulation; any cached hs_*.safetensors from prior runs are used
+    # first then deleted. Pod restarts resume from the latest checkpoint.
+    #
+    # GPU memory split: vLLM at 0.45 util (~43 GB) + draft model/optimizer
+    # (~8-10 GB) = ~53 GB, comfortable on 96 GB VRAM.
+    #
+    # Concurrency: --max-num-seqs 4 + --num-workers 4 gives up to 4 parallel
+    # vLLM generation requests in flight.
     set -euo pipefail
 
     export HF_HOME=/data
@@ -99,98 +106,60 @@ data:
     fi
 
     # ----------------------------------------------------------------
-    # Phase 1: Generate hidden states (vLLM only — no trainer running)
-    # --max-num-seqs 1: one sequence at a time, reduces GPU dI/dt transients.
-    # --concurrency 1: one in-flight request (matches max-num-seqs).
-    # util=0.75: trainer is not loaded, so vLLM can use more VRAM.
-    # NOTE: ExampleHiddenStatesConnector rejects expandable_segments:True.
-    # Unset before vLLM launch; restore before Phase 2.
+    # Online training: vLLM generates hidden states on-demand as trainer
+    # requests them; each is deleted immediately after use (--on-generate
+    # delete). Keeps disk usage near-zero regardless of sample count.
+    #
+    # ExampleHiddenStatesConnector rejects expandable_segments:True.
+    # Unset before forking vLLM, restore before train.py.
     # ----------------------------------------------------------------
-    # Sentinel written by data_generation_offline.py exiting 0 (all samples
-    # attempted — some may be skipped). Count check would never hit 5000 if
-    # any samples are permanently skipped, so use a sentinel file instead.
     EXISTING_HS=$(find /output/data/hidden-states -maxdepth 1 -name "hs_*.safetensors" 2>/dev/null | wc -l)
-    if [ -f /output/data/phase1_complete ]; then
-        echo "[$(date)] Skipping Phase 1 — sentinel exists ($EXISTING_HS hidden states)"
-    else
-        echo "=== [$(date)] Phase 1: Generating hidden states ($EXISTING_HS/5000 done) ==="
-        unset PYTORCH_CUDA_ALLOC_CONF
+    echo "=== [$(date)] Launching vLLM for online training ($EXISTING_HS cached states will be used first) ==="
+    unset PYTORCH_CUDA_ALLOC_CONF
 
-        python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
-            --target-layer-ids 1 16 31 46 61 \
-            --hidden-states-path /output/data/hidden-states \
-            -- \
-            --gpu-memory-utilization 0.75 \
-            --port 8001 \
-            --max-model-len 8192 \
-            --dtype bfloat16 \
-            --trust-remote-code \
-            --served-model-name main \
-            --kv-cache-dtype fp8_e4m3 \
-            --mamba-cache-dtype float16 \
-            --mamba-ssm-cache-dtype float16 \
-            --enforce-eager \
-            --max-num-seqs 1 \
-            > /output/logs/vllm.log 2>&1 &
-        VLLM_PID=$!
-        trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
+    python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
+        --target-layer-ids 1 16 31 46 61 \
+        --hidden-states-path /output/data/hidden-states \
+        -- \
+        --gpu-memory-utilization 0.45 \
+        --port 8001 \
+        --max-model-len 8192 \
+        --dtype bfloat16 \
+        --trust-remote-code \
+        --served-model-name main \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 \
+        --mamba-ssm-cache-dtype float16 \
+        --enforce-eager \
+        --max-num-seqs 4 \
+        > /output/logs/vllm.log 2>&1 &
+    VLLM_PID=$!
+    trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
 
-        echo "=== Waiting for vLLM /health (up to 90 min) ==="
-        for i in $(seq 1 540); do
-            if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
-                echo "[$(date)] vLLM healthy after $((i * 10))s"
-                break
-            fi
-            if ! kill -0 $VLLM_PID 2>/dev/null; then
-                echo "ERROR: vLLM died. Last 80 lines:"
-                tail -80 /output/logs/vllm.log
-                exit 1
-            fi
-            [ "$i" -eq 540 ] && echo "ERROR: vLLM timeout 90 min" && exit 1
-            sleep 10
-        done
-
-        curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; m=json.load(sys.stdin); [print('  model:', x['id']) for x in m.get('data',[])]" 2>/dev/null || true
-
-        # Clean up stale lock files and orphaned cmpl-*.safetensors from
-        # any prior crashed vLLM instance — these cause lock-wait timeouts.
-        echo "[$(date)] Cleaning stale vLLM temp files..."
-        find /output/data/hidden-states -maxdepth 1 -name "*.lock" -delete
-        find /output/data/hidden-states -maxdepth 1 -name "cmpl-*.safetensors" -delete
-        echo "[$(date)] Done. Running data_generation_offline.py..."
-
-        python3 "$SPEC_SCRIPTS/data_generation_offline.py" \
-            --endpoint http://localhost:8001/v1 \
-            --preprocessed-data /output/data \
-            --output /output/data/hidden-states \
-            --max-samples 5000 \
-            --concurrency 1 \
-            --max-consecutive-errors 10 \
-            2>&1 | tee /output/logs/data_gen.log
-
-        DATA_GEN_EXIT=${PIPESTATUS[0]}
-        echo "[$(date)] Stopping vLLM..."
-        kill $VLLM_PID 2>/dev/null
-        wait $VLLM_PID 2>/dev/null || true
-        trap - EXIT
-        HS_COUNT=$(find /output/data/hidden-states -maxdepth 1 -name "hs_*.safetensors" | wc -l)
-        echo "[$(date)] Phase 1 complete — $HS_COUNT hidden states generated"
-        if [ "$DATA_GEN_EXIT" -eq 0 ]; then
-            touch /output/data/phase1_complete
-            echo "[$(date)] Sentinel written — Phase 1 will be skipped on future restarts"
-        else
-            echo "[$(date)] data_generation_offline.py exited $DATA_GEN_EXIT — Phase 1 incomplete, will retry"
+    echo "=== Waiting for vLLM /health (up to 90 min) ==="
+    for i in $(seq 1 540); do
+        if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+            echo "[$(date)] vLLM healthy after $((i * 10))s"
+            break
+        fi
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "ERROR: vLLM died. Last 80 lines:"
+            tail -80 /output/logs/vllm.log
             exit 1
         fi
-    fi
+        [ "$i" -eq 540 ] && echo "ERROR: vLLM timeout 90 min" && exit 1
+        sleep 10
+    done
 
-    # ----------------------------------------------------------------
-    # Phase 2: Train from cached hidden states (no vLLM at all)
-    # --on-missing skip: samples with no cached .safetensors are dropped.
-    # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
-    # ----------------------------------------------------------------
+    curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; m=json.load(sys.stdin); [print('  model:', x['id']) for x in m.get('data',[])]" 2>/dev/null || true
+
+    # Clean stale lock files and orphaned cmpl-*.safetensors from prior crashed runs
+    echo "[$(date)] Cleaning stale vLLM temp files..."
+    find /output/data/hidden-states -maxdepth 1 -name "*.lock" -delete
+    find /output/data/hidden-states -maxdepth 1 -name "cmpl-*.safetensors" -delete
+
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    echo "=== [$(date)] Phase 2: Training from cached hidden states ==="
+    echo "=== [$(date)] Training (online: --on-missing generate --on-generate delete) ==="
 
     if [ -d /output/checkpoints ] && [ "$(ls -A /output/checkpoints 2>/dev/null)" ]; then
         echo "[$(date)] Resuming from checkpoint:"
@@ -215,12 +184,14 @@ data:
         --total-seq-len 8192 \
         --epochs 5 \
         --lr 3e-4 \
-        --on-missing skip \
+        --on-missing generate \
+        --on-generate delete \
+        --vllm-endpoint http://localhost:8001/v1 \
         --data-path /output/data \
         --hidden-states-path /output/data/hidden-states \
         --save-path /output/checkpoints \
         --checkpoint-freq 0.25 \
-        --num-workers 2 \
+        --num-workers 4 \
         --prefetch-factor 1 \
         2>&1 | tee /output/logs/trainer.log
 
