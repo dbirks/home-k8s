@@ -106,7 +106,7 @@ data:
     # NOTE: ExampleHiddenStatesConnector rejects expandable_segments:True.
     # Unset before vLLM launch; restore before Phase 2.
     # ----------------------------------------------------------------
-    EXISTING_HS=$(ls /output/data/hidden-states/hs_*.safetensors 2>/dev/null | wc -l || echo 0)
+    EXISTING_HS=$(find /output/data/hidden-states -maxdepth 1 -name "hs_*.safetensors" 2>/dev/null | wc -l)
     if [ "$EXISTING_HS" -ge 5000 ]; then
         echo "[$(date)] Skipping Phase 1 — all 5000 hidden states already generated"
     else
