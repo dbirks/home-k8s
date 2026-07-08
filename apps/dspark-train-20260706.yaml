@@ -177,6 +177,8 @@ data:
         --hidden-states-path /output/data/hidden-states \
         --save-path /output/checkpoints \
         --checkpoint-freq 0.25 \
+        --num-workers 2 \
+        --prefetch-factor 1 \
         2>&1 | tee /output/logs/trainer.log
 
     echo "=== [$(date)] Training complete! ==="
@@ -190,7 +192,7 @@ metadata:
   name: dspark-train-qwen27-20260706
   namespace: default
 spec:
-  backoffLimit: 5
+  backoffLimit: 10
   activeDeadlineSeconds: 172800
   template:
     spec:
