@@ -11,12 +11,13 @@
 # Fix 2 — Triton SM120: DFlash backbone HEAD_DIM=256. sm12x lambda returns
 # FlexBwDConfig(64,64,64,64) with assertion BLOCK_N1%BLOCK_M1==0 — no valid
 # tile fits in SM120's 99 KB SMEM. Fix: force DFlash _attn_impl="eager" so
-# the backbone uses create_float_mask+SDPA (CUDA kernels, no Triton SMEM
-# constraint). The dense mask size = num_anchors×block_size = 24576 (Q_LEN)
-# ×(24576+2048) (KV_LEN) = 24.4 GB regardless of --total-seq-len (which only
-# changes KV, not Q). Fix: reduce --max-anchors 1536→384, giving Q=6144,
-# KV=8192, matrix=(20,6144,8192)×bf16=1.87 GB → fits within 17 GB free.
-# Context window at inference: 384×16=6144 tokens (adequate for most tasks).
+# the backbone uses create_float_mask+SDPA (CUDA kernels, no Triton SMEM).
+# Fix 3 — eager SDPA OOM: Q_LEN = max_anchors×block_size. torch.compile bakes
+# the first-observed value (1536×16=24576) into the compiled kernel. Post-install
+# patch to dspark/core.py caps max_anchors=384 at Python level before tracing.
+# Result: Q=6144, KV=8192, (20,6144,8192)×bf16=1.87 GB ← fits in 17 GB free.
+# --max-anchors 384 in args has no practical effect (torch.compile specializes
+# early), only the post-install hardcode works reliably.
 # Job name is date-stamped so subsequent runs can coexist in git history.
 #
 # To run another iteration: copy this file, increment the date, adjust flags,
