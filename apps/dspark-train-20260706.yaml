@@ -4,6 +4,11 @@
 # Node has 32 GB RAM — vLLM + trainer can't coexist (OOM). Two-phase keeps
 # GPU exclusive to each: Phase 1 = vLLM only, Phase 2 = trainer only.
 # 600 samples × ~77 MB/file = ~46 GB fits within the 50 Gi dspark-output PVC.
+#
+# Phase 2 OOM fix: speculators loads embed_tokens+lm_head (~7 GB) into CPU RAM
+# by default. On a 32 GB node this spikes RAM past the limit. Patched speculators
+# source to load directly to CUDA (GPU-to-GPU copy, no CPU staging).
+# Model is moved to CUDA before load_verifier_weights() in from_training_args.
 # Job name is date-stamped so subsequent runs can coexist in git history.
 #
 # To run another iteration: copy this file, increment the date, adjust flags,
@@ -68,6 +73,26 @@ data:
     echo "=== [$(date -u)] Cloning speculators repo ==="
     if git clone --depth=1 https://github.com/vllm-project/speculators /tmp/speculators-repo 2>&1; then
         SPEC_SCRIPTS=/tmp/speculators-repo/scripts
+        # Patch speculators: load verifier weights (embed_tokens+lm_head, ~7 GB) directly
+        # to GPU instead of CPU RAM. Without this, 32 GB node OOMs during train.py init.
+        # Move model to CUDA before load_verifier_weights so the copy is GPU-to-GPU.
+        cat > /tmp/patch_speculators.py << 'PYPATCH'
+    f = '/tmp/speculators-repo/src/speculators/utils/loading.py'
+    c = open(f).read().replace('device="cpu"', 'device="cuda"')
+    open(f, 'w').write(c)
+    print('Patched loading.py: device=cpu -> cuda')
+    for f2 in [
+        '/tmp/speculators-repo/src/speculators/models/dflash/core.py',
+        '/tmp/speculators-repo/src/speculators/models/dspark/core.py',
+    ]:
+        c = open(f2).read().replace(
+            'model.load_verifier_weights()',
+            'model.to("cuda"); model.load_verifier_weights()'
+        )
+        open(f2, 'w').write(c)
+        print('Patched ' + f2 + ': model.cuda() before load_verifier_weights')
+    PYPATCH
+        python3 /tmp/patch_speculators.py
         uv pip install /tmp/speculators-repo hf_transfer --system --quiet
     else
         echo "  git clone failed — falling back to pip install + curl"
