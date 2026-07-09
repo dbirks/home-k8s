@@ -216,6 +216,11 @@ data:
     # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
     # ----------------------------------------------------------------
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    # Disable torch.compile: inductor fuses ops with flex_attention backward and
+    # produces a Triton kernel requiring 114 KB shared memory, exceeding SM120's
+    # reported 99 KB limit. Eager mode uses standard non-fused flex_attention
+    # Triton kernels which fit within the limit.
+    export TORCHDYNAMO_DISABLE=1
     echo "=== [$(date)] Phase 2: Training from cached hidden states ==="
 
     if [ -d /output/checkpoints ] && [ "$(ls -A /output/checkpoints 2>/dev/null)" ]; then
