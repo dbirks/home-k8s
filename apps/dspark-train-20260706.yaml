@@ -226,7 +226,7 @@ data:
     # Also clear the stale triton_cache to force recompilation with new rounding.
     # ----------------------------------------------------------------
     cat > /tmp/patch_flex_attention.py << 'PYFA'
-    import os
+    import os, glob
 
     common_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/common.py'
     if not os.path.exists(common_file):
@@ -237,8 +237,8 @@ data:
         for l in c.split('\n'):
             if 'HEAD_DIM_ROUNDED' in l or 'next_power_of_two' in l:
                 print('  ', l.strip())
-        if '_patched_head_dim_160' in c:
-            print('Already patched, skipping')
+        if '192 if qk_head_dim_static == 160' in c:
+            print('Already patched, skipping patch step')
         elif 'next_power_of_two(qk_head_dim_static)' not in c:
             print('ERROR: expected patch target not found — dumping head_dim lines:')
             for l in c.split('\n'):
@@ -247,14 +247,28 @@ data:
         else:
             c = c.replace(
                 'next_power_of_two(qk_head_dim_static)',
-                '(192 if qk_head_dim_static == 160 else next_power_of_two(qk_head_dim_static)) # _patched_head_dim_160'
+                '(192 if qk_head_dim_static == 160 else next_power_of_two(qk_head_dim_static))'
             ).replace(
                 'next_power_of_two(v_head_dim_static)',
-                '(192 if v_head_dim_static == 160 else next_power_of_two(v_head_dim_static)) # _patched_head_dim_160'
+                '(192 if v_head_dim_static == 160 else next_power_of_two(v_head_dim_static))'
             )
             open(common_file, 'w').write(c)
             print('Patched common.py: HEAD_DIM=160 -> QK_HEAD_DIM_ROUNDED=192 (was 256)')
             print('  64x192 tiles use ~84 KB SMEM, fits in SM120 99 KB static limit')
+
+        # CRITICAL: Docker images precompile .pyc with unchecked-hash mode.
+        # Python uses the .pyc bytecode even when the .py source is modified,
+        # so the patch above has NO effect unless we delete the stale .pyc.
+        pyc_dir = os.path.join(os.path.dirname(common_file), '__pycache__')
+        deleted = []
+        for pyc in glob.glob(os.path.join(pyc_dir, 'common.cpython*')):
+            os.remove(pyc)
+            deleted.append(os.path.basename(pyc))
+        if deleted:
+            print('Deleted stale .pyc:', deleted)
+            print('  Python will recompile common.py from patched source on next import')
+        else:
+            print('No .pyc found to delete (already clean)')
     PYFA
     python3 /tmp/patch_flex_attention.py
 
