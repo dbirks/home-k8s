@@ -104,34 +104,41 @@ data:
     # SM120 (RTX PRO 6000) cannot compile flex_attention backward Triton kernel:
     # HEAD_DIM=256, BLOCK_N1 must be multiple of 64 (WGMMA + assert BLOCK_N1%BLOCK_M1==0),
     # min SMEM = 114688 bytes > SM120 optin limit of 101376 bytes. No valid tile.
-    # Eager path: create_float_mask + F.scaled_dot_product_attention.
-    # SDPA uses cuDNN/CUDA kernels without the Triton SMEM constraint.
-    # Note: seq_len must be reduced (--total-seq-len 2048) so dense mask
-    # [1,20,2176,2176]*4=378 MB/layer stays within VRAM budget.
+    #
+    # When _attn_implementation == "eager", DFlashDraftModel uses:
+    #   - create_float_mask (dense bool -> additive mask) instead of create_block_mask
+    #   - eager_attention_forward (transformers SDPA) instead of flex_attention_forward
+    # Both are already implemented in speculators; we just need to force the mode.
+    #
+    # CRITICAL: from_training_args always sets _attn_implementation = "simple_flex_attention"
+    # via kwargs.get("draft_attn_impl", ...), making the `if is None:` check in __init__
+    # a no-op. We must patch the FULL block to UNCONDITIONALLY set "eager".
     core_file = '/tmp/speculators-repo/src/speculators/models/dflash/core.py'
     c = open(core_file).read()
-    # Patch __init__ default: when _attn_implementation is None, use eager not flex_attention
-    OLD1 = ('            config.transformer_layer_config._attn_implementation = (  # noqa: SLF001\n'
-            '                "simple_flex_attention"\n'
-            '            )\n')
-    NEW1 = '            config.transformer_layer_config._attn_implementation = "eager"  # noqa: SLF001\n'
-    # Patch from_training_args default: change kwargs.get default
-    c2 = c.replace(OLD1, NEW1)
-    c2 = re.sub(
-        r'kwargs\.get\(["\']draft_attn_impl["\'],\s*["\']simple_flex_attention["\']\s*\)',
-        'kwargs.get("draft_attn_impl", "eager")',
-        c2
+    OLD_BLOCK = (
+        '        if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001\n'
+        '            config.transformer_layer_config._attn_implementation = (  # noqa: SLF001\n'
+        '                "simple_flex_attention"\n'
+        '            )\n'
+        '        self._attn_impl = config.transformer_layer_config._attn_implementation  # noqa: SLF001\n'
     )
-    if c2 != c:
+    NEW_BLOCK = (
+        '        config.transformer_layer_config._attn_implementation = "eager"  # noqa: SLF001\n'
+        '        self._attn_impl = "eager"\n'
+    )
+    if 'self._attn_impl = "eager"' in c:
+        print('Already patched dflash/core.py (_attn_impl="eager"), skipping')
+    elif OLD_BLOCK in c:
+        c2 = c.replace(OLD_BLOCK, NEW_BLOCK)
         open(core_file, 'w').write(c2)
         remaining = c2.count('"simple_flex_attention"')
-        print('Patched dflash/core.py: attn_impl default -> eager')
-        print('  Remaining simple_flex_attention refs (comparisons ok):', remaining)
+        print('Patched dflash/core.py: _attn_impl unconditionally set to eager (SDPA)')
+        print('  Remaining simple_flex_attention refs (comparisons only):', remaining)
     else:
-        print('ERROR: dflash/core.py patch had no effect! Dumping simple_flex_attention lines:')
+        print('ERROR: target block not found in dflash/core.py. Dumping _attn_implementation lines:')
         for i, line in enumerate(c.split('\n')):
-            if 'simple_flex_attention' in line:
-                print('  line', i+1, ':', line.rstrip())
+            if '_attn_implementation' in line or 'simple_flex' in line:
+                print('  line', i+1, ':', repr(line.rstrip()))
     PYPATCH
         python3 /tmp/patch_speculators.py
         uv pip install /tmp/speculators-repo hf_transfer --system --quiet
