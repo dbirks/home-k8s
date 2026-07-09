@@ -5,10 +5,13 @@
 # GPU exclusive to each: Phase 1 = vLLM only, Phase 2 = trainer only.
 # 600 samples × ~77 MB/file = ~46 GB fits within the 50 Gi dspark-output PVC.
 #
-# Phase 2 OOM fix: speculators loads embed_tokens+lm_head (~7 GB) into CPU RAM
+# Fix 1 — CPU OOM: speculators loads embed_tokens+lm_head (~7 GB) into CPU RAM
 # by default. On a 32 GB node this spikes RAM past the limit. Patched speculators
 # source to load directly to CUDA (GPU-to-GPU copy, no CPU staging).
-# Model is moved to CUDA before load_verifier_weights() in from_training_args.
+# Fix 2 — Triton SM120: torch.compile fuses flex_attention backward with surrounding
+# ops, producing a kernel needing 114 KB shared memory > SM120's 99 KB limit.
+# Patch train.py: set max_fusion_size=1 so inductor cannot create the fused kernel.
+# The standalone flex_attention backward kernel fits within 99 KB.
 # Job name is date-stamped so subsequent runs can coexist in git history.
 #
 # To run another iteration: copy this file, increment the date, adjust flags,
@@ -91,6 +94,15 @@ data:
         )
         open(f2, 'w').write(c)
         print('Patched ' + f2 + ': model.cuda() before load_verifier_weights')
+    f3 = '/tmp/speculators-repo/scripts/train.py'
+    c = open(f3).read()
+    inject = (
+        'import torch._inductor.config as _ic\n'
+        '_ic.max_fusion_size = 1  # prevent oversized fused Triton kernels on SM120\n'
+    )
+    c = c.replace('import torch\n', 'import torch\n' + inject, 1)
+    open(f3, 'w').write(c)
+    print('Patched train.py: max_fusion_size=1')
     PYPATCH
         python3 /tmp/patch_speculators.py
         uv pip install /tmp/speculators-repo hf_transfer --system --quiet
@@ -216,11 +228,6 @@ data:
     # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
     # ----------------------------------------------------------------
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    # Disable torch.compile: inductor fuses ops with flex_attention backward and
-    # produces a Triton kernel requiring 114 KB shared memory, exceeding SM120's
-    # reported 99 KB limit. Eager mode uses standard non-fused flex_attention
-    # Triton kernels which fit within the limit.
-    export TORCHDYNAMO_DISABLE=1
     echo "=== [$(date)] Phase 2: Training from cached hidden states ==="
 
     if [ -d /output/checkpoints ] && [ "$(ls -A /output/checkpoints 2>/dev/null)" ]; then
