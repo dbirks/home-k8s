@@ -8,11 +8,11 @@
 # Fix 1 — CPU OOM: speculators loads embed_tokens+lm_head (~7 GB) into CPU RAM
 # by default. On a 32 GB node this spikes RAM past the limit. Patched speculators
 # source to load directly to CUDA (GPU-to-GPU copy, no CPU staging).
-# Fix 2 — Triton SM120: DFlash backbone HEAD_DIM=256 (power of 2, no rounding).
-# Default FlexBwDConfig has num_warps=4 → WGMMA on SM120 requires min 64 rows
-# → effective tile 64×256 → SMEM=114 KB > SM120 static limit (99 KB).
-# Fix: patch FlexBwDConfig default to num_warps=1 → per-warp MMA uses 16-row
-# tiles → SMEM ≈ 25 KB → fits. Forward kernel unaffected (different config).
+# Fix 2 — Triton SM120: DFlash backbone HEAD_DIM=256. SM12x gets its own
+# config_map entry returning FlexBwDConfig(64,64,64,64,1,4). SM120 optin SMEM
+# limit is 101,376 bytes; 64×64 tiles need 114,688 → OOM. Fix: patch sm12x
+# lambda to use BLOCK_N=16 (BLOCK_M stays 64 for WGMMA). dKV SMEM=53,248,
+# dQ SMEM=86,016 — both under the 101,376-byte SM120 hardware ceiling.
 # Job name is date-stamped so subsequent runs can coexist in git history.
 #
 # To run another iteration: copy this file, increment the date, adjust flags,
@@ -216,56 +216,67 @@ data:
 
     # ----------------------------------------------------------------
     # Pre-Phase-2: Fix flex_attention backward Triton kernel for SM120.
-    # Root cause (confirmed via PVC kernel cache inspection):
-    #   - DFlash backbone HEAD_DIM=256 (confirmed: QK_HEAD_DIM=256 in kernel meta)
-    #   - Default FlexBwDConfig: num_warps=4
-    #   - SM120 WGMMA requires min 4 warps (128 threads) → min 64-row tile
-    #   - Effective tile: 64×256, SMEM=114,688 bytes > SM120 limit (101,376)
-    # Fix: patch template_heuristics/triton.py to use num_warps=1 in default
-    #   FlexBwDConfig. With 1 warp, WGMMA is impossible; Triton falls back to
-    #   per-warp MMA (16-row tiles). SMEM ≈ 3×(16×256×2) + (16×16×4) ≈ 25 KB.
-    # Must also delete .pyc (Docker uses unchecked-hash bytecode cache that
-    #   ignores .py modifications unless the .pyc file is removed).
+    # Root cause (confirmed via gl/ kernel cache + device query):
+    #   - DFlash backbone HEAD_DIM=256 (QK_HEAD_DIM=256 in kernel meta)
+    #   - SM12.x gets its own config: sm12x lambda returns FlexBwDConfig(64,64,64,64,1,4)
+    #   - SM120 optin SMEM limit = 101,376 bytes (CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)
+    #   - 64×64 tiles: Q+K+V(3×64×256×bf16) + scores(64×64×f32) = 114,688 > 101,376 → OOM
+    # Fix: patch sm12x lambda to use BLOCK_N=16 instead of 64. BLOCK_M stays
+    #   64 (WGMMA M-dimension minimum). Smaller N tiles reduce K+V+scores SMEM:
+    #   dKV: Q(64×256×2)+K(16×256×2)+V(16×256×2)+scores(64×16×4) = 53,248 ✓
+    #   dQ:  Q+dO(2×64×256×2)+K+V(2×16×256×2)+scores(64×16×4)   = 86,016 ✓
+    # Must also delete .pyc (Docker uses unchecked-hash bytecode that ignores
+    #   .py modifications unless .pyc is removed first).
     # ----------------------------------------------------------------
     cat > /tmp/patch_flex_attention.py << 'PYFA'
     import os, glob
 
-    # The DFlash backbone uses HEAD_DIM=256 (already a power of 2), so
-    # patching common.py's next_power_of_two has no effect. The real issue:
-    # FlexBwDConfig default has num_warps=4 → Triton uses WGMMA on SM120 →
-    # minimum tile is 64 rows → BLOCK_M1=64×256 → SMEM=114 KB > 99 KB.
+    # SM12.x (RTX PRO 6000 Blackwell) uses the sm12x config_map entry, NOT the
+    # baseline FlexBwDConfig(16,16,16,16,1,4). For HEAD_DIM=256 the sm12x lambda
+    # returns FlexBwDConfig(64,64,64,64,1,4), producing 114,688 bytes SMEM which
+    # exceeds the SM120 optin limit of 101,376 bytes.
     #
-    # Fix: change the default backward config to num_warps=1.
-    # With 1 warp, Triton cannot use WGMMA (requires 4 warps) and falls back
-    # to per-warp MMA with 16-row tiles:
-    #   3 × (16×256×bf16) + (16×16×f32) = 24,576 + 1,024 ≈ 25 KB → fits.
+    # Fix: replace the sm12x else-branch with BLOCK_N=16 (BLOCK_M stays 64).
     th_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/template_heuristics/triton.py'
     if not os.path.exists(th_file):
         print('ERROR: not found:', th_file)
     else:
         c = open(th_file).read()
-        print(th_file + ': scanning FlexBwDConfig defaults...')
-        for l in c.split('\n'):
-            if 'FlexBwDConfig' in l and ('return' in l or 'append' in l or ('(1' in l and '4)' in l)):
-                print('  ', l.strip())
-        if 'FlexBwDConfig(16, 16, 16, 16, 1, 1)' in c:
-            print('Already patched (num_warps already 1), skipping')
-        elif 'FlexBwDConfig(16, 16, 16, 16, 1, 4)' in c:
-            c = c.replace(
-                'FlexBwDConfig(16, 16, 16, 16, 1, 4)',
-                'FlexBwDConfig(16, 16, 16, 16, 1, 1)'
-            )
-            open(th_file, 'w').write(c)
-            print('Patched triton.py: FlexBwDConfig num_warps 4->1 (skip WGMMA, use per-warp MMA)')
-            print('  per-warp MMA: 16-row tiles, SMEM ~25 KB, fits in SM120 99 KB limit')
-        else:
-            print('ERROR: target FlexBwDConfig(16, 16, 16, 16, 1, 4) not found, dumping:')
-            for l in c.split('\n'):
-                if 'FlexBwDConfig' in l:
-                    print('  ', l.strip())
 
-        # Delete stale .pyc — Docker images use unchecked-hash mode bytecode
-        # so Python ignores .py modifications unless .pyc is deleted.
+        OLD_SM12X = (
+            '            "sm12x": lambda h: (\n'
+            '                FlexBwDConfig(32, 128, 128, 32, 3, 4)\n'
+            '                if h < 64\n'
+            '                else FlexBwDConfig(\n'
+            '                    64, 64, 64, 64, 1 if h >= 128 else 2, 4\n'
+            '                )\n'
+            '            ),'
+        )
+        NEW_SM12X = (
+            '            "sm12x": lambda h: (\n'
+            '                FlexBwDConfig(32, 128, 128, 32, 3, 4)\n'
+            '                if h < 64\n'
+            '                else FlexBwDConfig(64, 16, 64, 16, 1, 4)\n'
+            '            ),'
+        )
+
+        if 'FlexBwDConfig(64, 16, 64, 16, 1, 4)' in c:
+            print('Already patched sm12x BLOCK_N=16, skipping')
+        elif OLD_SM12X in c:
+            c = c.replace(OLD_SM12X, NEW_SM12X)
+            open(th_file, 'w').write(c)
+            print('Patched triton.py: sm12x FlexBwDConfig BLOCK_N 64->16')
+            print('  dKV SMEM=53248 bytes, dQ SMEM=86016 bytes, limit=101376 bytes')
+        else:
+            print('ERROR: sm12x target not found. Dumping sm12x context:')
+            idx = c.find('"sm12x"')
+            if idx >= 0:
+                print(repr(c[idx:idx+400]))
+            else:
+                print('  "sm12x" not in file at all')
+
+        # Delete stale .pyc — Docker uses unchecked-hash bytecode that ignores
+        # .py modifications unless the .pyc file is explicitly removed.
         pyc_dir = os.path.join(os.path.dirname(th_file), '__pycache__')
         deleted = []
         for pyc in glob.glob(os.path.join(pyc_dir, 'triton.cpython*')):
@@ -284,11 +295,10 @@ data:
     export TORCHINDUCTOR_CACHE_DIR=/output/triton_cache
     mkdir -p /output/triton_cache
     # Clear ALL stale inductor/triton cache. The gl/ subdirectory contains
-    # PyTorch inductor Python wrappers with QK_HEAD_DIM_ROUNDED=256 baked into
-    # the embedded Triton kernel source. Clearing only triton/ leaves those stale
-    # gl/*.py files intact; they re-embed the old 256-wide kernel on next load.
-    # Must clear gl/ too (or just nuke everything) to force fresh compilation
-    # with the patched common.py that emits QK_HEAD_DIM_ROUNDED=192.
+    # PyTorch inductor Python wrappers with BLOCK_N baked into the embedded
+    # Triton kernel source. Clearing only triton/ leaves those stale gl/*.py
+    # intact; they would re-use the old 64-wide BLOCK_N kernel on next load.
+    # Nuke everything to force fresh compilation with the patched sm12x config.
     if [ -n "$(ls -A /output/triton_cache 2>/dev/null)" ]; then
         echo "[$(date)] Clearing ALL stale inductor cache (gl/ + triton/ + rest)..."
         rm -rf /output/triton_cache/*
