@@ -248,12 +248,12 @@ data:
         for l in c.split('\n'):
             if 'FlexBwDConfig' in l and ('return' in l or 'append' in l or ('(1' in l and '4)' in l)):
                 print('  ', l.strip())
-        if '_patched_num_warps_1' in c:
-            print('Already patched, skipping')
+        if 'FlexBwDConfig(16, 16, 16, 16, 1, 1)' in c:
+            print('Already patched (num_warps already 1), skipping')
         elif 'FlexBwDConfig(16, 16, 16, 16, 1, 4)' in c:
             c = c.replace(
                 'FlexBwDConfig(16, 16, 16, 16, 1, 4)',
-                'FlexBwDConfig(16, 16, 16, 16, 1, 1)  # _patched_num_warps_1'
+                'FlexBwDConfig(16, 16, 16, 16, 1, 1)'
             )
             open(th_file, 'w').write(c)
             print('Patched triton.py: FlexBwDConfig num_warps 4->1 (skip WGMMA, use per-warp MMA)')
