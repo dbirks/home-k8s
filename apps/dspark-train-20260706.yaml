@@ -214,30 +214,40 @@ data:
     fi
 
     # ----------------------------------------------------------------
-    # Pre-Phase-2: Patch PyTorch's flex_attention Triton template to add
-    # BLOCK_M=32 configs. Qwen3.6-27B has HEAD_DIM=160 (5120/32); with
-    # standard BLOCK_M=64 the kernel needs ~102 KB > SM120's 99 KB limit,
-    # so ALL default configs fail. BLOCK_M=32 uses ~50 KB and fits.
+    # Pre-Phase-2: Fix flex_attention backward Triton kernel for SM120.
+    # Qwen3.6-27B HEAD_DIM=160 means all standard autotune configs need
+    # > 99 KB shared memory. Two-pronged fix:
+    #   1. Upgrade Triton — newer builds correctly use SM120's extended
+    #      shared memory (up to 228 KB) vs the conservative 99 KB default.
+    #   2. Add BLOCK_M=32 autotune config as fallback (needs ~50 KB).
     # ----------------------------------------------------------------
+    echo "=== [$(date)] Upgrading Triton for SM120 extended shared memory ==="
+    pip install triton --upgrade --quiet 2>&1 | tail -3
+    python3 -c "import triton; print('Triton:', triton.__version__)" 2>&1 || true
+
     cat > /tmp/patch_flex_attention.py << 'PYFA'
     import os, re, glob
-    fa_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex_attention.py'
-    if not os.path.exists(fa_file):
-        matches = glob.glob('/usr/local/lib/python*/dist-packages/torch/_inductor/kernel/flex_attention.py')
-        fa_file = matches[0] if matches else ''
-    if not fa_file or not os.path.exists(fa_file):
-        print('WARNING: flex_attention.py not found, skipping Triton patch')
-    else:
+    # Search common locations for the flex_attention Triton template
+    patterns = [
+        '/usr/local/lib/python*/dist-packages/torch/_inductor/kernel/flex_attention.py',
+        '/usr/local/lib/python*/dist-packages/torch/_higher_order_ops/flex_attention.py',
+    ]
+    candidates = []
+    for p in patterns:
+        candidates.extend(glob.glob(p, recursive=False))
+    print('Found flex_attention files:', candidates)
+    for fa_file in candidates:
         c = open(fa_file).read()
         found = re.findall(r"['\"]BLOCK_M['\"]\s*:\s*(\d+)", c)
-        print('flex_attention.py existing BLOCK_M configs:', found)
-        if '32' not in found and found:
+        if not found:
+            print(fa_file + ': no BLOCK_M configs found, skipping')
+            continue
+        print(fa_file + ': existing BLOCK_M configs: ' + str(found))
+        if '32' not in found:
             cfg32 = "triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'num_stages': 1, 'num_warps': 4}),\n        "
             c = re.sub(r'(triton\.Config\s*\(\s*\{)', cfg32 + r'\1', c, count=1)
             open(fa_file, 'w').write(c)
-            print('Patched ' + fa_file + ': added BLOCK_M=32 for SM120 / HEAD_DIM=160')
-        else:
-            print('flex_attention.py: no patch needed (already has BLOCK_M=32 or no configs found)')
+            print('Patched ' + fa_file + ': added BLOCK_M=32 for SM120/HEAD_DIM=160')
     PYFA
     python3 /tmp/patch_flex_attention.py
 
