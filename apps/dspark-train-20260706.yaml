@@ -263,6 +263,9 @@ data:
     # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
     # ----------------------------------------------------------------
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    # Persist torchinductor cache so we can inspect generated kernel files after failure
+    export TORCHINDUCTOR_CACHE_DIR=/output/triton_cache
+    mkdir -p /output/triton_cache
     echo "=== [$(date)] Phase 2: Training from cached hidden states ==="
 
     if [ -d /output/checkpoints ] && [ "$(ls -A /output/checkpoints 2>/dev/null)" ]; then
