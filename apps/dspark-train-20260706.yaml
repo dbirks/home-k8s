@@ -8,10 +8,11 @@
 # Fix 1 — CPU OOM: speculators loads embed_tokens+lm_head (~7 GB) into CPU RAM
 # by default. On a 32 GB node this spikes RAM past the limit. Patched speculators
 # source to load directly to CUDA (GPU-to-GPU copy, no CPU staging).
-# Fix 2 — Triton SM120: Qwen3.6-27B HEAD_DIM=160. next_power_of_two(160)=256, so
-# QK_HEAD_DIM_ROUNDED=256, producing 64×256 tiles (SM120 WGMMA min=64 rows).
-# Required SMEM=114 KB > SM120 static limit (99 KB). Fix: patch flex/common.py
-# to use 192 (next 64-multiple ≥ 160) → 64×192 tiles → ~84 KB SMEM → fits.
+# Fix 2 — Triton SM120: DFlash backbone HEAD_DIM=256 (power of 2, no rounding).
+# Default FlexBwDConfig has num_warps=4 → WGMMA on SM120 requires min 64 rows
+# → effective tile 64×256 → SMEM=114 KB > SM120 static limit (99 KB).
+# Fix: patch FlexBwDConfig default to num_warps=1 → per-warp MMA uses 16-row
+# tiles → SMEM ≈ 25 KB → fits. Forward kernel unaffected (different config).
 # Job name is date-stamped so subsequent runs can coexist in git history.
 #
 # To run another iteration: copy this file, increment the date, adjust flags,
@@ -216,59 +217,61 @@ data:
     # ----------------------------------------------------------------
     # Pre-Phase-2: Fix flex_attention backward Triton kernel for SM120.
     # Root cause (confirmed via PVC kernel cache inspection):
-    #   - Qwen3.6-27B HEAD_DIM=160
-    #   - set_head_dim_values in flex/common.py: next_power_of_two(160)=256
-    #   - SM120 WGMMA minimum tile: 64 rows (4 warps × 16 threads) × 256 cols
-    #   - Kernel SMEM = 114,688 bytes > SM120 static limit (101,376 bytes)
-    # Fix: patch common.py to use 192 (next 64-multiple ≥ 160) → 64×192 tiles
-    #   - Estimated SMEM ≈ 84 KB → fits in 99 KB limit
-    #   - 192 is divisible by 16 (valid for WGMMA bf16 K-dimension)
-    # Also clear the stale triton_cache to force recompilation with new rounding.
+    #   - DFlash backbone HEAD_DIM=256 (confirmed: QK_HEAD_DIM=256 in kernel meta)
+    #   - Default FlexBwDConfig: num_warps=4
+    #   - SM120 WGMMA requires min 4 warps (128 threads) → min 64-row tile
+    #   - Effective tile: 64×256, SMEM=114,688 bytes > SM120 limit (101,376)
+    # Fix: patch template_heuristics/triton.py to use num_warps=1 in default
+    #   FlexBwDConfig. With 1 warp, WGMMA is impossible; Triton falls back to
+    #   per-warp MMA (16-row tiles). SMEM ≈ 3×(16×256×2) + (16×16×4) ≈ 25 KB.
+    # Must also delete .pyc (Docker uses unchecked-hash bytecode cache that
+    #   ignores .py modifications unless the .pyc file is removed).
     # ----------------------------------------------------------------
     cat > /tmp/patch_flex_attention.py << 'PYFA'
     import os, glob
 
-    common_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/common.py'
-    if not os.path.exists(common_file):
-        print('ERROR: not found:', common_file)
+    # The DFlash backbone uses HEAD_DIM=256 (already a power of 2), so
+    # patching common.py's next_power_of_two has no effect. The real issue:
+    # FlexBwDConfig default has num_warps=4 → Triton uses WGMMA on SM120 →
+    # minimum tile is 64 rows → BLOCK_M1=64×256 → SMEM=114 KB > 99 KB.
+    #
+    # Fix: change the default backward config to num_warps=1.
+    # With 1 warp, Triton cannot use WGMMA (requires 4 warps) and falls back
+    # to per-warp MMA with 16-row tiles:
+    #   3 × (16×256×bf16) + (16×16×f32) = 24,576 + 1,024 ≈ 25 KB → fits.
+    th_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/template_heuristics/triton.py'
+    if not os.path.exists(th_file):
+        print('ERROR: not found:', th_file)
     else:
-        c = open(common_file).read()
-        print(common_file + ': scanning...')
+        c = open(th_file).read()
+        print(th_file + ': scanning FlexBwDConfig defaults...')
         for l in c.split('\n'):
-            if 'HEAD_DIM_ROUNDED' in l or 'next_power_of_two' in l:
+            if 'FlexBwDConfig' in l and ('return' in l or 'append' in l or ('(1' in l and '4)' in l)):
                 print('  ', l.strip())
-        if '192 if qk_head_dim_static == 160' in c:
-            print('Already patched, skipping patch step')
-        elif 'next_power_of_two(qk_head_dim_static)' not in c:
-            print('ERROR: expected patch target not found — dumping head_dim lines:')
-            for l in c.split('\n'):
-                if 'head_dim' in l.lower():
-                    print('  ', l)
-        else:
+        if '_patched_num_warps_1' in c:
+            print('Already patched, skipping')
+        elif 'FlexBwDConfig(16, 16, 16, 16, 1, 4)' in c:
             c = c.replace(
-                'next_power_of_two(qk_head_dim_static)',
-                '(192 if qk_head_dim_static == 160 else next_power_of_two(qk_head_dim_static))'
-            ).replace(
-                'next_power_of_two(v_head_dim_static)',
-                '(192 if v_head_dim_static == 160 else next_power_of_two(v_head_dim_static))'
+                'FlexBwDConfig(16, 16, 16, 16, 1, 4)',
+                'FlexBwDConfig(16, 16, 16, 16, 1, 1)  # _patched_num_warps_1'
             )
-            open(common_file, 'w').write(c)
-            print('Patched common.py: HEAD_DIM=160 -> QK_HEAD_DIM_ROUNDED=192 (was 256)')
-            print('  64x192 tiles use ~84 KB SMEM, fits in SM120 99 KB static limit')
+            open(th_file, 'w').write(c)
+            print('Patched triton.py: FlexBwDConfig num_warps 4->1 (skip WGMMA, use per-warp MMA)')
+            print('  per-warp MMA: 16-row tiles, SMEM ~25 KB, fits in SM120 99 KB limit')
+        else:
+            print('ERROR: target FlexBwDConfig(16, 16, 16, 16, 1, 4) not found, dumping:')
+            for l in c.split('\n'):
+                if 'FlexBwDConfig' in l:
+                    print('  ', l.strip())
 
-        # CRITICAL: Docker images precompile .pyc with unchecked-hash mode.
-        # Python uses the .pyc bytecode even when the .py source is modified,
-        # so the patch above has NO effect unless we delete the stale .pyc.
-        pyc_dir = os.path.join(os.path.dirname(common_file), '__pycache__')
+        # Delete stale .pyc — Docker images use unchecked-hash mode bytecode
+        # so Python ignores .py modifications unless .pyc is deleted.
+        pyc_dir = os.path.join(os.path.dirname(th_file), '__pycache__')
         deleted = []
-        for pyc in glob.glob(os.path.join(pyc_dir, 'common.cpython*')):
+        for pyc in glob.glob(os.path.join(pyc_dir, 'triton.cpython*')):
             os.remove(pyc)
             deleted.append(os.path.basename(pyc))
-        if deleted:
-            print('Deleted stale .pyc:', deleted)
-            print('  Python will recompile common.py from patched source on next import')
-        else:
-            print('No .pyc found to delete (already clean)')
+        print('Deleted .pyc:', deleted if deleted else '(none found)')
     PYFA
     python3 /tmp/patch_flex_attention.py
 
