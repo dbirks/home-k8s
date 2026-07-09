@@ -216,36 +216,33 @@ data:
     # ----------------------------------------------------------------
     # Pre-Phase-2: Fix flex_attention backward Triton kernel for SM120.
     # Qwen3.6-27B HEAD_DIM=160 means all standard autotune configs need
-    # > 99 KB shared memory. Wrap flex_attention to force BLOCK_M=32.
+    # > 99 KB shared memory. Patch the inductor template to add BLOCK_M=32
+    # (needs ~50 KB, fits). kernel_options only affects forward; template
+    # patch is required to change the backward kernel's autotune configs.
     # ----------------------------------------------------------------
     cat > /tmp/patch_flex_attention.py << 'PYFA'
-    import glob, re, subprocess
+    import re
 
-    # Diagnostic: find files with BLOCK_M configs in torch inductor
-    result = subprocess.run(
-        ['grep', '-r', 'BLOCK_M', '--include=*.py', '-l',
-         '/usr/local/lib/python3.12/dist-packages/torch/_inductor/'],
-        capture_output=True, text=True)
-    print('torch/_inductor/ files with BLOCK_M:', result.stdout.strip()[:800] or '(none)')
-
-    # Patch DFlash to force BLOCK_M=32,BLOCK_N=32 in flex_attention
-    # by monkey-patching the module attribute before any from-import.
-    f = '/tmp/speculators-repo/src/speculators/models/dflash/core.py'
-    c = open(f).read()
-    if 'flex_attention' in c and '_fa_wrap' not in c:
-        prepend = (
-            '# SM120 fix: force BLOCK_M=32 for flex_attention (HEAD_DIM=160 > 99 KB limit)\n'
-            'import torch.nn.attention.flex_attention as _fa_mod\n'
-            '_fa_orig = _fa_mod.flex_attention\n'
-            'def _fa_wrap(*a, **kw):\n'
-            "    kw.setdefault('kernel_options', {}).update({'BLOCK_M': 32, 'BLOCK_N': 32})\n"
-            '    return _fa_orig(*a, **kw)\n'
-            '_fa_mod.flex_attention = _fa_wrap\n'
-        )
-        open(f, 'w').write(prepend + c)
-        print('Patched dflash/core.py: flex_attention wrapped BLOCK_M=32')
+    # Patch the flex_attention Triton template (found in kernel/flex/ dir).
+    # Adds BLOCK_M=32,BLOCK_N=32 to the autotune configs so the backward kernel
+    # can compile on SM120 with HEAD_DIM=160 (needs ~50 KB < 99 KB limit).
+    # kernel_options only controls forward; need to patch the template file.
+    fa_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/flex_attention.py'
+    c = open(fa_file).read()
+    bm_vals = re.findall(r"'BLOCK_M'\s*:\s*(\d+)", c)
+    print('flex/flex_attention.py BLOCK_M configs:', bm_vals)
+    if '32' not in bm_vals and bm_vals:
+        cfg32 = "    triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'num_stages': 1, 'num_warps': 4}),\n    "
+        # Add before LAST triton.Config (backward section is typically last in the file)
+        last_pos = c.rfind('triton.Config(')
+        first_pos = c.find('triton.Config(')
+        c2 = c[:last_pos] + cfg32 + c[last_pos:]
+        if first_pos != last_pos:
+            c2 = c2[:first_pos] + cfg32 + c2[first_pos:]
+        open(fa_file, 'w').write(c2)
+        print('Patched flex/flex_attention.py: added BLOCK_M=32 at forward+backward positions')
     else:
-        print('dflash/core.py: flex_attention not found or already patched')
+        print('flex/flex_attention.py: already has BLOCK_M=32 or no configs found:', bm_vals)
     PYFA
     python3 /tmp/patch_flex_attention.py
 
