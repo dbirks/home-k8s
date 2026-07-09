@@ -216,38 +216,36 @@ data:
     # ----------------------------------------------------------------
     # Pre-Phase-2: Fix flex_attention backward Triton kernel for SM120.
     # Qwen3.6-27B HEAD_DIM=160 means all standard autotune configs need
-    # > 99 KB shared memory. Two-pronged fix:
-    #   1. Upgrade Triton — newer builds correctly use SM120's extended
-    #      shared memory (up to 228 KB) vs the conservative 99 KB default.
-    #   2. Add BLOCK_M=32 autotune config as fallback (needs ~50 KB).
+    # > 99 KB shared memory. Wrap flex_attention to force BLOCK_M=32.
     # ----------------------------------------------------------------
-    echo "=== [$(date)] Upgrading Triton for SM120 extended shared memory ==="
-    pip install triton --upgrade --quiet 2>&1 | tail -3
-    python3 -c "import triton; print('Triton:', triton.__version__)" 2>&1 || true
-
     cat > /tmp/patch_flex_attention.py << 'PYFA'
-    import os, re, glob
-    # Search common locations for the flex_attention Triton template
-    patterns = [
-        '/usr/local/lib/python*/dist-packages/torch/_inductor/kernel/flex_attention.py',
-        '/usr/local/lib/python*/dist-packages/torch/_higher_order_ops/flex_attention.py',
-    ]
-    candidates = []
-    for p in patterns:
-        candidates.extend(glob.glob(p, recursive=False))
-    print('Found flex_attention files:', candidates)
-    for fa_file in candidates:
-        c = open(fa_file).read()
-        found = re.findall(r"['\"]BLOCK_M['\"]\s*:\s*(\d+)", c)
-        if not found:
-            print(fa_file + ': no BLOCK_M configs found, skipping')
-            continue
-        print(fa_file + ': existing BLOCK_M configs: ' + str(found))
-        if '32' not in found:
-            cfg32 = "triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'num_stages': 1, 'num_warps': 4}),\n        "
-            c = re.sub(r'(triton\.Config\s*\(\s*\{)', cfg32 + r'\1', c, count=1)
-            open(fa_file, 'w').write(c)
-            print('Patched ' + fa_file + ': added BLOCK_M=32 for SM120/HEAD_DIM=160')
+    import glob, re, subprocess
+
+    # Diagnostic: find files with BLOCK_M configs in torch inductor
+    result = subprocess.run(
+        ['grep', '-r', 'BLOCK_M', '--include=*.py', '-l',
+         '/usr/local/lib/python3.12/dist-packages/torch/_inductor/'],
+        capture_output=True, text=True)
+    print('torch/_inductor/ files with BLOCK_M:', result.stdout.strip()[:800] or '(none)')
+
+    # Patch DFlash to force BLOCK_M=32,BLOCK_N=32 in flex_attention
+    # by monkey-patching the module attribute before any from-import.
+    f = '/tmp/speculators-repo/src/speculators/models/dflash/core.py'
+    c = open(f).read()
+    if 'flex_attention' in c and '_fa_wrap' not in c:
+        prepend = (
+            '# SM120 fix: force BLOCK_M=32 for flex_attention (HEAD_DIM=160 > 99 KB limit)\n'
+            'import torch.nn.attention.flex_attention as _fa_mod\n'
+            '_fa_orig = _fa_mod.flex_attention\n'
+            'def _fa_wrap(*a, **kw):\n'
+            "    kw.setdefault('kernel_options', {}).update({'BLOCK_M': 32, 'BLOCK_N': 32})\n"
+            '    return _fa_orig(*a, **kw)\n'
+            '_fa_mod.flex_attention = _fa_wrap\n'
+        )
+        open(f, 'w').write(prepend + c)
+        print('Patched dflash/core.py: flex_attention wrapped BLOCK_M=32')
+    else:
+        print('dflash/core.py: flex_attention not found or already patched')
     PYFA
     python3 /tmp/patch_flex_attention.py
 
