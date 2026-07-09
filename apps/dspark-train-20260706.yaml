@@ -12,8 +12,9 @@
 # FlexBwDConfig(64,64,64,64) with assertion BLOCK_N1%BLOCK_M1==0 — no valid
 # tile fits in SM120's 99 KB SMEM. Fix: force DFlash _attn_impl="eager" so
 # the backbone uses create_float_mask+SDPA (CUDA kernels, no Triton SMEM
-# constraint). Reduce --total-seq-len to 2048 to keep dense mask (~400 MB)
-# within VRAM budget.
+# constraint). Reduce --total-seq-len to 512: packed batch = 12×512 = 6144
+# tokens → dense mask ~1.6 GB; with 17 GB free (after 78 GB model+optimizer)
+# this fits. 2048 was 12×2048=24576 tokens → 24.4 GB → OOM.
 # Job name is date-stamped so subsequent runs can coexist in git history.
 #
 # To run another iteration: copy this file, increment the date, adjust flags,
@@ -370,7 +371,7 @@ data:
         --confidence-head-with-markov \
         --loss-fn '{"ce": 0.1, "tv": 0.9}' \
         --confidence-head-alpha 1.0 \
-        --total-seq-len 2048 \
+        --total-seq-len 512 \
         --epochs 5 \
         --lr 3e-4 \
         --on-missing skip \
