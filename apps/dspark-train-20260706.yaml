@@ -8,10 +8,10 @@
 # Fix 1 — CPU OOM: speculators loads embed_tokens+lm_head (~7 GB) into CPU RAM
 # by default. On a 32 GB node this spikes RAM past the limit. Patched speculators
 # source to load directly to CUDA (GPU-to-GPU copy, no CPU staging).
-# Fix 2 — Triton SM120: torch.compile fuses flex_attention backward with surrounding
-# ops, producing a kernel needing 114 KB shared memory > SM120's 99 KB limit.
-# Patch train.py: set max_fusion_size=1 so inductor cannot create the fused kernel.
-# The standalone flex_attention backward kernel fits within 99 KB.
+# Fix 2 — Triton SM120: Qwen3.6-27B HEAD_DIM=160. next_power_of_two(160)=256, so
+# QK_HEAD_DIM_ROUNDED=256, producing 64×256 tiles (SM120 WGMMA min=64 rows).
+# Required SMEM=114 KB > SM120 static limit (99 KB). Fix: patch flex/common.py
+# to use 192 (next 64-multiple ≥ 160) → 64×192 tiles → ~84 KB SMEM → fits.
 # Job name is date-stamped so subsequent runs can coexist in git history.
 #
 # To run another iteration: copy this file, increment the date, adjust flags,
@@ -215,45 +215,46 @@ data:
 
     # ----------------------------------------------------------------
     # Pre-Phase-2: Fix flex_attention backward Triton kernel for SM120.
-    # Qwen3.6-27B HEAD_DIM=160 means all standard autotune configs need
-    # > 99 KB shared memory. Patch the inductor template to add BLOCK_M=32
-    # (needs ~50 KB, fits). kernel_options only affects forward; template
-    # patch is required to change the backward kernel's autotune configs.
+    # Root cause (confirmed via PVC kernel cache inspection):
+    #   - Qwen3.6-27B HEAD_DIM=160
+    #   - set_head_dim_values in flex/common.py: next_power_of_two(160)=256
+    #   - SM120 WGMMA minimum tile: 64 rows (4 warps × 16 threads) × 256 cols
+    #   - Kernel SMEM = 114,688 bytes > SM120 static limit (101,376 bytes)
+    # Fix: patch common.py to use 192 (next 64-multiple ≥ 160) → 64×192 tiles
+    #   - Estimated SMEM ≈ 84 KB → fits in 99 KB limit
+    #   - 192 is divisible by 16 (valid for WGMMA bf16 K-dimension)
+    # Also clear the stale triton_cache to force recompilation with new rounding.
     # ----------------------------------------------------------------
     cat > /tmp/patch_flex_attention.py << 'PYFA'
-    import re, os
+    import os
 
-    # Patch the flex_attention Triton template to add BLOCK_M=32 config so the
-    # backward kernel can compile on SM120 with HEAD_DIM=160 (needs ~50 KB < 99 KB).
-    for fa_file in [
-        '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/flex_attention.py',
-        '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/flex_flash_attention.py',
-    ]:
-        if not os.path.exists(fa_file):
-            print('not found:', fa_file)
-            continue
-        c = open(fa_file).read()
-        # Print BLOCK_M lines so we can see the exact format used
-        bm_lines = [l.strip() for l in c.split('\n') if 'BLOCK_M' in l]
-        print(fa_file, 'BLOCK_M lines:', bm_lines[:10])
-        # Match both 'BLOCK_M' and "BLOCK_M" with any numeric value
-        bm_vals = re.findall(r'[\'"]BLOCK_M[\'"]\s*:\s*(\d+)', c)
-        print('  numeric values:', bm_vals)
-        if bm_vals and '32' not in bm_vals:
-            # Determine quote style from first match
-            q = '"' if '"BLOCK_M"' in c else "'"
-            cfg32 = "    triton.Config({" + q + "BLOCK_M" + q + ": 32, " + q + "BLOCK_N" + q + ": 32, " + q + "num_stages" + q + ": 1, " + q + "num_warps" + q + ": 4}),\n    "
-            last_pos = c.rfind('triton.Config(')
-            first_pos = c.find('triton.Config(')
-            c2 = c[:last_pos] + cfg32 + c[last_pos:]
-            if first_pos != last_pos:
-                c2 = c2[:first_pos] + cfg32 + c2[first_pos:]
-            open(fa_file, 'w').write(c2)
-            print('  Patched: added BLOCK_M=32 at first+last triton.Config positions')
-        elif '32' in bm_vals:
-            print('  Already has BLOCK_M=32, skipping')
+    common_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/common.py'
+    if not os.path.exists(common_file):
+        print('ERROR: not found:', common_file)
+    else:
+        c = open(common_file).read()
+        print(common_file + ': scanning...')
+        for l in c.split('\n'):
+            if 'HEAD_DIM_ROUNDED' in l or 'next_power_of_two' in l:
+                print('  ', l.strip())
+        if '_patched_head_dim_160' in c:
+            print('Already patched, skipping')
+        elif 'next_power_of_two(qk_head_dim_static)' not in c:
+            print('ERROR: expected patch target not found — dumping head_dim lines:')
+            for l in c.split('\n'):
+                if 'head_dim' in l.lower():
+                    print('  ', l)
         else:
-            print('  No triton.Config BLOCK_M found, skipping')
+            c = c.replace(
+                'next_power_of_two(qk_head_dim_static)',
+                '(192 if qk_head_dim_static == 160 else next_power_of_two(qk_head_dim_static)) # _patched_head_dim_160'
+            ).replace(
+                'next_power_of_two(v_head_dim_static)',
+                '(192 if v_head_dim_static == 160 else next_power_of_two(v_head_dim_static)) # _patched_head_dim_160'
+            )
+            open(common_file, 'w').write(c)
+            print('Patched common.py: HEAD_DIM=160 -> QK_HEAD_DIM_ROUNDED=192 (was 256)')
+            print('  64x192 tiles use ~84 KB SMEM, fits in SM120 99 KB static limit')
     PYFA
     python3 /tmp/patch_flex_attention.py
 
@@ -263,9 +264,15 @@ data:
     # Config matches z-lab/Qwen3.6-27B-DFlash (block_size=16, 5 target layers)
     # ----------------------------------------------------------------
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    # Persist torchinductor cache so we can inspect generated kernel files after failure
     export TORCHINDUCTOR_CACHE_DIR=/output/triton_cache
     mkdir -p /output/triton_cache
+    # Clear stale kernels compiled with old QK_HEAD_DIM_ROUNDED=256.
+    # common.py patch changes it to 192, so cached 64×256 kernels are wrong.
+    if [ -d /output/triton_cache/triton ]; then
+        echo "[$(date)] Clearing stale triton kernel cache (regen with new head_dim rounding)..."
+        rm -rf /output/triton_cache/triton
+        echo "[$(date)] Cache cleared"
+    fi
     echo "=== [$(date)] Phase 2: Training from cached hidden states ==="
 
     if [ -d /output/checkpoints ] && [ "$(ls -A /output/checkpoints 2>/dev/null)" ]; then
