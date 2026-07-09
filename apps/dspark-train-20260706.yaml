@@ -221,28 +221,39 @@ data:
     # patch is required to change the backward kernel's autotune configs.
     # ----------------------------------------------------------------
     cat > /tmp/patch_flex_attention.py << 'PYFA'
-    import re
+    import re, os
 
-    # Patch the flex_attention Triton template (found in kernel/flex/ dir).
-    # Adds BLOCK_M=32,BLOCK_N=32 to the autotune configs so the backward kernel
-    # can compile on SM120 with HEAD_DIM=160 (needs ~50 KB < 99 KB limit).
-    # kernel_options only controls forward; need to patch the template file.
-    fa_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/flex_attention.py'
-    c = open(fa_file).read()
-    bm_vals = re.findall(r"'BLOCK_M'\s*:\s*(\d+)", c)
-    print('flex/flex_attention.py BLOCK_M configs:', bm_vals)
-    if '32' not in bm_vals and bm_vals:
-        cfg32 = "    triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'num_stages': 1, 'num_warps': 4}),\n    "
-        # Add before LAST triton.Config (backward section is typically last in the file)
-        last_pos = c.rfind('triton.Config(')
-        first_pos = c.find('triton.Config(')
-        c2 = c[:last_pos] + cfg32 + c[last_pos:]
-        if first_pos != last_pos:
-            c2 = c2[:first_pos] + cfg32 + c2[first_pos:]
-        open(fa_file, 'w').write(c2)
-        print('Patched flex/flex_attention.py: added BLOCK_M=32 at forward+backward positions')
-    else:
-        print('flex/flex_attention.py: already has BLOCK_M=32 or no configs found:', bm_vals)
+    # Patch the flex_attention Triton template to add BLOCK_M=32 config so the
+    # backward kernel can compile on SM120 with HEAD_DIM=160 (needs ~50 KB < 99 KB).
+    for fa_file in [
+        '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/flex_attention.py',
+        '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex/flex_flash_attention.py',
+    ]:
+        if not os.path.exists(fa_file):
+            print('not found:', fa_file)
+            continue
+        c = open(fa_file).read()
+        # Print BLOCK_M lines so we can see the exact format used
+        bm_lines = [l.strip() for l in c.split('\n') if 'BLOCK_M' in l]
+        print(fa_file, 'BLOCK_M lines:', bm_lines[:10])
+        # Match both 'BLOCK_M' and "BLOCK_M" with any numeric value
+        bm_vals = re.findall(r'[\'"]BLOCK_M[\'"]\s*:\s*(\d+)', c)
+        print('  numeric values:', bm_vals)
+        if bm_vals and '32' not in bm_vals:
+            # Determine quote style from first match
+            q = '"' if '"BLOCK_M"' in c else "'"
+            cfg32 = "    triton.Config({" + q + "BLOCK_M" + q + ": 32, " + q + "BLOCK_N" + q + ": 32, " + q + "num_stages" + q + ": 1, " + q + "num_warps" + q + ": 4}),\n    "
+            last_pos = c.rfind('triton.Config(')
+            first_pos = c.find('triton.Config(')
+            c2 = c[:last_pos] + cfg32 + c[last_pos:]
+            if first_pos != last_pos:
+                c2 = c2[:first_pos] + cfg32 + c2[first_pos:]
+            open(fa_file, 'w').write(c2)
+            print('  Patched: added BLOCK_M=32 at first+last triton.Config positions')
+        elif '32' in bm_vals:
+            print('  Already has BLOCK_M=32, skipping')
+        else:
+            print('  No triton.Config BLOCK_M found, skipping')
     PYFA
     python3 /tmp/patch_flex_attention.py
 
