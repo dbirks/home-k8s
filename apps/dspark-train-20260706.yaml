@@ -266,11 +266,15 @@ data:
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     export TORCHINDUCTOR_CACHE_DIR=/output/triton_cache
     mkdir -p /output/triton_cache
-    # Clear stale kernels compiled with old QK_HEAD_DIM_ROUNDED=256.
-    # common.py patch changes it to 192, so cached 64×256 kernels are wrong.
-    if [ -d /output/triton_cache/triton ]; then
-        echo "[$(date)] Clearing stale triton kernel cache (regen with new head_dim rounding)..."
-        rm -rf /output/triton_cache/triton
+    # Clear ALL stale inductor/triton cache. The gl/ subdirectory contains
+    # PyTorch inductor Python wrappers with QK_HEAD_DIM_ROUNDED=256 baked into
+    # the embedded Triton kernel source. Clearing only triton/ leaves those stale
+    # gl/*.py files intact; they re-embed the old 256-wide kernel on next load.
+    # Must clear gl/ too (or just nuke everything) to force fresh compilation
+    # with the patched common.py that emits QK_HEAD_DIM_ROUNDED=192.
+    if [ -n "$(ls -A /output/triton_cache 2>/dev/null)" ]; then
+        echo "[$(date)] Clearing ALL stale inductor cache (gl/ + triton/ + rest)..."
+        rm -rf /output/triton_cache/*
         echo "[$(date)] Cache cleared"
     fi
     echo "=== [$(date)] Phase 2: Training from cached hidden states ==="
