@@ -94,15 +94,6 @@ data:
         )
         open(f2, 'w').write(c)
         print('Patched ' + f2 + ': model.cuda() before load_verifier_weights')
-    f3 = '/tmp/speculators-repo/scripts/train.py'
-    c = open(f3).read()
-    inject = (
-        'import torch._inductor.config as _ic\n'
-        '_ic.max_fusion_size = 1  # prevent oversized fused Triton kernels on SM120\n'
-    )
-    c = c.replace('import torch\n', 'import torch\n' + inject, 1)
-    open(f3, 'w').write(c)
-    print('Patched train.py: max_fusion_size=1')
     PYPATCH
         python3 /tmp/patch_speculators.py
         uv pip install /tmp/speculators-repo hf_transfer --system --quiet
@@ -221,6 +212,34 @@ data:
             exit 1
         fi
     fi
+
+    # ----------------------------------------------------------------
+    # Pre-Phase-2: Patch PyTorch's flex_attention Triton template to add
+    # BLOCK_M=32 configs. Qwen3.6-27B has HEAD_DIM=160 (5120/32); with
+    # standard BLOCK_M=64 the kernel needs ~102 KB > SM120's 99 KB limit,
+    # so ALL default configs fail. BLOCK_M=32 uses ~50 KB and fits.
+    # ----------------------------------------------------------------
+    cat > /tmp/patch_flex_attention.py << 'PYFA'
+    import os, re, glob
+    fa_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/kernel/flex_attention.py'
+    if not os.path.exists(fa_file):
+        matches = glob.glob('/usr/local/lib/python*/dist-packages/torch/_inductor/kernel/flex_attention.py')
+        fa_file = matches[0] if matches else ''
+    if not fa_file or not os.path.exists(fa_file):
+        print('WARNING: flex_attention.py not found, skipping Triton patch')
+    else:
+        c = open(fa_file).read()
+        found = re.findall(r"['\"]BLOCK_M['\"]\s*:\s*(\d+)", c)
+        print('flex_attention.py existing BLOCK_M configs:', found)
+        if '32' not in found and found:
+            cfg32 = "triton.Config({'BLOCK_M': 32, 'BLOCK_N': 32, 'num_stages': 1, 'num_warps': 4}),\n        "
+            c = re.sub(r'(triton\.Config\s*\(\s*\{)', cfg32 + r'\1', c, count=1)
+            open(fa_file, 'w').write(c)
+            print('Patched ' + fa_file + ': added BLOCK_M=32 for SM120 / HEAD_DIM=160')
+        else:
+            print('flex_attention.py: no patch needed (already has BLOCK_M=32 or no configs found)')
+    PYFA
+    python3 /tmp/patch_flex_attention.py
 
     # ----------------------------------------------------------------
     # Phase 2: Train from cached hidden states (no vLLM at all)
