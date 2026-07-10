@@ -69,7 +69,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: openhands
-          image: ghcr.io/openhands/agent-canvas:1.1.0
+          image: ghcr.io/openhands/agent-canvas:1.2.1
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

@@ -24,7 +24,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          image: vllm/vllm-openai:v0.20.1
+          image: vllm/vllm-openai:v0.21.0
           command:
             - vllm
             - serve
