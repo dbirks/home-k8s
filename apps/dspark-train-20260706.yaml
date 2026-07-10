@@ -427,6 +427,21 @@ spec:
       restartPolicy: OnFailure
       runtimeClassName: nvidia
       enableServiceLinks: false
+      # Node disk is chronically near the eviction threshold. Two things are
+      # needed to actually survive that, not just schedule past it:
+      #   - the toleration lets the pod schedule despite the NoSchedule taint
+      #   - Guaranteed QoS (requests == limits below) + system-node-critical
+      #     priority keeps kubelet's active DiskPressure eviction from killing
+      #     it — kubelet evicts Burstable/BestEffort pods under DiskPressure
+      #     regardless of their actual usage; only Guaranteed pods are spared.
+      # Confirmed via the disk-pressure incident this session: a Burstable
+      # pod (requests set, no matching limits) got evicted within seconds of
+      # scheduling purely because the DiskPressure condition was active.
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
       initContainers:
         - name: gpu-clock-lock
           image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
@@ -465,9 +480,11 @@ spec:
           resources:
             limits:
               nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 24Gi
             requests:
               cpu: "4"
-              memory: 8Gi
+              memory: 24Gi
           volumeMounts:
             - name: models
               mountPath: /data

@@ -1,0 +1,11 @@
+# Second local-path StorageClass, targeting the 4TB HDD (sdb) instead of the
+# original SSD (sda). Not marked default — opt in explicitly with
+# storageClassName: local-path-hdd for bulk/archival data (media, model
+# caches, checkpoints) where SSD-tier latency isn't needed.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path-hdd
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete

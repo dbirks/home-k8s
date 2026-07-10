@@ -25,7 +25,12 @@ spec:
   wait: true
   timeout: 5m
   patches:
-    # Configure storage path for Talos (filesystem is immutable, must use /var)
+    # Configure storage paths for Talos (filesystem is immutable, must use /var).
+    # storageClassConfigs keys each StorageClass to its own node path — the
+    # original SSD (sda) for "local-path", and the 4TB HDD (sdb, mounted at
+    # /var/mnt/hdd-storage via talos/patches/hdd-storage.yaml UserVolumeConfig)
+    # for "local-path-hdd". nodePathMap must be [] when storageClassConfigs is
+    # used — the two are mutually exclusive.
     - patch: |-
         kind: ConfigMap
         apiVersion: v1
@@ -35,12 +40,25 @@ spec:
         data:
           config.json: |-
             {
-              "nodePathMap":[
-                {
-                  "node":"DEFAULT_PATH_FOR_NON_LISTED_NODES",
-                  "paths":["/var/lib/local-path-provisioner"]
+              "nodePathMap":[],
+              "storageClassConfigs":{
+                "local-path":{
+                  "nodePathMap":[
+                    {
+                      "node":"DEFAULT_PATH_FOR_NON_LISTED_NODES",
+                      "paths":["/var/lib/local-path-provisioner"]
+                    }
+                  ]
+                },
+                "local-path-hdd":{
+                  "nodePathMap":[
+                    {
+                      "node":"DEFAULT_PATH_FOR_NON_LISTED_NODES",
+                      "paths":["/var/mnt/hdd-storage"]
+                    }
+                  ]
                 }
-              ]
+              }
             }
     # Make it the default StorageClass
     - patch: |-
