@@ -500,7 +500,7 @@ spec:
             claimName: vllm-models
         - name: output
           persistentVolumeClaim:
-            claimName: dspark-output
+            claimName: dspark-output-hdd-v2
         - name: scripts
           configMap:
             name: dspark-train-script-20260706
