@@ -61,7 +61,7 @@ spec:
       # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
-          image: vllm/vllm-openai:nightly-cbe9c40f998f13975b967773ac7e7920e115387f
+          image: vllm/vllm-openai:v0.25.0
           command:
             - vllm
             - serve
