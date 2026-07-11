@@ -233,7 +233,7 @@ data:
             --endpoint http://localhost:8001/v1/chat/completions \
             --limit 1000 \
             --max-tokens 4096 \
-            --concurrency 16 \
+            --concurrency 48 \
             --outfile "$SD_JSONL" \
             --resume \
             2>&1 | tee /output/logs/selfdistill.log
