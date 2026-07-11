@@ -1,0 +1,541 @@
+# DSpark Training Run — 2026-07-11 (self-distillation validation)
+#
+# Second bottleneck after the RoPE fix. The 20260711-ropefix run confirmed the
+# partial_rotary_factor fix works but acceptance length barely moved (~1.02 ->
+# ~1.03). Root cause of the remaining gap: the training data was STATIC ShareGPT
+# assistant text merely teacher-forced through the verifier to extract hidden
+# states — NOT text the verifier actually generated. NVIDIA's DSpark docs warn
+# this off-policy data causes near-zero acceptance. Reference points that pair a
+# RoPE-equivalent fix WITH self-distillation report ~5x better acceptance length
+# (e.g. RedHatAI's GLM-5.2 DSpark preview: 50K self-distilled UltraChat prompts,
+# 2.748 acceptance length).
+#
+# This run adds real self-distillation (on-policy data) on top of the fork's
+# already-fixed RoPE code (dbirks/speculators @ 4e5193b). New Phase 0 uses the
+# speculators response_regeneration tool to have the verifier regenerate its OWN
+# responses to UltraChat prompts, emitting PRE-TOKENIZED rows (input_ids +
+# loss_mask, where the mask IS the generation boundary). prepare_data.py detects
+# those columns and passes them through untouched (no re-tokenize, no chat
+# template, no regex masking) — see _passthrough_pretokenized in preprocessing.py.
+#
+# Pipeline (all phases GPU-exclusive and sequential — vLLM and the trainer never
+# coexist, same as prior runs):
+#   Phase 0  self-distill: vllm serve Qwen3.6-27B-NVFP4 (chat + return_token_ids)
+#            -> response_regeneration/script.py --dataset ultrachat
+#            -> /output/selfdistill/ultrachat_qwen36.jsonl  (pre-tokenized)
+#   prep     prepare_data.py --data <that jsonl>  (passthrough) -> Arrow + token_freq
+#   Phase 1  launch_vllm.py (hidden-states) + data_generation_offline.py
+#            -> /output/data-selfdistill/hidden-states/hs_*.safetensors
+#   Phase 2  train.py --epochs 1 (validation) -> /output/checkpoints-selfdistill
+#
+# All paths are NEW subdirectories on dspark-output-hdd-v2 so nothing collides
+# with the existing checkpoints / checkpoints-ropefix / data (ShareGPT) dirs.
+# NOTE: dspark-output-hdd-v2 sits on a 3.7 TB disk with ~3.5 TB free — the old
+# "600 samples / 50 Gi PVC" disk cap no longer applies. Phase 1 --max-samples is
+# held at 600 purely to make the acceptance-length comparison against the ropefix
+# run apples-to-apples (same sample count, only the data source changes). It can
+# be raised now that disk is plentiful.
+#
+# Same SM120 / NVFP4 / 32 GB-RAM workarounds as 20260706 + 20260711-ropefix:
+#   - fork has the RoPE partial_rotary_factor fix (4e5193b)
+#   - load verifier weights straight to GPU (avoid CPU RAM spike)
+#   - force DFlash backbone to eager SDPA (SM120 can't compile flex_attn backward)
+#   - cap max_anchors=384 post-install (torch.compile shape specialization)
+#   - patch inductor sm12x FlexBwDConfig BLOCK_N 64->16 (SM120 SMEM limit)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-train-script-20260711-selfdistill
+  namespace: default
+data:
+  train.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    echo "=== [$(date)] DSpark training job started (run 20260711-selfdistill) ==="
+
+    # ----------------------------------------------------------------
+    # Step 0: Install git via apt, uv for fast package management,
+    #         then clone OUR FORK of speculators (has the RoPE fix).
+    # ----------------------------------------------------------------
+    echo "=== [$(date -u)] Installing git ==="
+    apt-get update -qq 2>&1 | tail -3
+    apt-get install -y git --no-install-recommends -qq
+    echo "  git: $(git --version)"
+
+    echo "=== [$(date -u)] Installing uv ==="
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"
+    hash -r
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+
+    echo "=== [$(date -u)] Cloning OUR FORK of speculators (dbirks/speculators, has RoPE fix) ==="
+    if git clone --depth=1 https://github.com/dbirks/speculators /tmp/speculators-repo 2>&1; then
+        SPEC_SCRIPTS=/tmp/speculators-repo/scripts
+        echo "  Confirming RoPE fix is present:"
+        grep -n "_select_rotary_emb_class\|_partial_rotary_factor" /tmp/speculators-repo/src/speculators/models/dflash/core.py | head -5
+
+        # Same GPU/RAM patches as the prior runs (unrelated to the RoPE fix,
+        # still needed for this node's hardware constraints).
+        cat > /tmp/patch_speculators.py << 'PYPATCH'
+    import re
+
+    # Fix 1: Load verifier weights to GPU (avoid CPU RAM spike on 32 GB node)
+    f = '/tmp/speculators-repo/src/speculators/utils/loading.py'
+    c = open(f).read().replace('device="cpu"', 'device="cuda"')
+    open(f, 'w').write(c)
+    print('Patched loading.py: device=cpu -> cuda')
+    for f2 in [
+        '/tmp/speculators-repo/src/speculators/models/dflash/core.py',
+        '/tmp/speculators-repo/src/speculators/models/dspark/core.py',
+    ]:
+        c = open(f2).read().replace(
+            'model.load_verifier_weights()',
+            'model.to("cuda"); model.load_verifier_weights()'
+        )
+        open(f2, 'w').write(c)
+        print('Patched ' + f2 + ': model.cuda() before load_verifier_weights')
+
+    # Fix 2: Force DFlash backbone to use eager attention (dense mask + SDPA).
+    # SM120 (RTX PRO 6000) cannot compile flex_attention backward Triton kernel.
+    core_file = '/tmp/speculators-repo/src/speculators/models/dflash/core.py'
+    c = open(core_file).read()
+    OLD_BLOCK = (
+        '        if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001\n'
+        '            config.transformer_layer_config._attn_implementation = (  # noqa: SLF001\n'
+        '                "simple_flex_attention"\n'
+        '            )\n'
+        '        self._attn_impl = config.transformer_layer_config._attn_implementation  # noqa: SLF001\n'
+    )
+    NEW_BLOCK = (
+        '        config.transformer_layer_config._attn_implementation = "eager"  # noqa: SLF001\n'
+        '        self._attn_impl = "eager"\n'
+    )
+    if 'self._attn_impl = "eager"' in c:
+        print('Already patched dflash/core.py (_attn_impl="eager"), skipping')
+    elif OLD_BLOCK in c:
+        c2 = c.replace(OLD_BLOCK, NEW_BLOCK)
+        open(core_file, 'w').write(c2)
+        remaining = c2.count('"simple_flex_attention"')
+        print('Patched dflash/core.py: _attn_impl unconditionally set to eager (SDPA)')
+        print('  Remaining simple_flex_attention refs (comparisons only):', remaining)
+    else:
+        print('ERROR: target block not found in dflash/core.py. Dumping _attn_implementation lines:')
+        for i, line in enumerate(c.split('\n')):
+            if '_attn_implementation' in line or 'simple_flex' in line:
+                print('  line', i+1, ':', repr(line.rstrip()))
+    PYPATCH
+        python3 /tmp/patch_speculators.py
+        uv pip install /tmp/speculators-repo hf_transfer --system --quiet
+        # Belt-and-suspenders: response_regeneration/script.py needs aiohttp +
+        # datasets + tqdm. speculators pulls datasets/tqdm; aiohttp ships with
+        # vllm, but install defensively so Phase 0 can't fail on an import.
+        uv pip install aiohttp datasets tqdm --system --quiet
+        # Fix 3: Post-install: cap max_anchors=384 in installed dspark/core.py.
+        python3 << 'POSTINSTALL'
+    dspark_inst = '/usr/local/lib/python3.12/dist-packages/speculators/models/dspark/core.py'
+    c = open(dspark_inst).read()
+    OLD = '        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
+    NEW = '        max_anchors = min(max_anchors, 384)  # SM120 VRAM: 384*16=6144 Q, 1.87 GB attn\n        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
+    if 'SM120 VRAM' in c:
+        print('dspark/core.py already has SM120 VRAM cap, skipping')
+    elif OLD in c:
+        open(dspark_inst, 'w').write(c.replace(OLD, NEW, 1))
+        import py_compile; py_compile.compile(dspark_inst)
+        print('Patched installed dspark/core.py: capped max_anchors=384 for SM120')
+    else:
+        print('ERROR: could not find forward body target in installed dspark/core.py')
+        for i, l in enumerate(c.split('\n')):
+            if 'hidden, logits' in l or 'backbone_forward' in l or 'num_blocks' in l:
+                print(f'  line {i+1}: {repr(l)}')
+    POSTINSTALL
+        echo "  Confirming installed package has the RoPE fix:"
+        grep -n "_select_rotary_emb_class\|_partial_rotary_factor" /usr/local/lib/python3.12/dist-packages/speculators/models/dflash/core.py | head -5
+    else
+        echo "ERROR: git clone of fork failed — aborting (this run requires the fork's RoPE fix, no fallback)"
+        exit 1
+    fi
+    echo "  speculators: $(python3 -c 'import speculators; print(speculators.__version__)' 2>/dev/null || true)"
+
+    # NEW, non-colliding paths for the self-distillation run.
+    SD_DIR=/output/selfdistill                       # regenerated JSONL lives here
+    SD_JSONL=$SD_DIR/ultrachat_qwen36.jsonl          # pre-tokenized self-distilled data
+    PREP_DIR=/output/data-selfdistill                # prepare_data.py Arrow output
+    HS_DIR=$PREP_DIR/hidden-states                   # Phase 1 hidden states
+    CKPT_DIR=/output/checkpoints-selfdistill         # Phase 2 checkpoints
+    mkdir -p "$SD_DIR" "$PREP_DIR" "$HS_DIR" "$CKPT_DIR" /output/logs
+
+    # ----------------------------------------------------------------
+    # Phase 0: SELF-DISTILLATION (on-policy data generation).
+    # Serve the verifier for chat, have it regenerate its OWN responses to
+    # UltraChat prompts. Output is PRE-TOKENIZED (input_ids + loss_mask); the
+    # loss_mask IS the prompt/generation boundary, so prepare_data.py passes it
+    # through with no re-tokenization (see _passthrough_pretokenized).
+    #
+    # This is plain `vllm serve` (Chat Completions API), NOT launch_vllm.py — the
+    # regeneration script needs the chat endpoint with return_token_ids, which the
+    # hidden-states connector does not expose. vLLM runs ALONE here (no trainer),
+    # so it gets full GPU/RAM headroom just like Phase 1.
+    #   --limit 1000        UltraChat prompts to regenerate (multi-turn => more rows)
+    #   --max-tokens 4096   cap per-turn generation length to bound GPU time
+    #   --resume            idempotent across pod restarts (skips finished convs)
+    # ----------------------------------------------------------------
+    if [ -f "$SD_DIR/selfdistill_complete" ]; then
+        echo "[$(date)] Skipping Phase 0 — sentinel exists ($(wc -l < "$SD_JSONL" 2>/dev/null || echo 0) rows in JSONL)"
+    else
+        echo "=== [$(date)] Phase 0: Self-distillation (UltraChat via vLLM chat) ==="
+        unset PYTORCH_CUDA_ALLOC_CONF
+
+        vllm serve unsloth/Qwen3.6-27B-NVFP4 \
+            --host 127.0.0.1 \
+            --port 8001 \
+            --api-key "" \
+            --served-model-name main \
+            --gpu-memory-utilization 0.85 \
+            --max-model-len 8192 \
+            --dtype bfloat16 \
+            --trust-remote-code \
+            --kv-cache-dtype fp8_e4m3 \
+            --mamba-cache-dtype float16 \
+            --mamba-ssm-cache-dtype float16 \
+            --enforce-eager \
+            --max-num-seqs 16 \
+            > /output/logs/vllm_selfdistill.log 2>&1 &
+        VLLM_PID=$!
+        trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
+
+        echo "=== Waiting for vLLM /health (up to 90 min) ==="
+        for i in $(seq 1 540); do
+            if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+                echo "[$(date)] vLLM healthy after $((i * 10))s"
+                break
+            fi
+            if ! kill -0 $VLLM_PID 2>/dev/null; then
+                echo "ERROR: vLLM died. Last 80 lines:"
+                tail -80 /output/logs/vllm_selfdistill.log
+                exit 1
+            fi
+            [ "$i" -eq 540 ] && echo "ERROR: vLLM timeout 90 min" && exit 1
+            sleep 10
+        done
+
+        curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; m=json.load(sys.stdin); [print('  model:', x['id']) for x in m.get('data',[])]" 2>/dev/null || true
+
+        echo "[$(date)] Running response_regeneration/script.py (dataset=ultrachat)..."
+        python3 "$SPEC_SCRIPTS/response_regeneration/script.py" \
+            --dataset ultrachat \
+            --model main \
+            --endpoint http://localhost:8001/v1/chat/completions \
+            --limit 1000 \
+            --max-tokens 4096 \
+            --concurrency 16 \
+            --outfile "$SD_JSONL" \
+            --resume \
+            2>&1 | tee /output/logs/selfdistill.log
+        SD_EXIT=${PIPESTATUS[0]}
+
+        echo "[$(date)] Stopping vLLM..."
+        kill $VLLM_PID 2>/dev/null
+        wait $VLLM_PID 2>/dev/null || true
+        trap - EXIT
+
+        SD_ROWS=$(wc -l < "$SD_JSONL" 2>/dev/null || echo 0)
+        echo "[$(date)] Phase 0 done — $SD_ROWS pre-tokenized rows in $SD_JSONL"
+        if [ "$SD_EXIT" -eq 0 ] && [ "$SD_ROWS" -gt 0 ]; then
+            touch "$SD_DIR/selfdistill_complete"
+            echo "[$(date)] Sentinel written — Phase 0 will be skipped on future restarts"
+        else
+            echo "[$(date)] response_regeneration exited $SD_EXIT with $SD_ROWS rows — retrying"
+            exit 1
+        fi
+    fi
+
+    # ----------------------------------------------------------------
+    # Prep: prepare_data.py on the self-distilled JSONL.
+    # The rows are already tokenized+masked, so prepare_data.py takes its
+    # pre-tokenized passthrough path (truncate to seq-length only). It still
+    # writes the Arrow shards + token_freq.pt that Phase 1 / Phase 2 consume.
+    # Idempotent: skips if token_freq.pt already exists.
+    # ----------------------------------------------------------------
+    if [ ! -f "$PREP_DIR/token_freq.pt" ]; then
+        echo "=== [$(date)] Preparing training data (self-distilled UltraChat, seq 8192) ==="
+        python3 "$SPEC_SCRIPTS/prepare_data.py" \
+            --model unsloth/Qwen3.6-27B-NVFP4 \
+            --data "$SD_JSONL" \
+            --output "$PREP_DIR" \
+            --max-samples 5000 \
+            --seq-length 8192 \
+            2>&1 | tee /output/logs/prepare_data_selfdistill.log
+        echo "[$(date)] Data prep done — $(ls "$PREP_DIR"/*.arrow 2>/dev/null | wc -l) arrow files"
+    else
+        echo "[$(date)] Skipping data prep — token_freq.pt exists"
+    fi
+
+    # ----------------------------------------------------------------
+    # Phase 1: Generate hidden states from the self-distilled data (vLLM only).
+    # Re-runs each sample's input_ids through the verifier to cache the target
+    # hidden states. --max-samples 600 to match the ropefix run's scale for a
+    # clean A/B (disk is no longer the limiter — raise if you want more).
+    # NOTE: ExampleHiddenStatesConnector rejects expandable_segments:True.
+    # ----------------------------------------------------------------
+    EXISTING_HS=$(find "$HS_DIR" -maxdepth 1 -name "hs_*.safetensors" 2>/dev/null | wc -l)
+    if [ -f "$PREP_DIR/phase1_complete" ]; then
+        echo "[$(date)] Skipping Phase 1 — sentinel exists ($EXISTING_HS hidden states cached)"
+    else
+        echo "=== [$(date)] Phase 1: Generating hidden states ($EXISTING_HS/600 done) ==="
+        unset PYTORCH_CUDA_ALLOC_CONF
+
+        python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
+            --target-layer-ids 1 16 31 46 61 \
+            --hidden-states-path "$HS_DIR" \
+            -- \
+            --gpu-memory-utilization 0.75 \
+            --port 8001 \
+            --max-model-len 8192 \
+            --dtype bfloat16 \
+            --trust-remote-code \
+            --served-model-name main \
+            --kv-cache-dtype fp8_e4m3 \
+            --mamba-cache-dtype float16 \
+            --mamba-ssm-cache-dtype float16 \
+            --enforce-eager \
+            --max-num-seqs 4 \
+            > /output/logs/vllm_phase1_selfdistill.log 2>&1 &
+        VLLM_PID=$!
+        trap "echo 'Stopping vLLM (pid=$VLLM_PID)...'; kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null; echo 'vLLM stopped'" EXIT
+
+        echo "=== Waiting for vLLM /health (up to 90 min) ==="
+        for i in $(seq 1 540); do
+            if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+                echo "[$(date)] vLLM healthy after $((i * 10))s"
+                break
+            fi
+            if ! kill -0 $VLLM_PID 2>/dev/null; then
+                echo "ERROR: vLLM died. Last 80 lines:"
+                tail -80 /output/logs/vllm_phase1_selfdistill.log
+                exit 1
+            fi
+            [ "$i" -eq 540 ] && echo "ERROR: vLLM timeout 90 min" && exit 1
+            sleep 10
+        done
+
+        curl -s http://localhost:8001/v1/models | python3 -c "import sys,json; m=json.load(sys.stdin); [print('  model:', x['id']) for x in m.get('data',[])]" 2>/dev/null || true
+
+        echo "[$(date)] Cleaning stale vLLM temp files..."
+        find "$HS_DIR" -maxdepth 1 -name "*.lock" -delete
+        find "$HS_DIR" -maxdepth 1 -name "cmpl-*.safetensors" -delete
+        echo "[$(date)] Done. Running data_generation_offline.py..."
+
+        python3 "$SPEC_SCRIPTS/data_generation_offline.py" \
+            --endpoint http://localhost:8001/v1 \
+            --preprocessed-data "$PREP_DIR" \
+            --output "$HS_DIR" \
+            --max-samples 600 \
+            --concurrency 4 \
+            --max-consecutive-errors 10 \
+            2>&1 | tee /output/logs/data_gen_selfdistill.log
+        DATA_GEN_EXIT=${PIPESTATUS[0]}
+
+        echo "[$(date)] Stopping vLLM..."
+        kill $VLLM_PID 2>/dev/null
+        wait $VLLM_PID 2>/dev/null || true
+        trap - EXIT
+        HS_COUNT=$(find "$HS_DIR" -maxdepth 1 -name "hs_*.safetensors" | wc -l)
+        echo "[$(date)] Phase 1 complete — $HS_COUNT hidden states generated"
+        if [ "$DATA_GEN_EXIT" -eq 0 ]; then
+            touch "$PREP_DIR/phase1_complete"
+            echo "[$(date)] Sentinel written — Phase 1 will be skipped on future restarts"
+        else
+            echo "[$(date)] data_generation_offline.py exited $DATA_GEN_EXIT — retrying"
+            exit 1
+        fi
+    fi
+
+    # ----------------------------------------------------------------
+    # Pre-Phase-2: Fix flex_attention backward Triton kernel for SM120.
+    # ----------------------------------------------------------------
+    cat > /tmp/patch_flex_attention.py << 'PYFA'
+    import os, glob
+
+    th_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/template_heuristics/triton.py'
+    if not os.path.exists(th_file):
+        print('ERROR: not found:', th_file)
+    else:
+        c = open(th_file).read()
+
+        OLD_SM12X = (
+            '            "sm12x": lambda h: (\n'
+            '                FlexBwDConfig(32, 128, 128, 32, 3, 4)\n'
+            '                if h < 64\n'
+            '                else FlexBwDConfig(\n'
+            '                    64, 64, 64, 64, 1 if h >= 128 else 2, 4\n'
+            '                )\n'
+            '            ),'
+        )
+        NEW_SM12X = (
+            '            "sm12x": lambda h: (\n'
+            '                FlexBwDConfig(32, 128, 128, 32, 3, 4)\n'
+            '                if h < 64\n'
+            '                else FlexBwDConfig(64, 16, 64, 16, 1, 4)\n'
+            '            ),'
+        )
+
+        if 'FlexBwDConfig(64, 16, 64, 16, 1, 4)' in c:
+            print('Already patched sm12x BLOCK_N=16, skipping')
+        elif OLD_SM12X in c:
+            c = c.replace(OLD_SM12X, NEW_SM12X)
+            open(th_file, 'w').write(c)
+            print('Patched triton.py: sm12x FlexBwDConfig BLOCK_N 64->16')
+        else:
+            print('ERROR: sm12x target not found. Dumping sm12x context:')
+            idx = c.find('"sm12x"')
+            if idx >= 0:
+                print(repr(c[idx:idx+400]))
+            else:
+                print('  "sm12x" not in file at all')
+
+        pyc_dir = os.path.join(os.path.dirname(th_file), '__pycache__')
+        deleted = []
+        for pyc in glob.glob(os.path.join(pyc_dir, 'triton.cpython*')):
+            os.remove(pyc)
+            deleted.append(os.path.basename(pyc))
+        print('Deleted .pyc:', deleted if deleted else '(none found)')
+    PYFA
+    python3 /tmp/patch_flex_attention.py
+
+    # ----------------------------------------------------------------
+    # Phase 2: Train from cached hidden states (self-distilled data).
+    # --epochs 1: VALIDATION RUN ONLY. Confirm self-distillation lifts acceptance
+    # length before committing to a full run. --save-path is NEW so train.py
+    # doesn't resume from the ropefix/ShareGPT checkpoints.
+    # ----------------------------------------------------------------
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    export TORCHINDUCTOR_CACHE_DIR=/output/triton_cache_selfdistill
+    mkdir -p /output/triton_cache_selfdistill
+    echo "=== [$(date)] Phase 2: Training from cached hidden states (self-distill, 1 epoch) ==="
+
+    if [ -d "$CKPT_DIR" ] && [ "$(ls -A "$CKPT_DIR" 2>/dev/null)" ]; then
+        echo "[$(date)] Resuming from checkpoint:"
+        ls -lh "$CKPT_DIR"/
+    else
+        echo "[$(date)] Fresh training run (self-distillation validation)"
+    fi
+
+    python3 "$SPEC_SCRIPTS/train.py" \
+        --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \
+        --speculator-type dspark \
+        --num-layers 3 \
+        --block-size 16 \
+        --max-anchors 384 \
+        --target-layer-ids 1 16 31 46 61 \
+        --markov-rank 256 \
+        --markov-head-type vanilla \
+        --enable-confidence-head \
+        --confidence-head-with-markov \
+        --loss-fn '{"ce": 0.1, "tv": 0.9}' \
+        --confidence-head-alpha 1.0 \
+        --total-seq-len 2048 \
+        --epochs 1 \
+        --lr 3e-4 \
+        --on-missing skip \
+        --data-path "$PREP_DIR" \
+        --hidden-states-path "$HS_DIR" \
+        --save-path "$CKPT_DIR" \
+        --checkpoint-freq 0.25 \
+        --num-workers 2 \
+        --prefetch-factor 1 \
+        2>&1 | tee /output/logs/trainer_selfdistill.log
+
+    echo "=== [$(date)] Training complete! ==="
+    ls -lh "$CKPT_DIR"/
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-qwen27-20260711-selfdistill
+  namespace: default
+spec:
+  backoffLimit: 200
+  activeDeadlineSeconds: 172800
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: gpu-clock-lock
+          image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: utility
+          command:
+            - sh
+            - -c
+            - |
+              echo "[$(date -u +%FT%TZ)] Applying GPU mitigations before training starts..."
+              nvidia-smi -pm 1
+              nvidia-smi -pl 400
+              echo "[$(date -u +%FT%TZ)] GPU state:"
+              nvidia-smi --query-gpu=name,power.limit,persistence_mode --format=csv,noheader
+      containers:
+        - name: trainer
+          image: vllm/vllm-openai:v0.24.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 24Gi
+            requests:
+              cpu: "4"
+              memory: 24Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-train-script-20260711-selfdistill
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
