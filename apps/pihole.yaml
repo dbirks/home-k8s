@@ -19,6 +19,14 @@ spec:
   # Default values:
   # https://github.com/MoJo2600/pihole-kubernetes/blob/main/charts/pihole/values.yaml
   values:
+    image:
+      # Force a fresh pull -- the locally cached 2025.11.1 image on this node is
+      # producing "Exec format error" / libcrypto.so.3 load failures (classic
+      # architecture-mismatch symptom) on every restart, crash-looping all 4
+      # replicas for 2+ days. IfNotPresent keeps reusing the same broken cached
+      # layer; Always forces kubelet to re-pull from the registry.
+      pullPolicy: Always
+
     serviceDns:
       mixedService: true
       type: LoadBalancer
