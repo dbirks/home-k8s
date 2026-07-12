@@ -153,22 +153,22 @@ data:
         # ensures the cap is enforced at Python level before torch.compile traces.
         # 384*16=6144 Q_LEN → (20, 6144, 8192)×bf16 = 1.87 GB ← fits in 17 GB free.
         python3 << 'POSTINSTALL'
-dspark_inst = '/usr/local/lib/python3.12/dist-packages/speculators/models/dspark/core.py'
-c = open(dspark_inst).read()
-OLD = '        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
-NEW = '        max_anchors = min(max_anchors, 384)  # SM120 VRAM: 384*16=6144 Q, 1.87 GB attn\n        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
-if 'SM120 VRAM' in c:
-    print('dspark/core.py already has SM120 VRAM cap, skipping')
-elif OLD in c:
-    open(dspark_inst, 'w').write(c.replace(OLD, NEW, 1))
-    import py_compile; py_compile.compile(dspark_inst)
-    print('Patched installed dspark/core.py: capped max_anchors=384 for SM120')
-else:
-    print('ERROR: could not find forward body target in installed dspark/core.py')
-    for i, l in enumerate(c.split('\n')):
-        if 'hidden, logits' in l or 'backbone_forward' in l or 'num_blocks' in l:
-            print(f'  line {i+1}: {repr(l)}')
-POSTINSTALL
+    dspark_inst = '/usr/local/lib/python3.12/dist-packages/speculators/models/dspark/core.py'
+    c = open(dspark_inst).read()
+    OLD = '        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
+    NEW = '        max_anchors = min(max_anchors, 384)  # SM120 VRAM: 384*16=6144 Q, 1.87 GB attn\n        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
+    if 'SM120 VRAM' in c:
+        print('dspark/core.py already has SM120 VRAM cap, skipping')
+    elif OLD in c:
+        open(dspark_inst, 'w').write(c.replace(OLD, NEW, 1))
+        import py_compile; py_compile.compile(dspark_inst)
+        print('Patched installed dspark/core.py: capped max_anchors=384 for SM120')
+    else:
+        print('ERROR: could not find forward body target in installed dspark/core.py')
+        for i, l in enumerate(c.split('\n')):
+            if 'hidden, logits' in l or 'backbone_forward' in l or 'num_blocks' in l:
+                print(f'  line {i+1}: {repr(l)}')
+    POSTINSTALL
     else
         echo "  git clone failed — falling back to pip install + curl"
         uv pip install speculators hf_transfer --system --quiet
