@@ -20,11 +20,16 @@ spec:
   # https://github.com/MoJo2600/pihole-kubernetes/blob/main/charts/pihole/values.yaml
   values:
     image:
-      # Force a fresh pull -- the locally cached 2025.11.1 image on this node is
-      # producing "Exec format error" / libcrypto.so.3 load failures (classic
-      # architecture-mismatch symptom) on every restart, crash-looping all 4
-      # replicas for 2+ days. IfNotPresent keeps reusing the same broken cached
-      # layer; Always forces kubelet to re-pull from the registry.
+      # The locally cached 2025.11.1 image on this node produces "Exec format
+      # error" / libcrypto.so.3 load failures (classic architecture-mismatch
+      # symptom) on every restart, crash-looping all 4 replicas for 2+ days.
+      # ingress-nginx (unrelated deployment, same node) started failing at the
+      # same time with a similar "symbol not found" error, pointing at a
+      # shared node-level image-cache issue rather than anything pihole- or
+      # ingress-nginx-specific. Bumping to a newer tag the node has never
+      # cached (rather than relying on pullPolicy alone) forces an
+      # unambiguous fresh pull.
+      tag: "2026.07.2"
       pullPolicy: Always
 
     serviceDns:

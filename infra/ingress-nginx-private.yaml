@@ -20,6 +20,18 @@ spec:
   # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml
   values:
     controller:
+      image:
+        # All 4 replicas across both private+public controllers have been
+        # crash-looping for 2+ days: "Error relocating /usr/bin/nginx: ...
+        # symbol not found" -- the node's locally cached image for the
+        # chart-pinned digest (v1.12.1@sha256:d2fbc4ec...) is broken. v1.12.x
+        # is EOL upstream (no patch releases beyond v1.12.1), so bumping to a
+        # newer minor (v1.14.4) with digest cleared forces a genuinely fresh
+        # pull under a reference the node has never cached, sidestepping
+        # whatever corrupted the old cached layer.
+        tag: "v1.14.4"
+        digest: ""
+        pullPolicy: Always
       electionID: ingress-controller-leader-private
       ingressClassResource:
         name: private

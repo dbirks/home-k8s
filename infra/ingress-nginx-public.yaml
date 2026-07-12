@@ -20,6 +20,12 @@ spec:
   # https://github.com/kubernetes/ingress-nginx/blob/main/charts/ingress-nginx/values.yaml
   values:
     controller:
+      image:
+        # See ingress-nginx-private.yaml for the full explanation -- same
+        # crash-looping bug, same fix (fresh pull under an uncached tag).
+        tag: "v1.14.4"
+        digest: ""
+        pullPolicy: Always
       electionID: ingress-controller-leader-public
       ingressClassResource:
         name: public
