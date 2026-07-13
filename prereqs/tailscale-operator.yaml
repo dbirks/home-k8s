@@ -10,7 +10,17 @@ spec:
       chart: tailscale-operator
       # Current version found here:
       # https://pkgs.tailscale.com/helmcharts/index.yaml
-      version: 1.96.5
+      #
+      # Bumped 1.96.5 -> 1.98.4: the 1.96.5 image (docker.io/tailscale/k8s-operator)
+      # was corrupted in the node's local image cache from the same event that
+      # corrupted pihole/ingress-nginx around 2026-07-10 22:30 (exact same cached
+      # timestamp: 2026-07-10T05:56:13Z). Exec into the pod failed with
+      # "exec format error" on a completely fresh (0-restart) pod, even with
+      # imagePullPolicy: Always -- because the registry still resolves v1.96.5 to
+      # the SAME digest already cached locally, so Always sees a digest match and
+      # reuses the corrupted local content instead of re-downloading. Bumping to
+      # a genuinely different, not-yet-cached version forces a real fresh pull.
+      version: 1.98.4
       sourceRef:
         kind: HelmRepository
         name: tailscale
