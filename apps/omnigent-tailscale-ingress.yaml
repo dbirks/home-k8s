@@ -1,0 +1,39 @@
+# Omnigent — temporary Tailscale Ingress (quick test)
+#
+# Second Ingress pointed at the same omnigent Service as the existing private
+# (nginx, omnigent.hoam.lan) Ingress in omnigent.yaml -- a Service can have
+# multiple Ingresses, so this doesn't change anything about the existing LAN
+# access path.
+#
+# Uses the already-installed `tailscale` IngressClass (tailscale.com/ts-ingress,
+# part of the Tailscale Kubernetes Operator). Tailscale provisions a dedicated
+# tailnet node for this Ingress with a real, auto-renewing Let's Encrypt
+# certificate for its MagicDNS name -- reachable only over the tailnet, never
+# the public internet. Requires "HTTPS Certificates" to be enabled in the
+# Tailscale admin console (Settings -> DNS) -- an account-level, one-time
+# toggle that can't be done from kubectl.
+#
+# This is explicitly a quick/temporary test (for the Omnigent iOS app, which
+# requires HTTPS) -- delete this file + `kubectl delete -f` it if it doesn't
+# work out.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omnigent-ts
+  namespace: omnigent
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - omnigent
+  rules:
+    - host: omnigent
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omnigent
+                port:
+                  number: 80
