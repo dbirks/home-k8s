@@ -2,7 +2,9 @@
 #
 # On-demand Kubernetes sandbox is enabled — the server spawns ephemeral runner
 # Pods in the `omnigent-sandboxes` namespace (see omnigent-sandbox.yaml for the
-# RBAC and config). `omnigent[kubernetes]` is installed at server startup.
+# RBAC and config). Uses the official omnigent-server-kubernetes image, which
+# ships the sandbox provider SDK pre-bundled (as of v0.5.0) -- no more
+# pip-installing `omnigent[kubernetes]` at container startup.
 #
 # Auth is disabled (single-user / home-lab mode). The private nginx ingress and
 # Tailscale subnet router act as the security perimeter. accounts mode is
@@ -152,14 +154,12 @@ spec:
       serviceAccountName: omnigent-server
       containers:
         - name: omnigent
-          # v0.5.1
-          image: ghcr.io/omnigent-ai/omnigent-server:v0.5.1
+          # v0.5.1, official Kubernetes image (sandbox provider SDK pre-bundled)
+          image: ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.5.1
           imagePullPolicy: Always
-          # Install kubernetes client before starting — not baked into the image
           command:
-            - /bin/sh
-            - -c
-            - pip install 'omnigent[kubernetes]' --quiet && exec python /app/entrypoint.py
+            - python
+            - /app/entrypoint.py
           ports:
             - containerPort: 8000
               name: http
