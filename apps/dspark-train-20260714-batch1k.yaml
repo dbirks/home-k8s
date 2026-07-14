@@ -127,12 +127,15 @@ data:
     # separate, disjoint batch1k file per dataset.
     # ----------------------------------------------------------------
     # name:dataset-config:old_limit:new_limit:thinking-fraction
+    # --limit means "fetch this many NEW rows this invocation" (processed_count
+    # starts at 0 every run, confirmed from source) -- NOT a target total, so
+    # this column is the direct delta to add, not old+delta.
     REGEN_SPECS=(
-        "gsm8k:gsm8k:2400:2620:0.0"
-        "opc-python:opc-python:1900:2074:0.0"
-        "typescript:typescript-instruct:900:982:0.0"
-        "magpie:magpie:1400:1528:0.3"
-        "ultrachat:ultrachat:4319:4714:0.3"
+        "gsm8k:gsm8k:2400:220:0.0"
+        "opc-python:opc-python:1900:174:0.0"
+        "typescript:typescript-instruct:900:82:0.0"
+        "magpie:magpie:1400:128:0.3"
+        "ultrachat:ultrachat:4319:395:0.3"
     )
 
     vllm serve unsloth/Qwen3.6-27B-NVFP4 \
@@ -158,7 +161,7 @@ data:
     echo "[$(date)] vLLM healthy for Phase 0"
 
     for spec in "${REGEN_SPECS[@]}"; do
-        IFS=':' read -r name dataset old_limit new_limit thinking_frac <<< "$spec"
+        IFS=':' read -r name dataset old_count delta thinking_frac <<< "$spec"
         existing_file="$SD_DIR/${name}.jsonl"
         batch_file="$BATCH_DIR/${name}.jsonl"
         sentinel="$BATCH_DIR/${name}_complete"
@@ -167,11 +170,11 @@ data:
             continue
         fi
         before_count=$(wc -l < "$existing_file")
-        echo "=== [$(date)] Growing $name: $before_count -> $new_limit ==="
+        echo "=== [$(date)] Growing $name by $delta new rows (currently $before_count) ==="
         python3 "$SPEC_SCRIPTS/response_regeneration/script.py" \
             --dataset "$dataset" --model main \
             --endpoint http://localhost:8001/v1/chat/completions \
-            --limit "$new_limit" --max-tokens 6144 --concurrency 48 \
+            --limit "$delta" --max-tokens 6144 --concurrency 48 \
             --enable-thinking-fraction "$thinking_frac" \
             --outfile "$existing_file" --resume \
             2>&1 | tee "/output/logs/batch1k_regen_${name}.log"
