@@ -33,7 +33,6 @@ data:
         --dtype bfloat16 \
         --gpu-memory-utilization 0.75 \
         --max-num-seqs 4 \
-        --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 \
         --mamba-ssm-cache-dtype float16 \
         --enable-prefix-caching \
@@ -217,11 +216,6 @@ spec:
               value: 12.0f
             - name: FLASHINFER_FORCE_SM
               value: 120f
-            # Get a precise, synchronous crash location instead of an async
-            # "might be incorrect" stacktrace, since prior attempts hit
-            # illegal-memory-access during KV-cache profiling / graph capture
-            - name: CUDA_LAUNCH_BLOCKING
-              value: "1"
           resources:
             limits:
               nvidia.com/gpu: 1
