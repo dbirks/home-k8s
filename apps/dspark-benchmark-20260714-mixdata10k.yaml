@@ -36,9 +36,9 @@ data:
         --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 \
         --mamba-ssm-cache-dtype float16 \
-        --compilation-config '{"cudagraph_mode":"PIECEWISE"}' \
         --enable-prefix-caching \
         --trust-remote-code \
+        --enforce-eager \
         --speculative-config '{"method":"dspark","model":"/output/checkpoints-mixdata-10k/1","num_speculative_tokens":15}' \
         > /output/logs/bench_vllm_mixdata10k.log 2>&1 &
     VLLM_PID=$!
@@ -51,8 +51,8 @@ data:
             break
         fi
         if ! kill -0 $VLLM_PID 2>/dev/null; then
-            echo "ERROR: vLLM died. Last 100 lines:"
-            tail -100 /output/logs/bench_vllm_mixdata10k.log
+            echo "ERROR: vLLM died. Full log:"
+            cat /output/logs/bench_vllm_mixdata10k.log
             exit 1
         fi
         [ "$i" -eq 180 ] && echo "ERROR: vLLM timeout 30 min" && exit 1
