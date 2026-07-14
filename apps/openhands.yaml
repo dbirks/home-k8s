@@ -91,3 +91,48 @@ spec:
           paths:
             - path: /
               pathType: Prefix
+
+  # Workaround for a known Kubernetes limitation (not specific to this
+  # chart): fsGroup-based chown only applies to a subPath target the FIRST
+  # time kubelet creates it, and on a brand-new PVC that creation happens as
+  # root, before the pod's securityContext.fsGroup is applied -- so the
+  # openhands (uid 10001) process gets a permission-denied trying to write
+  # to /home/openhands/.openhands and /home/openhands/workspace (both
+  # subPath mounts of the chart's single "data" PVC). Confirmed live: the
+  # agent-server and automation backend both failed to start with "unable
+  # to open database file" / EACCES until this ran.
+  #
+  # Fix: an initContainer that mounts the whole PVC (no subPath) and
+  # pre-creates + chowns the two subPath directories before the main
+  # container starts. Injected via postRenderers since the chart doesn't
+  # expose an initContainers value.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: StatefulSet
+              name: openhands
+            patch: |
+              apiVersion: apps/v1
+              kind: StatefulSet
+              metadata:
+                name: openhands
+              spec:
+                template:
+                  spec:
+                    initContainers:
+                      - name: fix-data-perms
+                        image: busybox:1.36
+                        command:
+                          - sh
+                          - -c
+                          - |
+                            mkdir -p /data/openhands /data/workspace
+                            chown -R 10001:10001 /data/openhands /data/workspace
+                        securityContext:
+                          runAsUser: 0
+                          runAsGroup: 0
+                          runAsNonRoot: false
+                        volumeMounts:
+                          - name: data
+                            mountPath: /data
