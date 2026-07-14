@@ -1,0 +1,372 @@
+# DSpark iterative small-batch #2: another ~1,000 new samples via --from-pretrained
+#
+# batch1k validated the iterative warm-start approach (accept_len 1.5098 ->
+# 1.5316, no catastrophic forgetting -- see issue #51). Continuing to chunk
+# through more data the same way: warm-start from checkpoints-batch1k-v1/1
+# (the new best) with another small disjoint batch.
+#
+# Same 5-dataset mix proportions and disjoint-extraction method as batch1k
+# (--resume append-only + tail -N). ultrachat's --limit is reduced this time
+# (395 -> 130) because it produces ~3x more output rows than --limit implies
+# -- multi-turn conversations get one output row per turn (confirmed from
+# source), so batch1k's ultrachat delta of 395 actually produced 1,216 rows.
+# Targeting ~130 this time for a more consistent ~1,000 total instead of the
+# ~1,820 batch1k ended up with.
+#
+# Hidden states cached for this stage only, deleted after Phase 2 completes,
+# per the iterative-batch disk plan (peak disk bounded to one batch at a time).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-batch2-script
+  namespace: default
+data:
+  train.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    echo "=== [$(date)] Batch2 iterative training started ==="
+
+    apt-get update -qq 2>&1 | tail -3
+    apt-get install -y git --no-install-recommends -qq
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"
+    hash -r
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+
+    git clone --depth=1 https://github.com/dbirks/speculators /tmp/speculators-repo
+    SPEC_SCRIPTS=/tmp/speculators-repo/scripts
+
+    python3 << 'PYPATCH'
+    f = '/tmp/speculators-repo/src/speculators/utils/loading.py'
+    c = open(f).read().replace('device="cpu"', 'device="cuda"')
+    open(f, 'w').write(c)
+    for f2 in [
+        '/tmp/speculators-repo/src/speculators/models/dflash/core.py',
+        '/tmp/speculators-repo/src/speculators/models/dspark/core.py',
+    ]:
+        c = open(f2).read().replace(
+            'model.load_verifier_weights()',
+            'model.to("cuda"); model.load_verifier_weights()'
+        )
+        open(f2, 'w').write(c)
+    core_file = '/tmp/speculators-repo/src/speculators/models/dflash/core.py'
+    c = open(core_file).read()
+    OLD_BLOCK = (
+        '        if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001\n'
+        '            config.transformer_layer_config._attn_implementation = (  # noqa: SLF001\n'
+        '                "simple_flex_attention"\n'
+        '            )\n'
+        '        self._attn_impl = config.transformer_layer_config._attn_implementation  # noqa: SLF001\n'
+    )
+    NEW_BLOCK = (
+        '        config.transformer_layer_config._attn_implementation = "eager"  # noqa: SLF001\n'
+        '        self._attn_impl = "eager"\n'
+    )
+    if OLD_BLOCK in c:
+        open(core_file, 'w').write(c.replace(OLD_BLOCK, NEW_BLOCK))
+    PYPATCH
+    uv pip install /tmp/speculators-repo hf_transfer --system --quiet
+    uv pip install aiohttp datasets tqdm --system --quiet
+    python3 << 'POSTINSTALL'
+    dspark_inst = '/usr/local/lib/python3.12/dist-packages/speculators/models/dspark/core.py'
+    c = open(dspark_inst).read()
+    OLD = '        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
+    NEW = '        max_anchors = min(max_anchors, 384)  # SM120 VRAM: 384*16=6144 Q, 1.87 GB attn\n        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
+    if OLD in c:
+        open(dspark_inst, 'w').write(c.replace(OLD, NEW, 1))
+        import py_compile; py_compile.compile(dspark_inst)
+    POSTINSTALL
+
+    cat > /tmp/patch_flex_attention.py << 'PYFA'
+    import os, glob
+    th_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/template_heuristics/triton.py'
+    c = open(th_file).read()
+    OLD_SM12X = (
+        '            "sm12x": lambda h: (\n'
+        '                FlexBwDConfig(32, 128, 128, 32, 3, 4)\n'
+        '                if h < 64\n'
+        '                else FlexBwDConfig(\n'
+        '                    64, 64, 64, 64, 1 if h >= 128 else 2, 4\n'
+        '                )\n'
+        '            ),'
+    )
+    NEW_SM12X = (
+        '            "sm12x": lambda h: (\n'
+        '                FlexBwDConfig(32, 128, 128, 32, 3, 4)\n'
+        '                if h < 64\n'
+        '                else FlexBwDConfig(64, 16, 64, 16, 1, 4)\n'
+        '            ),'
+    )
+    if OLD_SM12X in c:
+        open(th_file, 'w').write(c.replace(OLD_SM12X, NEW_SM12X))
+    for pyc in glob.glob(os.path.join(os.path.dirname(th_file), '__pycache__', 'triton.cpython*')):
+        os.remove(pyc)
+    PYFA
+    python3 /tmp/patch_flex_attention.py
+
+    SD_DIR=/output/mixdata
+    BATCH_DIR=/output/batch2
+    PREP_DIR=/output/data-batch2
+    HS_DIR=$PREP_DIR/hidden-states
+    CKPT_DIR=/output/checkpoints-batch2-v1
+    mkdir -p "$BATCH_DIR" "$PREP_DIR" "$HS_DIR" "$CKPT_DIR" /output/logs
+
+    # ----------------------------------------------------------------
+    # Phase 0: grow each existing dataset file with --resume (append-only),
+    # extract just the new tail rows into a separate, disjoint batch2 file.
+    # --limit means "fetch this many NEW rows this invocation" -- direct
+    # delta, not old+delta (confirmed from source; see batch1k for the bug
+    # this caused when first misunderstood).
+    # ----------------------------------------------------------------
+    # name:dataset-config:delta:thinking-fraction
+    REGEN_SPECS=(
+        "gsm8k:gsm8k:220:0.0"
+        "opc-python:opc-python:174:0.0"
+        "typescript:typescript-instruct:82:0.0"
+        "magpie:magpie:128:0.3"
+        "ultrachat:ultrachat:130:0.3"
+    )
+
+    vllm serve unsloth/Qwen3.6-27B-NVFP4 \
+        --host 127.0.0.1 --port 8001 --api-key "" \
+        --served-model-name main \
+        --gpu-memory-utilization 0.85 \
+        --max-model-len 16384 \
+        --dtype bfloat16 --trust-remote-code \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+        --enforce-eager --max-num-seqs 48 \
+        > /output/logs/vllm_batch2_phase0.log 2>&1 &
+    VLLM_PID=$!
+    trap "kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null" EXIT
+
+    for i in $(seq 1 540); do
+        curl -sf http://localhost:8001/health >/dev/null 2>&1 && break
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "ERROR: vLLM died in Phase 0. Full log:"; cat /output/logs/vllm_batch2_phase0.log; exit 1
+        fi
+        sleep 10
+    done
+    echo "[$(date)] vLLM healthy for Phase 0"
+
+    for spec in "${REGEN_SPECS[@]}"; do
+        IFS=':' read -r name dataset delta thinking_frac <<< "$spec"
+        existing_file="$SD_DIR/${name}.jsonl"
+        batch_file="$BATCH_DIR/${name}.jsonl"
+        sentinel="$BATCH_DIR/${name}_complete"
+        if [ -f "$sentinel" ]; then
+            echo "[$(date)] Skipping batch2 Phase 0 ($name) -- sentinel exists"
+            continue
+        fi
+        before_count=$(wc -l < "$existing_file")
+        echo "=== [$(date)] Growing $name by $delta new rows (currently $before_count) ==="
+        python3 "$SPEC_SCRIPTS/response_regeneration/script.py" \
+            --dataset "$dataset" --model main \
+            --endpoint http://localhost:8001/v1/chat/completions \
+            --limit "$delta" --max-tokens 6144 --concurrency 48 \
+            --enable-thinking-fraction "$thinking_frac" \
+            --outfile "$existing_file" --resume \
+            2>&1 | tee "/output/logs/batch2_regen_${name}.log"
+        after_count=$(wc -l < "$existing_file")
+        new_rows=$((after_count - before_count))
+        echo "[$(date)] $name grew by $new_rows rows ($before_count -> $after_count)"
+        tail -n "$new_rows" "$existing_file" > "$batch_file"
+        actual_batch_count=$(wc -l < "$batch_file")
+        if [ "$actual_batch_count" -gt 0 ]; then
+            touch "$sentinel"
+            echo "[$(date)] Extracted $actual_batch_count new disjoint rows for $name -> $batch_file"
+        else
+            echo "[$(date)] ERROR: $name produced 0 new rows -- aborting"
+            exit 1
+        fi
+    done
+
+    kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null || true
+    trap - EXIT
+
+    # ----------------------------------------------------------------
+    # Prep: tokenize just the new batch2 files into their own small pool.
+    # ----------------------------------------------------------------
+    if [ ! -f "$PREP_DIR/token_freq.pt" ]; then
+        echo "=== [$(date)] Preparing batch2 data ==="
+        python3 "$SPEC_SCRIPTS/prepare_data.py" \
+            --model unsloth/Qwen3.6-27B-NVFP4 \
+            --data "$BATCH_DIR/gsm8k.jsonl" \
+            --data "$BATCH_DIR/opc-python.jsonl" \
+            --data "$BATCH_DIR/typescript.jsonl" \
+            --data "$BATCH_DIR/magpie.jsonl" \
+            --data "$BATCH_DIR/ultrachat.jsonl" \
+            --output "$PREP_DIR" \
+            --seq-length 16384 \
+            2>&1 | tee /output/logs/prepare_data_batch2.log
+        echo "[$(date)] Batch2 prep done -- $(ls "$PREP_DIR"/*.arrow 2>/dev/null | wc -l) arrow files"
+    else
+        echo "[$(date)] Skipping prep -- token_freq.pt exists"
+    fi
+
+    # ----------------------------------------------------------------
+    # Phase 1: hidden states for just this small batch.
+    # ----------------------------------------------------------------
+    if [ ! -f "$PREP_DIR/phase1_complete" ]; then
+        echo "=== [$(date)] Phase 1: hidden states for batch2 ==="
+        unset PYTORCH_CUDA_ALLOC_CONF
+        python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
+            --target-layer-ids 1 16 31 46 61 \
+            --hidden-states-path "$HS_DIR" \
+            -- \
+            --gpu-memory-utilization 0.75 --port 8001 \
+            --max-model-len 16384 --dtype bfloat16 --trust-remote-code \
+            --served-model-name main \
+            --kv-cache-dtype fp8_e4m3 \
+            --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+            --enforce-eager --max-num-seqs 4 \
+            > /output/logs/vllm_phase1_batch2.log 2>&1 &
+        VLLM_PID=$!
+        trap "kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null" EXIT
+        for i in $(seq 1 540); do
+            curl -sf http://localhost:8001/health >/dev/null 2>&1 && break
+            if ! kill -0 $VLLM_PID 2>/dev/null; then
+                echo "ERROR: vLLM died in Phase 1. Full log:"; cat /output/logs/vllm_phase1_batch2.log; exit 1
+            fi
+            sleep 10
+        done
+        echo "[$(date)] vLLM healthy for Phase 1"
+        find "$HS_DIR" -maxdepth 1 -name "*.lock" -delete
+        find "$HS_DIR" -maxdepth 1 -name "cmpl-*.safetensors" -delete
+
+        python3 "$SPEC_SCRIPTS/data_generation_offline.py" \
+            --endpoint http://localhost:8001/v1 \
+            --preprocessed-data "$PREP_DIR" \
+            --output "$HS_DIR" \
+            --concurrency 4 --max-consecutive-errors 10 \
+            2>&1 | tee /output/logs/data_gen_batch2.log
+
+        kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null || true
+        trap - EXIT
+        touch "$PREP_DIR/phase1_complete"
+        echo "[$(date)] Phase 1 complete -- $(find "$HS_DIR" -maxdepth 1 -name 'hs_*.safetensors' | wc -l) hidden states"
+    else
+        echo "[$(date)] Skipping Phase 1 -- sentinel exists"
+    fi
+
+    # ----------------------------------------------------------------
+    # Phase 2: warm-start from checkpoints-batch1k-v1/1 (accept_len 1.5316,
+    # the current best), train on this new small batch.
+    # ----------------------------------------------------------------
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    echo "=== [$(date)] Phase 2: warm-start training on batch2 ==="
+
+    python3 "$SPEC_SCRIPTS/train.py" \
+        --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \
+        --speculator-type dspark \
+        --from-pretrained /output/checkpoints-batch1k-v1/1 \
+        --max-anchors 384 \
+        --target-layer-ids 1 16 31 46 61 \
+        --loss-fn '{"ce": 0.1, "tv": 0.9}' \
+        --confidence-head-alpha 1.0 \
+        --total-seq-len 2048 \
+        --epochs 2 \
+        --lr 3e-4 \
+        --on-missing skip \
+        --data-path "$PREP_DIR" \
+        --hidden-states-path "$HS_DIR" \
+        --save-path "$CKPT_DIR" \
+        --checkpoint-freq 0.25 \
+        --num-workers 2 --prefetch-factor 1 \
+        2>&1 | tee /output/logs/trainer_batch2.log
+
+    echo "=== [$(date)] Batch2 training complete ==="
+    ls -lh "$CKPT_DIR"/
+
+    echo "[$(date)] Reclaiming batch2 hidden-state disk ($(du -sh "$HS_DIR" | cut -f1))..."
+    rm -rf "$HS_DIR"
+    echo "[$(date)] Done."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-batch2-20260714
+  namespace: default
+spec:
+  backoffLimit: 200
+  activeDeadlineSeconds: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: gpu-clock-lock
+          image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: utility
+          command:
+            - sh
+            - -c
+            - |
+              nvidia-smi -pm 1
+              nvidia-smi -pl 400
+      containers:
+        - name: trainer
+          image: vllm/vllm-openai:v0.24.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 24Gi
+            requests:
+              cpu: "4"
+              memory: 24Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-batch2-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
