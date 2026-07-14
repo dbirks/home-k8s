@@ -271,6 +271,7 @@ data:
 
     python3 "$SPEC_SCRIPTS/train.py" \
         --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \
+        --speculator-type dspark \
         --from-pretrained /output/checkpoints-mixdata-10k/1 \
         --max-anchors 384 \
         --target-layer-ids 1 16 31 46 61 \
