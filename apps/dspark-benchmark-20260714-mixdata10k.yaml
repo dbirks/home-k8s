@@ -1,0 +1,249 @@
+# Benchmark: mixdata10k DSpark checkpoint (10K samples, 5 layers, 2 epochs)
+#
+# Temporary job -- serves the just-trained checkpoint
+# (/output/checkpoints-mixdata-10k/1, checkpoint_best) directly from the PVC
+# path (no HF upload needed -- vLLM loads local HF-style checkpoint dirs the
+# same as a repo id), benchmarks it the same way as prior runs (see issue #51):
+# send diverse real chat-completion requests, then read vLLM's own
+# vllm:spec_decode_* Prometheus counters to compute acceptance length.
+#
+# Baseline to beat: 1.184 (mixdata, 4000 samples/3 layers/2 epochs).
+#
+# GPU is free -- dspark-train-qwen27-20260713-mixdata10k Job completed.
+# This job is meant to be deleted after benchmarking; not wired into
+# production vllm.yaml unless the numbers justify it.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-benchmark-20260714-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    export HF_HOME=/data
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    echo "=== [$(date)] Starting vLLM with mixdata10k DSpark checkpoint ==="
+    vllm serve unsloth/Qwen3.6-27B-NVFP4 \
+        --host 0.0.0.0 --port 8000 \
+        --served-model-name main qwen27 \
+        --max-model-len 32768 \
+        --dtype bfloat16 \
+        --gpu-memory-utilization 0.75 \
+        --max-num-seqs 16 \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 \
+        --mamba-ssm-cache-dtype float16 \
+        --compilation-config '{"cudagraph_mode":"PIECEWISE"}' \
+        --enable-prefix-caching \
+        --trust-remote-code \
+        --speculative-config '{"method":"dspark","model":"/output/checkpoints-mixdata-10k/1","num_speculative_tokens":15}' \
+        > /output/logs/bench_vllm_mixdata10k.log 2>&1 &
+    VLLM_PID=$!
+    trap "kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null" EXIT
+
+    echo "=== Waiting for vLLM /health (up to 30 min) ==="
+    for i in $(seq 1 180); do
+        if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+            echo "[$(date)] vLLM healthy after $((i * 10))s"
+            break
+        fi
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "ERROR: vLLM died. Last 100 lines:"
+            tail -100 /output/logs/bench_vllm_mixdata10k.log
+            exit 1
+        fi
+        [ "$i" -eq 180 ] && echo "ERROR: vLLM timeout 30 min" && exit 1
+        sleep 10
+    done
+
+    echo "=== Confirming dspark speculative config loaded ==="
+    grep -i "speculat\|dspark" /output/logs/bench_vllm_mixdata10k.log | tail -20 || true
+
+    cat > /tmp/bench.py << 'PYEOF'
+    import concurrent.futures, json, re, time, urllib.request
+
+    PROMPTS = [
+        # code
+        "Write a Python function that merges two sorted linked lists.",
+        "Implement a binary search tree with insert, delete, and in-order traversal in Python.",
+        "Write a TypeScript function that debounces another function.",
+        "Fix this Python code: def fib(n): return fib(n-1)+fib(n-2) -- it's missing a base case.",
+        "Write a Rust function that reverses a string in place.",
+        "Implement quicksort in Python with a explanation of its time complexity.",
+        "Write a SQL query to find the second-highest salary in an employees table.",
+        "Write a Python decorator that retries a function up to 3 times on exception.",
+        "Implement a LRU cache in Python using OrderedDict.",
+        "Write a bash script that finds all files larger than 100MB in a directory tree.",
+        # math
+        "What is the derivative of x^3 * sin(x)?",
+        "Solve for x: 3x^2 - 12x + 9 = 0",
+        "A train travels 120 miles in 2 hours, then 180 miles in 3 hours. What is its average speed?",
+        "What is the sum of the first 50 positive integers?",
+        "Explain the proof that the square root of 2 is irrational.",
+        "If a circle has radius 7, what is its area and circumference?",
+        "Compute the integral of 1/x dx from 1 to e.",
+        "What is 17 factorial divided by 15 factorial?",
+        # general chat / reasoning
+        "What are the main differences between TCP and UDP?",
+        "Explain how a Kubernetes Deployment differs from a StatefulSet.",
+        "What's the difference between supervised and unsupervised learning?",
+        "Explain the CAP theorem in distributed systems.",
+        "What are the tradeoffs between microservices and a monolith?",
+        "Why do airplanes fly at around 35,000 feet?",
+        "Explain how DNS resolution works step by step.",
+        "What causes seasons on Earth?",
+        "Summarize the plot of Romeo and Juliet in three sentences.",
+        "What's the difference between a mutex and a semaphore?",
+        "Explain how garbage collection works in a language like Python or Java.",
+        "What is the difference between HTTP/1.1 and HTTP/2?",
+        "Why is speculative decoding faster than normal autoregressive decoding?",
+        "Explain the difference between a hash table and a binary search tree, including time complexity.",
+        "What is eventual consistency in distributed databases?",
+        "Describe how a Bloom filter works and why it can have false positives.",
+        "Explain what a race condition is and give an example of how to prevent one.",
+        "What's the difference between authentication and authorization?",
+        "Explain how TLS handshakes establish a secure connection.",
+        "What is the difference between a process and a thread?",
+        "Explain how git rebase differs from git merge.",
+        "What is the difference between L1 and L2 regularization in machine learning?",
+        "Explain how a CDN speeds up website delivery.",
+    ]
+
+    def send_one(prompt):
+        body = json.dumps({
+            "model": "main",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 300,
+            "temperature": 0.0,
+        }).encode()
+        req = urllib.request.Request(
+            "http://localhost:8000/v1/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                resp.read()
+                return True
+        except Exception as e:
+            print("request failed:", e)
+            return False
+
+    print(f"=== Sending {len(PROMPTS)} diverse requests (concurrency 8) ===")
+    t0 = time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(send_one, PROMPTS))
+    print(f"Done in {time.time()-t0:.1f}s -- {sum(results)}/{len(results)} succeeded")
+
+    print("=== Scraping /metrics for spec_decode counters ===")
+    with urllib.request.urlopen("http://localhost:8000/metrics", timeout=30) as resp:
+        metrics_text = resp.read().decode()
+
+    spec_lines = [l for l in metrics_text.splitlines() if "spec_decode" in l and not l.startswith("#")]
+    print(f"--- {len(spec_lines)} spec_decode metric lines ---")
+    for l in spec_lines:
+        print(l)
+
+    def metric_value(name_substr):
+        total = 0.0
+        found = False
+        for l in spec_lines:
+            if name_substr in l:
+                m = re.search(r"}\s+([0-9.eE+-]+)\s*$", l)
+                if not m:
+                    m = re.search(r"\s+([0-9.eE+-]+)\s*$", l)
+                if m:
+                    total += float(m.group(1))
+                    found = True
+        return total if found else None
+
+    accepted = metric_value("num_accepted_tokens_total")
+    draft = metric_value("num_draft_tokens_total")
+    drafts = metric_value("num_drafts_total")
+
+    print(f"\n=== Parsed totals ===")
+    print(f"accepted_tokens_total = {accepted}")
+    print(f"draft_tokens_total    = {draft}")
+    print(f"drafts_total (rounds) = {drafts}")
+
+    if accepted is not None and drafts:
+        extra_per_round = accepted / drafts
+        accept_len = 1 + extra_per_round
+        print(f"\n=== RESULT ===")
+        print(f"extra_tokens_per_round = {extra_per_round:.4f}")
+        print(f"acceptance_length      = {accept_len:.4f}")
+    else:
+        print("\nCould not compute acceptance_length from available metrics -- inspect spec_decode lines above manually.")
+    PYEOF
+
+    python3 /tmp/bench.py 2>&1 | tee /output/logs/bench_results_mixdata10k.txt
+
+    echo "=== Benchmark complete ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-benchmark-20260714-mixdata10k
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: bench
+          image: vllm/vllm-openai:v0.25.0
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: latency
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: 12.0f
+            - name: FLASHINFER_FORCE_SM
+              value: 120f
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "2"
+              memory: 16Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-benchmark-20260714-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
