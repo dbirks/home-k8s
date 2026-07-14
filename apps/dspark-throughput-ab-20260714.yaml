@@ -1,0 +1,267 @@
+# Throughput A/B test: mixdata10k DSpark checkpoint vs. plain decoding (no
+# speculative decoding at all), same model/hardware/prompts, to get a real
+# measured wall-clock speedup number (not just acceptance length) for the
+# HuggingFace model card.
+#
+# Uses the same proven nightly vLLM wheel as the mixdata10k benchmark job
+# (v0.25.0's native dspark serving crashes -- see apps/dspark-benchmark-
+# 20260714-mixdata10k.yaml and issue #51 for the full writeup).
+#
+# Methodology: same 41-prompt diverse set (code/math/chat/reasoning), longer
+# max_tokens (400, vs 300 before) for a cleaner decode-throughput signal, run
+# at concurrency 1 (clean per-stream decode speed, matches how published
+# DFlash/DSpark numbers are usually reported) and concurrency 8 (more
+# realistic concurrent-serving load). Same vLLM process is reused across both
+# concurrency levels within a config (baseline, then dspark) -- only two
+# server (re)starts total, not four.
+#
+# Temporary job, GPU free (dspark-train job completed).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-throughput-ab-20260714-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    start_vllm() {
+      local label=$1
+      shift
+      echo "=== [$(date)] Starting vLLM ($label) ==="
+      vllm serve unsloth/Qwen3.6-27B-NVFP4 \
+          --host 0.0.0.0 --port 8000 \
+          --served-model-name main qwen27 \
+          --max-model-len 16384 \
+          --dtype bfloat16 \
+          --gpu-memory-utilization 0.75 \
+          --max-num-seqs 16 \
+          --kv-cache-dtype fp8_e4m3 \
+          --mamba-cache-dtype float16 \
+          --mamba-ssm-cache-dtype float16 \
+          --enable-prefix-caching \
+          --trust-remote-code \
+          --enforce-eager \
+          "$@" \
+          > "/output/logs/ab_vllm_${label}.log" 2>&1 &
+      VLLM_PID=$!
+      echo "=== Waiting for vLLM /health ($label, up to 30 min) ==="
+      for i in $(seq 1 180); do
+          if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+              echo "[$(date)] vLLM healthy after $((i * 10))s"
+              return 0
+          fi
+          if ! kill -0 $VLLM_PID 2>/dev/null; then
+              echo "ERROR: vLLM died. Full log:"
+              cat "/output/logs/ab_vllm_${label}.log"
+              return 1
+          fi
+          sleep 10
+      done
+      echo "ERROR: vLLM timeout ($label)"
+      return 1
+    }
+
+    stop_vllm() {
+      echo "=== [$(date)] Stopping vLLM ==="
+      kill $VLLM_PID 2>/dev/null
+      wait $VLLM_PID 2>/dev/null
+      sleep 5
+    }
+
+    cat > /tmp/ab_bench.py << 'PYEOF'
+    import concurrent.futures, json, sys, time, urllib.request
+
+    PROMPTS = [
+        "Write a Python function that merges two sorted linked lists.",
+        "Implement a binary search tree with insert, delete, and in-order traversal in Python.",
+        "Write a TypeScript function that debounces another function.",
+        "Fix this Python code: def fib(n): return fib(n-1)+fib(n-2) -- it's missing a base case.",
+        "Write a Rust function that reverses a string in place.",
+        "Implement quicksort in Python with a explanation of its time complexity.",
+        "Write a SQL query to find the second-highest salary in an employees table.",
+        "Write a Python decorator that retries a function up to 3 times on exception.",
+        "Implement a LRU cache in Python using OrderedDict.",
+        "Write a bash script that finds all files larger than 100MB in a directory tree.",
+        "What is the derivative of x^3 * sin(x)?",
+        "Solve for x: 3x^2 - 12x + 9 = 0",
+        "A train travels 120 miles in 2 hours, then 180 miles in 3 hours. What is its average speed?",
+        "What is the sum of the first 50 positive integers?",
+        "Explain the proof that the square root of 2 is irrational.",
+        "If a circle has radius 7, what is its area and circumference?",
+        "Compute the integral of 1/x dx from 1 to e.",
+        "What is 17 factorial divided by 15 factorial?",
+        "What are the main differences between TCP and UDP?",
+        "Explain how a Kubernetes Deployment differs from a StatefulSet.",
+        "What's the difference between supervised and unsupervised learning?",
+        "Explain the CAP theorem in distributed systems.",
+        "What are the tradeoffs between microservices and a monolith?",
+        "Why do airplanes fly at around 35,000 feet?",
+        "Explain how DNS resolution works step by step.",
+        "What causes seasons on Earth?",
+        "Summarize the plot of Romeo and Juliet in three sentences.",
+        "What's the difference between a mutex and a semaphore?",
+        "Explain how garbage collection works in a language like Python or Java.",
+        "What is the difference between HTTP/1.1 and HTTP/2?",
+        "Why is speculative decoding faster than normal autoregressive decoding?",
+        "Explain the difference between a hash table and a binary search tree, including time complexity.",
+        "What is eventual consistency in distributed databases?",
+        "Describe how a Bloom filter works and why it can have false positives.",
+        "Explain what a race condition is and give an example of how to prevent one.",
+        "What's the difference between authentication and authorization?",
+        "Explain how TLS handshakes establish a secure connection.",
+        "What is the difference between a process and a thread?",
+        "Explain how git rebase differs from git merge.",
+        "What is the difference between L1 and L2 regularization in machine learning?",
+        "Explain how a CDN speeds up website delivery.",
+    ]
+
+    def send_one(prompt, max_tokens):
+        body = json.dumps({
+            "model": "main",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+        }).encode()
+        req = urllib.request.Request(
+            "http://localhost:8000/v1/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read())
+                completion_tokens = data["usage"]["completion_tokens"]
+                return {"ok": True, "tokens": completion_tokens, "wall": time.time() - t0}
+        except Exception as e:
+            print(f"request failed: {e}", file=sys.stderr)
+            return {"ok": False, "tokens": 0, "wall": time.time() - t0}
+
+    def run_batch(concurrency, max_tokens):
+        t0 = time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as ex:
+            results = list(ex.map(lambda p: send_one(p, max_tokens), PROMPTS))
+        wall = time.time() - t0
+        ok = [r for r in results if r["ok"]]
+        total_tokens = sum(r["tokens"] for r in ok)
+        tok_per_s = total_tokens / wall if wall > 0 else 0
+        print(f"  concurrency={concurrency}: {len(ok)}/{len(results)} ok, "
+              f"{total_tokens} completion tokens in {wall:.1f}s -> {tok_per_s:.1f} tok/s aggregate")
+        return {"concurrency": concurrency, "ok": len(ok), "total": len(results),
+                "tokens": total_tokens, "wall_s": wall, "tok_per_s": tok_per_s}
+
+    label = sys.argv[1]
+    max_tokens = int(sys.argv[2])
+    print(f"=== Throughput run: {label} (max_tokens={max_tokens}) ===")
+    r1 = run_batch(1, max_tokens)
+    r8 = run_batch(8, max_tokens)
+    with open(f"/output/logs/ab_result_{label}.json", "w") as f:
+        json.dump({"label": label, "c1": r1, "c8": r8}, f, indent=2)
+    print(f"=== {label} done ===")
+    PYEOF
+
+    mkdir -p /output/logs
+
+    # --- Baseline: no speculative decoding at all ---
+    if start_vllm baseline; then
+        python3 /tmp/ab_bench.py baseline 400 2>&1 | tee /output/logs/ab_baseline_stdout.log
+        stop_vllm
+    else
+        echo "FATAL: baseline vLLM failed to start"
+        exit 1
+    fi
+
+    sleep 10
+
+    # --- DSpark: mixdata10k checkpoint, same everything else ---
+    if start_vllm dspark --speculative-config '{"method":"dspark","model":"/output/checkpoints-mixdata-10k/1","num_speculative_tokens":15}'; then
+        python3 /tmp/ab_bench.py dspark 400 2>&1 | tee /output/logs/ab_dspark_stdout.log
+        stop_vllm
+    else
+        echo "FATAL: dspark vLLM failed to start"
+        exit 1
+    fi
+
+    echo "=== [$(date)] A/B test complete -- summary ==="
+    python3 - << 'PYSUMMARY'
+    import json
+    b = json.load(open("/output/logs/ab_result_baseline.json"))
+    d = json.load(open("/output/logs/ab_result_dspark.json"))
+    print(f"{'concurrency':<12}{'baseline tok/s':<18}{'dspark tok/s':<16}{'speedup':<10}")
+    for c in ["c1", "c8"]:
+        bt = b[c]["tok_per_s"]
+        dt = d[c]["tok_per_s"]
+        speedup = dt / bt if bt > 0 else float("nan")
+        conc = b[c]["concurrency"]
+        print(f"{conc:<12}{bt:<18.1f}{dt:<16.1f}{speedup:<10.3f}")
+    PYSUMMARY
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-throughput-ab-20260714
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: bench
+          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: latency
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: 12.0f
+            - name: FLASHINFER_FORCE_SM
+              value: 120f
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "2"
+              memory: 16Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-throughput-ab-20260714-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
