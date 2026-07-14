@@ -1,0 +1,27 @@
+# OpenHands agent-canvas's official Helm chart (added in agent-canvas v1.4.0,
+# github.com/OpenHands/agent-canvas#1641) is NOT published to an OCI registry
+# or a traditional Helm repo index -- it only exists as source at
+# helm/agent-canvas inside the app's own git repo (confirmed: no packages
+# under the OpenHands/agent-canvas or All-Hands-AI GitHub orgs). So instead of
+# a HelmRepository/OCIRepository like the other files in this directory, we
+# use a GitRepository and point the HelmRelease's chart.spec.sourceRef at it
+# (apps/openhands.yaml), with chart.spec.chart set to the in-repo path.
+#
+# Pinned to the v1.4.0 tag (the release that introduced the chart) rather
+# than a branch, so chart upgrades are deliberate.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: openhands-agent-canvas
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://github.com/OpenHands/agent-canvas
+  ref:
+    tag: v1.4.0
+  ignore: |
+    # This checkout exists only to vendor helm/agent-canvas for the
+    # HelmRelease -- exclude everything else (frontend/backend source,
+    # docs, tests) to keep the fetched artifact small.
+    /*
+    !/helm
