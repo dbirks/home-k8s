@@ -29,10 +29,11 @@ data:
     vllm serve unsloth/Qwen3.6-27B-NVFP4 \
         --host 0.0.0.0 --port 8000 \
         --served-model-name main qwen27 \
-        --max-model-len 8192 \
+        --max-model-len 16384 \
         --dtype bfloat16 \
         --gpu-memory-utilization 0.75 \
-        --max-num-seqs 4 \
+        --max-num-seqs 16 \
+        --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 \
         --mamba-ssm-cache-dtype float16 \
         --enable-prefix-caching \
@@ -198,7 +199,15 @@ spec:
       enableServiceLinks: false
       containers:
         - name: bench
-          image: vllm/vllm-openai:v0.25.0
+          # v0.25.0's native dspark method (merged ~2026-07-11, days old) hits
+          # a reproducible CUDA illegal-memory-access during draft attention
+          # metadata build / KV-cache warmup, with or without fp8 KV cache --
+          # a real bug in the brand-new native path, not our checkpoint.
+          # The 1.184 mixdata baseline was benchmarked before v0.25.0 existed,
+          # so it must have used this proven nightly wheel's DSpark support
+          # (in nightly since ~2026-07-01) -- same tag apps/vllm.yaml used
+          # before this session bumped it to v0.25.0.
+          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
           command: ["/bin/bash", "/scripts/run.sh"]
           env:
             - name: HF_HOME
