@@ -53,7 +53,10 @@ spec:
       enableServiceLinks: false
       containers:
         - name: sglang
-          image: lmsysorg/sglang:v0.5.13-cu130
+          # v0.5.15 -- Spec V2 by default (zero-overhead CUDA-graphable draft
+          # scheduling, +11% E2E TPS), IndexShare MTP, TopK V2, GLM-5.2 NVFP4
+          # tuning, Qwen3.6 NVFP4 support
+          image: lmsysorg/sglang:v0.5.15-cu130
           command:
             - python3
             - -m

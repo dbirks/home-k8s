@@ -61,12 +61,10 @@ spec:
       # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
-          # v0.25.0's git tag exists (released 2026-07-09, includes DSpark PR
-          # #46995) but no corresponding Docker Hub image has been published
-          # yet as of 2026-07-10 — pinning to the latest nightly instead,
-          # which has had DSpark support since 2026-07-01. Swap to v0.25.0
-          # once Docker Hub actually publishes it.
-          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
+          # v0.25.0 (released 2026-07-11) -- includes native DSpark drafter +
+          # speculators checkpoint support (#46995, #47093), Model Runner V2
+          # as the default path for dense models, and PagedAttention removal.
+          image: vllm/vllm-openai:v0.25.0
           command:
             - vllm
             - serve
