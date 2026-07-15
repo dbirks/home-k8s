@@ -9,7 +9,11 @@ spec:
     spec:
       chart: external-dns
       # https://github.com/kubernetes-sigs/external-dns/blob/master/charts/external-dns/Chart.yaml
-      version: 1.20.0
+      # Bumped 1.20.0 -> 1.21.1 (image v0.20.0 -> v0.21.0) to force a fresh image pull:
+      # the locally-cached v0.20.0 image on the node was corrupted (post power-outage
+      # containerd content-store corruption -- container exec'd with "exec format error"),
+      # and re-pulling the same tag/digest just reuses the corrupted local blob.
+      version: 1.21.1
       sourceRef:
         kind: HelmRepository
         name: external-dns

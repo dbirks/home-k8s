@@ -33,7 +33,13 @@ spec:
   values:
     fullnameOverride: "semantic-router"
     image:
-      tag: "v0.3.0"
+      # v0.3.0's locally-cached image was corrupted (post power-outage containerd
+      # content-store corruption -- entrypoint execed /app/router-candle and bash
+      # reported "Success" instead of running it, a classic truncated-binary symptom).
+      # No v0.3.1 has been released yet, so pinned to the nightly build from the day
+      # before the v0.3.0 cut (identical entrypoint.sh, verified working binary) to
+      # get a genuinely different, uncorrupted image digest.
+      tag: "nightly-20260604"
       pullPolicy: IfNotPresent
 
     replicaCount: 1

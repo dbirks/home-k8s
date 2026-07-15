@@ -20,7 +20,13 @@ spec:
   # https://github.com/dirsigler/uptime-kuma-helm/blob/main/charts/uptime-kuma/values.yaml
   values:
     image:
-      tag: 2.0.0-beta.1
+      # 2.0.0-beta.1's locally-cached image was corrupted (post power-outage containerd
+      # content-store corruption -- "/usr/bin/dumb-init: error while loading shared
+      # libraries: /lib/x86_64-linux-gnu/libc.so.6: file too short", i.e. a literally
+      # truncated file on disk). Bumped to the next beta in the same pre-release series
+      # (still 2.0.0, just beta.2) to get a genuinely different, uncorrupted image digest
+      # without jumping to a much newer stable release.
+      tag: 2.0.0-beta.2
     ingress:
       enabled: true
       className: private

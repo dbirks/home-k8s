@@ -10,7 +10,15 @@ spec:
       chart: metallb
       # Current version found here:
       # https://artifacthub.io/packages/helm/metallb/metallb
-      version: 0.14.9
+      # Bumped 0.14.9 -> 0.15.3 (speaker image v0.14.9 -> v0.15.3) to force a fresh
+      # image pull: after the power-outage reboot, the locally-cached speaker:v0.14.9
+      # image on the node was corrupted -- the frr-metrics container's binary (copied
+      # in from this image via the cp-metrics init container) segfaulted (exit 139) on
+      # every start, which in turn failed the frr container's shared startupProbe on
+      # :7473 and kept it in a restart loop too. Re-pulling the same tag/digest just
+      # reuses the corrupted local blob, so the chart/image version needed to change.
+      # No breaking changes for our L2Advertisement-only setup between these versions.
+      version: 0.15.3
       sourceRef:
         kind: HelmRepository
         name: metallb
