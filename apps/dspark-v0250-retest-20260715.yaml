@@ -1,0 +1,125 @@
+# One-off test: does vLLM v0.25.0's native dspark method still crash with our
+# published dbirks/Qwen3.6-27b-DSpark checkpoint specifically?
+#
+# We found this bug testing our own local checkpoint path earlier (issue #51,
+# 5 separate crash attempts, CUDA illegal-memory-access during draft-attention
+# metadata construction). Before writing "requires vLLM nightly, not v0.25.0"
+# into the model card as a firm claim, get a fresh, current confirmation
+# against the actual published HF model, not just the local checkpoint dir.
+#
+# Deliberately no --enforce-eager here -- testing what a typical user
+# following the model card's basic `vllm serve` example would actually hit,
+# not our own known workaround.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-v0250-retest-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    echo "=== [$(date)] Testing vLLM v0.25.0 native dspark with dbirks/Qwen3.6-27b-DSpark ==="
+    vllm serve unsloth/Qwen3.6-27B-NVFP4 \
+        --host 0.0.0.0 --port 8000 \
+        --served-model-name main \
+        --max-model-len 16384 \
+        --dtype bfloat16 \
+        --gpu-memory-utilization 0.75 \
+        --max-num-seqs 16 \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 \
+        --mamba-ssm-cache-dtype float16 \
+        --enable-prefix-caching \
+        --trust-remote-code \
+        --speculative-config '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":15}' \
+        > /output/logs/v0250_retest.log 2>&1 &
+    VLLM_PID=$!
+
+    echo "=== Waiting for vLLM /health or crash (up to 20 min) ==="
+    for i in $(seq 1 120); do
+        if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+            echo "[$(date)] RESULT: vLLM HEALTHY after $((i * 10))s -- v0.25.0 native dspark WORKS with this checkpoint"
+            kill $VLLM_PID 2>/dev/null
+            wait $VLLM_PID 2>/dev/null
+            exit 0
+        fi
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "[$(date)] RESULT: vLLM DIED -- v0.25.0 native dspark CRASHES with this checkpoint. Full log:"
+            cat /output/logs/v0250_retest.log
+            exit 1
+        fi
+        sleep 10
+    done
+    echo "[$(date)] RESULT: TIMEOUT after 20 min -- inconclusive, check log"
+    cat /output/logs/v0250_retest.log
+    kill $VLLM_PID 2>/dev/null
+    exit 1
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-v0250-retest-20260715
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: test
+          image: vllm/vllm-openai:v0.25.0
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: latency
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: 12.0f
+            - name: FLASHINFER_FORCE_SM
+              value: 120f
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "2"
+              memory: 16Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-v0250-retest-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
