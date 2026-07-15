@@ -4,6 +4,10 @@
 #   - Hybrid DeltaNet+Attention architecture, 27B dense, NVFP4 quantization
 #   - 77.2% SWE-bench Verified (base model)
 #   - Served as "main" and "qwen27" on port 8000
+#   - Speculative decoding: our own DSpark drafter (dbirks/Qwen3.6-27b-DSpark,
+#     v1, accept_len 1.5098 in isolated benchmarks -- real measured
+#     throughput speedup 1.28x-1.36x depending on concurrency). See issue #51
+#     for the full training story and known limitations.
 #
 # Native sidecar: ibm-granite/granite-speech-4.1-2b (speech-to-text)
 #   - 2B params, ~4GB VRAM
@@ -40,7 +44,7 @@ metadata:
   name: vllm-qwen27
   namespace: default
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: Recreate
   selector:
@@ -61,10 +65,15 @@ spec:
       # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
-          # v0.25.0 (released 2026-07-11) -- includes native DSpark drafter +
-          # speculators checkpoint support (#46995, #47093), Model Runner V2
-          # as the default path for dense models, and PagedAttention removal.
-          image: vllm/vllm-openai:v0.25.0
+          # v0.25.0's *native* dspark serving method crashes reproducibly
+          # with a CUDA illegal-memory-access during draft-attention-metadata
+          # construction -- confirmed across 5 separate attempts varying KV
+          # cache dtype, --enforce-eager, and other flags (see issue #51).
+          # This nightly wheel is what every one of our benchmark runs
+          # actually used successfully -- it has DSpark support (since
+          # ~2026-07-01) via the same speculators checkpoint format, just not
+          # v0.25.0's newer, buggier native code path.
+          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
           command:
             - vllm
             - serve
@@ -82,10 +91,12 @@ spec:
             # DeltaNet recurrent state cannot be FP8 — must be float16
             - "--mamba-cache-dtype=float16"
             - "--mamba-ssm-cache-dtype=float16"
-            # PIECEWISE is the correct mode for FlashInfer + speculative decoding;
-            # FULL_DECODE_ONLY is incompatible with the FlashInfer attention backend.
-            - "--compilation-config"
-            - '{"cudagraph_mode":"PIECEWISE"}'
+            # --enforce-eager (not PIECEWISE cudagraphs) -- matches the exact
+            # config every one of our benchmark runs verified working. Never
+            # tested dspark + cudagraphs enabled on this nightly wheel; safer
+            # to match the proven config for a production deployment and
+            # revisit cudagraphs as a later optimization once this is stable.
+            - "--enforce-eager"
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
@@ -94,7 +105,7 @@ spec:
             - "--performance-mode=throughput"
             - "--max-num-batched-tokens=8192"
             - "--speculative-config"
-            - '{"method":"dflash","model":"z-lab/Qwen3.6-27B-DFlash","num_speculative_tokens":16}'
+            - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":15}'
           ports:
             - containerPort: 8000
           env:
