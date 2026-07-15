@@ -39,3 +39,14 @@ spec:
       - "--pihole-api-version=6"
       # Only watch private-class ingresses (10.0.0.200)
       - "--ingress-class=private"
+      # Belt-and-suspenders pin: all *.hoam.lan records always resolve to
+      # the private controller's IP, regardless of what's in each Ingress's
+      # status.loadBalancer.ingress. This was tried before as "--target"
+      # (13598ac) and reverted (d7ca776) because that flag didn't exist in
+      # external-dns v0.20.0. It exists now as --default-targets in v0.21.0.
+      # Root cause of the flapping is fixed properly in ingress-nginx-private/
+      # public.yaml (unique controllerValue so the two controllers stop
+      # racing to overwrite each other's Ingress status), but this stays on
+      # as a safety net in case any future ingress-nginx release regresses
+      # the controllerValue setting.
+      - "--default-targets=10.0.0.200"

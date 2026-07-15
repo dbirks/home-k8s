@@ -36,6 +36,18 @@ spec:
       ingressClassResource:
         name: private
         default: false
+        # Root cause of the *.hoam.lan DNS flapping (2026-07-15): both the
+        # private and public releases left this at the chart default
+        # (k8s.io/ingress-nginx), so BOTH controller Deployments matched
+        # BOTH IngressClasses (matching is by this controller value, not by
+        # IngressClass *name*) and raced to overwrite status.loadBalancer.ingress
+        # on every Ingress with their own IP every ~1m resync. The unique
+        # electionID (added in 13598ac) only fixed leader election *within*
+        # one release's replicas -- it never stopped the two separate
+        # releases from both reconciling every Ingress. Giving each release
+        # its own controllerValue (which becomes --controller-class) makes
+        # this controller ignore Ingresses/IngressClasses it doesn't own.
+        controllerValue: k8s.io/ingress-nginx-private
       ingressClass: private
       service:
         annotations:

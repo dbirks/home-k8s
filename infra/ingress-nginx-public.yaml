@@ -30,6 +30,11 @@ spec:
       ingressClassResource:
         name: public
         default: false
+        # See ingress-nginx-private.yaml -- unique controllerValue so this
+        # controller only reconciles the "public" IngressClass, not "private"
+        # too (chart default k8s.io/ingress-nginx was shared by both
+        # releases, causing both to race on every Ingress's LB status).
+        controllerValue: k8s.io/ingress-nginx-public
       ingressClass: public
       service:
         annotations:
