@@ -65,14 +65,15 @@ spec:
       # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
-          # Deliberately running v0.25.0 despite the known, reproduced
-          # dspark crash (CUDA illegal-memory-access in draft-attention-
-          # metadata construction, confirmed across 6+ attempts including a
-          # direct retest against this exact checkpoint on 2026-07-16) --
-          # David asked to switch over anyway. Expect this to crash; if it
-          # does, revert to vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698,
-          # which is what every benchmark number for this model was measured on.
-          image: vllm/vllm-openai:v0.25.0
+          # v0.25.0 confirmed crashing (2026-07-16): CUDA illegal-memory-
+          # access in draft-attention-metadata construction. Root cause
+          # found upstream: vllm-project/vllm#48167 ("Fix FlashInfer
+          # non-causal draft attention (DFlash/DSpark) on Blackwell"),
+          # merged 2026-07-15 19:44 UTC -- AFTER v0.25.0/v0.25.1 and every
+          # nightly published so far. No fixed image exists yet; reverted
+          # to the last known-working nightly pending one that includes the
+          # fix. See issue #51.
+          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
           command:
             - vllm
             - serve
