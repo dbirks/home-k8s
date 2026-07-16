@@ -1,0 +1,34 @@
+# vLLM — Tailscale Ingress
+#
+# Same pattern as apps/omnigent-tailscale-ingress.yaml: a second Ingress on
+# the same vllm Service, using the already-installed `tailscale` IngressClass
+# (tailscale.com/ts-ingress). Tailscale provisions a dedicated tailnet node
+# for this Ingress with a real, auto-renewing Let's Encrypt certificate for
+# its MagicDNS name -- reachable only over the tailnet, never the public
+# internet. Doesn't change the existing vllm.hoam.lan / llm.hoam.lan LAN
+# access path.
+#
+# Requires "HTTPS Certificates" enabled in the Tailscale admin console
+# (Settings -> DNS) -- already turned on for the omnigent-ts Ingress.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vllm-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - vllm
+  rules:
+    - host: vllm
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vllm
+                port:
+                  number: 80
