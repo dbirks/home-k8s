@@ -44,8 +44,15 @@ spec:
       hosts:
         - grafana.hoam.lan
 
-    # Sidecar watches for ConfigMaps with dashboard/datasource labels
+    # Sidecar watches for ConfigMaps with dashboard/datasource labels.
+    # Pinned to 2.8.1 (chart default 2.5.0's cached image hit a persistent
+    # `exec format error` crash-loop -- corrupted/wrong-arch containerd cache;
+    # bumping to a fresh uncached tag forces a clean re-pull. See the recurring
+    # image-cache-corruption pitfall in CLAUDE.md.)
     sidecar:
+      image:
+        repository: quay.io/kiwigrid/k8s-sidecar
+        tag: "2.8.1"
       dashboards:
         enabled: true
         label: grafana_dashboard
