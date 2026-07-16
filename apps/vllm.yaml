@@ -65,15 +65,14 @@ spec:
       # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
-          # v0.25.0's *native* dspark serving method crashes reproducibly
-          # with a CUDA illegal-memory-access during draft-attention-metadata
-          # construction -- confirmed across 5 separate attempts varying KV
-          # cache dtype, --enforce-eager, and other flags (see issue #51).
-          # This nightly wheel is what every one of our benchmark runs
-          # actually used successfully -- it has DSpark support (since
-          # ~2026-07-01) via the same speculators checkpoint format, just not
-          # v0.25.0's newer, buggier native code path.
-          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
+          # Deliberately running v0.25.0 despite the known, reproduced
+          # dspark crash (CUDA illegal-memory-access in draft-attention-
+          # metadata construction, confirmed across 6+ attempts including a
+          # direct retest against this exact checkpoint on 2026-07-16) --
+          # David asked to switch over anyway. Expect this to crash; if it
+          # does, revert to vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698,
+          # which is what every benchmark number for this model was measured on.
+          image: vllm/vllm-openai:v0.25.0
           command:
             - vllm
             - serve
