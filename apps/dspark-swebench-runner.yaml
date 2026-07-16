@@ -1,0 +1,99 @@
+# DSpark SWE-bench trajectory-generation runner namespace + RBAC (issue #51)
+#
+# Generates real, on-policy, tool-call-shaped training data for DSpark by
+# running mini-swe-agent against SWE-bench training-candidate instances,
+# using our own self-hosted unsloth/Qwen3.6-27B-NVFP4 (served at
+# http://vllm.default.svc.cluster.local) as the acting model.
+#
+# Architecture mirrors apps/omnigent-sandbox.yaml almost exactly: a dedicated
+# namespace for ephemeral runner Pods, a namespaced Role scoped to exactly
+# what the controller needs, and a powerless runner ServiceAccount with no
+# token mounted. Controller runs as a Job in `default` (matching the existing
+# dspark-* Job convention); it is granted the Role in `dspark-swebench` via a
+# cross-namespace RoleBinding, same two-namespace split as Omnigent.
+#
+# One deliberate addition beyond Omnigent's pattern: this is an unattended
+# batch (not attended live sessions), so the controller also gets pods list
+# + watch, and does a startup reconcile pass to clean up any pods orphaned
+# by a crashed prior run (see dspark-swebench-controller-*.yaml).
+#
+# PodSecurity note: this namespace enforces `baseline`, not `restricted`.
+# SWE-bench's own harness (swebench.harness.run_evaluation) execs into
+# instance containers as `user=DOCKER_USER` which is literally "root"
+# (confirmed from the swebench package source) -- the official per-instance
+# images are built assuming root, so `restricted` (which mandates
+# runAsNonRoot) would break every runner Pod. `baseline` still forbids
+# privileged containers, host namespaces, and hostPath, which is the
+# meaningful blast-radius limit for pods running arbitrary third-party
+# Docker Hub images. Flagged in the project report as a deliberate deviation
+# from the literal "mirror omnigent-sandbox almost exactly" instruction.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dspark-swebench
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+    app.kubernetes.io/component: runner
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline
+---
+# Controller SA -- the generation/scoring controller Jobs run as this SA in
+# `default` (same namespace as all other dspark-* Jobs); bound via
+# cross-namespace RoleBinding to the Role in dspark-swebench.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dspark-swebench-controller
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+    app.kubernetes.io/component: controller
+---
+# Runner SA -- intentionally powerless; automountServiceAccountToken: false
+# so runner Pods (arbitrary third-party SWE-bench images) never even see a
+# token. Runner Pods only need outbound HTTP to vLLM + HF Hub + Docker Hub.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dspark-swebench-runner
+  namespace: dspark-swebench
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+    app.kubernetes.io/component: runner
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dspark-swebench-manager
+  namespace: dspark-swebench
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+    app.kubernetes.io/component: controller
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "delete", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dspark-swebench-manager
+  namespace: dspark-swebench
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+    app.kubernetes.io/component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dspark-swebench-manager
+subjects:
+  - kind: ServiceAccount
+    name: dspark-swebench-controller
+    namespace: default

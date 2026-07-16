@@ -1,0 +1,550 @@
+# DSpark SWE-bench trajectory-generation controller (issue #51), pilot batch
+#
+# Single controller Job in `default` (matching the dspark-* Job convention)
+# that drives the Kubernetes API directly (python `kubernetes` client) to
+# create/monitor/collect-results-from ephemeral per-instance Pods in the
+# `dspark-swebench` namespace -- NOT one Job per instance. Each per-instance
+# Pod's image IS that instance's official SWE-bench Docker image
+# (docker.io/swebench/sweb.eval.x86_64.<instance_id>:latest); mini-swe-agent
+# runs inside it via LocalEnvironment (plain subprocess, no nested Docker),
+# pointed at our self-hosted vLLM (http://vllm.default.svc.cluster.local,
+# served-model-name "main"). See apps/dspark-swebench-runner.yaml for the
+# namespace + RBAC, and apps/dspark-swebench-select-instances.py /
+# apps/dspark-swebench-instances-pilot.json for how the 75-instance pilot
+# list was chosen (training-candidate pool = full pool minus Lite minus
+# Verified; Verified is never touched by this pipeline).
+#
+# Trajectories, patches, per-instance results, and logs land on the existing
+# dspark-output-hdd-v2 PVC under /output/swebench-pilot/ -- additive only,
+# does not touch any dspark-train-*/dspark-benchmark-*/checkpoint data.
+#
+# Scoring (apply patch, run real tests, compare against FAIL_TO_PASS/
+# PASS_TO_PASS via swebench.harness.grading) is a deliberately separate later
+# phase -- see apps/dspark-swebench-score-20260715.yaml -- so a generation
+# rerun never has to re-run tests, and a re-score never has to re-run the
+# agent.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-swebench-run-instance-script
+  namespace: dspark-swebench
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+data:
+  run-instance.sh: |
+    #!/bin/bash
+    # Runs inside a Pod whose IMAGE IS the official SWE-bench per-instance eval
+    # image (docker.io/swebench/sweb.eval.x86_64.<instance_id>:latest). Installs
+    # mini-swe-agent via `uv` (independent of whatever python the image ships --
+    # uv fetches its own managed CPython, so this doesn't depend on guessing
+    # whether the image's system/conda python is new enough), then runs
+    # `mini-extra swebench-single` with --environment-class local so the agent
+    # executes bash commands directly in THIS container (no nested Docker, no
+    # DockerEnvironment) against the repo already checked out at /testbed.
+    set -uo pipefail  # deliberately not -e: we want to always write a result.json
+
+    INSTANCE_ID="${SWEBENCH_INSTANCE_ID:?missing SWEBENCH_INSTANCE_ID}"
+    OUT_DIR=/output/swebench-pilot
+    TRAJ_DIR="$OUT_DIR/trajectories"
+    PATCH_DIR="$OUT_DIR/patches"
+    LOG_DIR="$OUT_DIR/logs"
+    RESULT_DIR="$OUT_DIR/results"
+    mkdir -p "$TRAJ_DIR" "$PATCH_DIR" "$LOG_DIR" "$RESULT_DIR"
+
+    LOG_FILE="$LOG_DIR/${INSTANCE_ID}.log"
+    exec > >(tee -a "$LOG_FILE") 2>&1
+    echo "=== [$(date -u +%FT%TZ)] generation start: $INSTANCE_ID ==="
+
+    # Shared caches on the PVC -- reused across every ephemeral per-instance Pod
+    # in this batch: the HF dataset arrow cache (so only the first Pod pays for
+    # downloading the 2,294-row SWE-bench test split), uv's own package cache,
+    # and uv's managed-Python install dir (so only the first Pod downloads a
+    # CPython 3.12 build; every later Pod reuses it).
+    export HF_HOME="${HF_HOME:-$OUT_DIR/hf-cache}"
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-$OUT_DIR/uv-cache}"
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$OUT_DIR/uv-python}"
+    mkdir -p "$HF_HOME" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
+
+    write_result() {
+      # $1=status (short machine-readable code)
+      python3 - "$INSTANCE_ID" "$1" "$RESULT_DIR/${INSTANCE_ID}.json" <<'PYEOF' 2>/dev/null || true
+    import json, sys
+    instance_id, status, path = sys.argv[1:4]
+    json.dump({"instance_id": instance_id, "phase": "generation", "status": status}, open(path, "w"))
+    PYEOF
+    }
+
+    # --- Obtain a working `uv`, independent of the image's own python/pip state ---
+    UV_BIN=""
+    if command -v uv >/dev/null 2>&1; then
+        UV_BIN="uv"
+    elif command -v python3 >/dev/null 2>&1 && python3 -m pip install --quiet --no-input --root-user-action ignore uv 2>/tmp/pip_uv.log; then
+        UV_BIN="python3 -m uv"
+    else
+        echo "pip-install of uv failed (or no python3/pip); trying the official standalone installer..."
+        (curl -LsSf https://astral.sh/uv/install.sh | sh) 2>&1 | tail -30
+        export PATH="$HOME/.local/bin:$PATH"
+        command -v uv >/dev/null 2>&1 && UV_BIN="uv"
+    fi
+
+    if [ -z "$UV_BIN" ]; then
+        echo "ERROR: could not obtain a working uv in this image (image may lack python3/pip and network egress to astral.sh failed too)"
+        cat /tmp/pip_uv.log 2>/dev/null || true
+        write_result "toolchain_unavailable"
+        echo "=== [$(date -u +%FT%TZ)] generation end (toolchain_unavailable): $INSTANCE_ID ==="
+        exit 0
+    fi
+    echo "Using: $($UV_BIN --version 2>&1 || echo 'uv (version unknown)')"
+
+    set +e
+    $UV_BIN run --python 3.12 --with "mini-swe-agent==2.4.5" -- \
+        python3 -m minisweagent.run.utilities.mini_extra swebench-single \
+            --subset full --split test \
+            -i "$INSTANCE_ID" \
+            -c swebench.yaml \
+            -c "agent.step_limit=${STEP_LIMIT:-75}" \
+            -c "agent.wall_time_limit_seconds=${WALL_TIME_LIMIT:-1500}" \
+            -c "model.cost_tracking=ignore_errors" \
+            -c "model.model_kwargs.api_base=${VLLM_API_BASE:-http://vllm.default.svc.cluster.local/v1}" \
+            -c "model.model_kwargs.api_key=dummy" \
+            -m "${MSWEA_MODEL_NAME:-hosted_vllm/main}" \
+            --environment-class local \
+            --exit-immediately \
+            -y \
+            -o "$TRAJ_DIR/${INSTANCE_ID}.traj.json"
+    AGENT_RC=$?
+    set -e
+    echo "mini-extra swebench-single exit code: $AGENT_RC"
+
+    # Always write a result.json, whether or not the agent run itself succeeded --
+    # a crashed/timed-out/format-broken run is still useful signal, and the
+    # trajectory (if any was written before failure) is still captured.
+    python3 - "$INSTANCE_ID" "$TRAJ_DIR/${INSTANCE_ID}.traj.json" "$PATCH_DIR/${INSTANCE_ID}.patch" "$RESULT_DIR/${INSTANCE_ID}.json" "$AGENT_RC" <<'PYEOF'
+    import json, os, sys
+
+    instance_id, traj_path, patch_path, result_path, agent_rc = sys.argv[1:6]
+    status = "error"
+    patch_written = False
+    submission = ""
+    exit_status = None
+    n_messages = 0
+    n_steps = 0
+    error_detail = ""
+
+    try:
+        data = json.load(open(traj_path))
+        info = data.get("info", {})
+        exit_status = info.get("exit_status")
+        submission = info.get("submission") or ""
+        messages = data.get("messages", [])
+        n_messages = len(messages)
+        n_steps = sum(1 for m in messages if m.get("role") == "assistant")
+        if submission.strip():
+            os.makedirs(os.path.dirname(patch_path), exist_ok=True)
+            open(patch_path, "w").write(submission)
+            patch_written = True
+        status = "completed"
+    except FileNotFoundError:
+        status = "no_trajectory"
+    except Exception as e:
+        status = "parse_error"
+        error_detail = str(e)
+
+    result = {
+        "instance_id": instance_id,
+        "phase": "generation",
+        "status": status,
+        "agent_exit_code": int(agent_rc),
+        "mini_swe_agent_exit_status": exit_status,
+        "n_messages": n_messages,
+        "n_agent_steps": n_steps,
+        "patch_written": patch_written,
+        "error_detail": error_detail,
+    }
+    json.dump(result, open(result_path, "w"), indent=2)
+    print(f"Result: status={status} exit_status={exit_status} n_steps={n_steps} patch_written={patch_written}")
+    PYEOF
+
+    echo "=== [$(date -u +%FT%TZ)] generation end: $INSTANCE_ID ==="
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-swebench-controller-script
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+data:
+  controller.py: |
+    #!/usr/bin/env python3
+    """DSpark SWE-bench generation controller (issue #51).
+
+    Runs as a single Job pod in `default`, using the Kubernetes API directly
+    (python `kubernetes` client) to create/monitor/collect-results-from ephemeral
+    per-instance Pods in the `dspark-swebench` namespace -- one Pod per SWE-bench
+    instance, using that instance's *official* Docker image directly as the Pod
+    image (docker.io/swebench/sweb.eval.x86_64.<instance_id>:latest). Inside each
+    Pod, mini-swe-agent runs via LocalEnvironment (see run-instance.sh) -- no
+    nested Docker.
+
+    Idempotent / resumable: before creating a Pod for an instance, checks whether
+    a results/<instance_id>.json already exists on the shared PVC and skips it if
+    so. On startup, does a reconcile pass that deletes any leftover Pods from a
+    previous crashed controller run (their instance will simply be redone, since
+    we only trust a result once results/<instance_id>.json exists).
+    """
+
+    import hashlib
+    import json
+    import os
+    import time
+    from pathlib import Path
+
+    from kubernetes import client, config as kconfig
+    from kubernetes.client.rest import ApiException
+
+    NAMESPACE = os.environ.get("SWEBENCH_NAMESPACE", "dspark-swebench")
+    OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/output/swebench-pilot"))
+    INSTANCES_FILE = Path(os.environ.get("INSTANCES_FILE", "/config/instances-pilot.json"))
+    RUN_SCRIPT_CONFIGMAP = os.environ.get("RUN_SCRIPT_CONFIGMAP", "dspark-swebench-run-instance-script")
+    RUNNER_SA = os.environ.get("RUNNER_SERVICE_ACCOUNT", "dspark-swebench-runner")
+    OUTPUT_PVC = os.environ.get("OUTPUT_PVC", "dspark-output-hdd-v2")
+    NODE_NAME = os.environ.get("PIN_NODE", "")
+
+    MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "4"))
+    PER_INSTANCE_TIMEOUT_SECONDS = int(os.environ.get("PER_INSTANCE_TIMEOUT_SECONDS", "2400"))
+    POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
+
+    VLLM_API_BASE = os.environ.get("VLLM_API_BASE", "http://vllm.default.svc.cluster.local/v1")
+    MODEL_NAME = os.environ.get("MSWEA_MODEL_NAME", "hosted_vllm/main")
+    STEP_LIMIT = os.environ.get("STEP_LIMIT", "75")
+    WALL_TIME_LIMIT = os.environ.get("WALL_TIME_LIMIT", "1500")
+
+    LABEL_SELECTOR = "app.kubernetes.io/name=dspark-swebench,dspark.io/phase=generation,dspark.io/batch=pilot"
+
+
+    def ts() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+    def log(msg: str) -> None:
+        print(f"[{ts()}] {msg}", flush=True)
+
+
+    def get_swebench_docker_image_name(instance_id: str) -> str:
+        """Verified against mini-swe-agent's own get_swebench_docker_image_name."""
+        id_docker_compatible = instance_id.replace("__", "_1776_")
+        return f"docker.io/swebench/sweb.eval.x86_64.{id_docker_compatible}:latest".lower()
+
+
+    def pod_name_for(instance_id: str) -> str:
+        h = hashlib.sha256(instance_id.encode()).hexdigest()[:16]
+        return f"dspark-sweb-gen-{h}"
+
+
+    def result_path_for(instance_id: str) -> Path:
+        return OUTPUT_ROOT / "results" / f"{instance_id}.json"
+
+
+    def write_result(instance_id: str, status: str, **extra) -> None:
+        p = result_path_for(instance_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists():
+            return  # don't clobber a real result the Pod already wrote
+        data = {"instance_id": instance_id, "phase": "generation", "status": status, **extra}
+        p.write_text(json.dumps(data, indent=2))
+
+
+    def build_pod(instance_id: str) -> client.V1Pod:
+        image = get_swebench_docker_image_name(instance_id)
+        container = client.V1Container(
+            name="agent",
+            image=image,
+            image_pull_policy="IfNotPresent",
+            command=["/bin/bash", "/scripts/run-instance.sh"],
+            env=[
+                client.V1EnvVar(name="SWEBENCH_INSTANCE_ID", value=instance_id),
+                client.V1EnvVar(name="VLLM_API_BASE", value=VLLM_API_BASE),
+                client.V1EnvVar(name="MSWEA_MODEL_NAME", value=MODEL_NAME),
+                client.V1EnvVar(name="STEP_LIMIT", value=str(STEP_LIMIT)),
+                client.V1EnvVar(name="WALL_TIME_LIMIT", value=str(WALL_TIME_LIMIT)),
+            ],
+            resources=client.V1ResourceRequirements(
+                requests={"cpu": "1", "memory": "4Gi"},
+                limits={"cpu": "2", "memory": "10Gi"},
+            ),
+            volume_mounts=[
+                client.V1VolumeMount(name="output", mount_path="/output"),
+                client.V1VolumeMount(name="scripts", mount_path="/scripts"),
+            ],
+        )
+        spec = client.V1PodSpec(
+            restart_policy="Never",
+            service_account_name=RUNNER_SA,
+            automount_service_account_token=False,
+            enable_service_links=False,
+            containers=[container],
+            volumes=[
+                client.V1Volume(
+                    name="output",
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=OUTPUT_PVC),
+                ),
+                client.V1Volume(
+                    name="scripts",
+                    config_map=client.V1ConfigMapVolumeSource(name=RUN_SCRIPT_CONFIGMAP, default_mode=0o755),
+                ),
+            ],
+        )
+        if NODE_NAME:
+            spec.node_selector = {"kubernetes.io/hostname": NODE_NAME}
+        return client.V1Pod(
+            metadata=client.V1ObjectMeta(
+                name=pod_name_for(instance_id),
+                namespace=NAMESPACE,
+                labels={
+                    "app.kubernetes.io/name": "dspark-swebench",
+                    "dspark.io/phase": "generation",
+                    "dspark.io/batch": "pilot",
+                },
+                annotations={"dspark.io/instance-id": instance_id},
+            ),
+            spec=spec,
+        )
+
+
+    def capture_log_tail(v1: client.CoreV1Api, pod_name: str, instance_id: str) -> None:
+        try:
+            tail = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE, tail_lines=200)
+        except ApiException as e:
+            tail = f"<could not fetch pod log: {e}>"
+        log_dir = OUTPUT_ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{instance_id}.controller-capture.log").write_text(tail or "")
+
+
+    def delete_pod(v1: client.CoreV1Api, pod_name: str) -> None:
+        try:
+            v1.delete_namespaced_pod(
+                name=pod_name,
+                namespace=NAMESPACE,
+                body=client.V1DeleteOptions(grace_period_seconds=5, propagation_policy="Background"),
+            )
+        except ApiException as e:
+            if e.status != 404:
+                log(f"WARNING: failed to delete pod {pod_name}: {e}")
+
+
+    def reconcile_orphans(v1: client.CoreV1Api) -> None:
+        """Startup reconcile: clean up Pods left behind by a crashed prior controller run."""
+        try:
+            pods = v1.list_namespaced_pod(namespace=NAMESPACE, label_selector=LABEL_SELECTOR)
+        except ApiException as e:
+            log(f"WARNING: could not list pods for reconcile: {e}")
+            return
+        if not pods.items:
+            log("Reconcile: no orphaned pods found.")
+            return
+        log(f"Reconcile: found {len(pods.items)} orphaned pod(s) from a previous run, deleting...")
+        for pod in pods.items:
+            inst = pod.metadata.annotations.get("dspark.io/instance-id", "?") if pod.metadata.annotations else "?"
+            log(f"  deleting orphan pod {pod.metadata.name} (instance {inst}, phase {pod.status.phase})")
+            delete_pod(v1, pod.metadata.name)
+        # Give deletions a moment to land so pod-name collisions don't 409 on recreate.
+        for _ in range(12):
+            time.sleep(5)
+            remaining = v1.list_namespaced_pod(namespace=NAMESPACE, label_selector=LABEL_SELECTOR)
+            if not remaining.items:
+                log("Reconcile: all orphaned pods gone.")
+                return
+        log("Reconcile: some orphaned pods still terminating after 60s, proceeding anyway.")
+
+
+    def main() -> None:
+        kconfig.load_incluster_config()
+        v1 = client.CoreV1Api()
+
+        for sub in ("results", "trajectories", "patches", "logs"):
+            (OUTPUT_ROOT / sub).mkdir(parents=True, exist_ok=True)
+
+        all_instances = json.loads(INSTANCES_FILE.read_text())["instance_ids"]
+        log(f"Loaded {len(all_instances)} instances from {INSTANCES_FILE}")
+
+        reconcile_orphans(v1)
+
+        pending = [i for i in all_instances if not result_path_for(i).exists()]
+        skipped = len(all_instances) - len(pending)
+        log(f"{skipped} instance(s) already have a result on the PVC (resumed); {len(pending)} pending this run")
+
+        in_flight: dict[str, dict] = {}
+
+        def launch_next() -> None:
+            while len(in_flight) < MAX_CONCURRENCY and pending:
+                inst = pending.pop(0)
+                pod = build_pod(inst)
+                try:
+                    v1.create_namespaced_pod(namespace=NAMESPACE, body=pod)
+                    in_flight[inst] = {"pod_name": pod.metadata.name, "started": time.time()}
+                    log(
+                        f"launched {inst} as pod {pod.metadata.name} "
+                        f"({len(in_flight)}/{MAX_CONCURRENCY} in flight, {len(pending)} still pending)"
+                    )
+                except ApiException as e:
+                    log(f"ERROR creating pod for {inst}: {e}")
+                    write_result(inst, "pod_create_error", api_status=e.status)
+
+        launch_next()
+        while in_flight:
+            time.sleep(POLL_INTERVAL_SECONDS)
+            for inst in list(in_flight.keys()):
+                meta = in_flight[inst]
+                pod_name = meta["pod_name"]
+                elapsed = time.time() - meta["started"]
+                try:
+                    pod = v1.read_namespaced_pod(name=pod_name, namespace=NAMESPACE)
+                except ApiException as e:
+                    if e.status == 404:
+                        log(f"{inst}: pod {pod_name} disappeared unexpectedly")
+                        write_result(inst, "pod_disappeared")
+                        del in_flight[inst]
+                        launch_next()
+                    continue
+
+                phase = pod.status.phase
+                timed_out = elapsed > PER_INSTANCE_TIMEOUT_SECONDS
+                if phase in ("Succeeded", "Failed") or timed_out:
+                    if timed_out and phase not in ("Succeeded", "Failed"):
+                        log(f"{inst}: exceeded {PER_INSTANCE_TIMEOUT_SECONDS}s wall clock (phase={phase}), killing")
+                        capture_log_tail(v1, pod_name, inst)
+                        write_result(inst, "timeout", elapsed_seconds=int(elapsed))
+                    elif phase == "Failed":
+                        log(f"{inst}: pod Failed after {elapsed:.0f}s")
+                        capture_log_tail(v1, pod_name, inst)
+                        write_result(inst, "pod_failed_no_result", elapsed_seconds=int(elapsed))
+                    else:
+                        log(f"{inst}: pod Succeeded after {elapsed:.0f}s")
+                        if not result_path_for(inst).exists():
+                            # Pod exited 0 but never wrote a result.json -- shouldn't
+                            # happen given run-instance.sh's structure, but don't
+                            # silently lose the instance.
+                            capture_log_tail(v1, pod_name, inst)
+                            write_result(inst, "succeeded_no_result", elapsed_seconds=int(elapsed))
+                    delete_pod(v1, pod_name)
+                    del in_flight[inst]
+                    launch_next()
+
+        write_summary(all_instances)
+        log("Generation controller done.")
+
+
+    def write_summary(all_instances: list[str]) -> None:
+        by_status: dict[str, int] = {}
+        missing = []
+        for inst in all_instances:
+            p = result_path_for(inst)
+            if not p.exists():
+                missing.append(inst)
+                continue
+            try:
+                status = json.loads(p.read_text()).get("status", "unknown")
+            except Exception:
+                status = "unreadable_result"
+            by_status[status] = by_status.get(status, 0) + 1
+
+        summary = {
+            "generated_at": ts(),
+            "total_instances": len(all_instances),
+            "by_status": by_status,
+            "missing_result": missing,
+        }
+        (OUTPUT_ROOT / "generation_summary.json").write_text(json.dumps(summary, indent=2))
+        log(f"Summary: {json.dumps(by_status)}, missing={len(missing)}")
+
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-swebench-gen-pilot-20260715
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+    app.kubernetes.io/component: generation-controller
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 172800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dspark-swebench
+        app.kubernetes.io/component: generation-controller
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: dspark-swebench-controller
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      containers:
+        - name: controller
+          image: python:3.12-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              pip install --quiet --no-input --root-user-action ignore "kubernetes>=30,<32"
+              exec python3 /scripts/controller.py
+          env:
+            - name: SWEBENCH_NAMESPACE
+              value: dspark-swebench
+            - name: OUTPUT_ROOT
+              value: /output/swebench-pilot
+            - name: INSTANCES_FILE
+              value: /config/instances-pilot.json
+            - name: RUN_SCRIPT_CONFIGMAP
+              value: dspark-swebench-run-instance-script
+            - name: RUNNER_SERVICE_ACCOUNT
+              value: dspark-swebench-runner
+            - name: OUTPUT_PVC
+              value: dspark-output-hdd-v2
+            - name: PIN_NODE
+              value: talos-210-73x
+            - name: MAX_CONCURRENCY
+              value: "4"
+            - name: PER_INSTANCE_TIMEOUT_SECONDS
+              value: "2400"
+            - name: POLL_INTERVAL_SECONDS
+              value: "10"
+            - name: VLLM_API_BASE
+              value: http://vllm.default.svc.cluster.local/v1
+            - name: MSWEA_MODEL_NAME
+              value: hosted_vllm/main
+            - name: STEP_LIMIT
+              value: "75"
+            - name: WALL_TIME_LIMIT
+              value: "1500"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: output
+              mountPath: /output
+            - name: instances-config
+              mountPath: /config
+            - name: controller-script
+              mountPath: /scripts
+      volumes:
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: instances-config
+          configMap:
+            name: dspark-swebench-instances-pilot-config
+        - name: controller-script
+          configMap:
+            name: dspark-swebench-controller-script
+            defaultMode: 0755

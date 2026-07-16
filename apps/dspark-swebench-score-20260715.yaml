@@ -1,0 +1,589 @@
+# DSpark SWE-bench scoring controller (issue #51), pilot batch
+#
+# Second, deliberately separate phase from generation (apps/dspark-swebench-
+# controller-20260715.yaml): for every pilot instance that produced a
+# non-empty patch, spins up a FRESH Pod of that instance's official image
+# (pristine base_commit state), applies the patch, runs the real
+# FAIL_TO_PASS/PASS_TO_PASS test commands, and grades the result via
+# swebench.harness.grading (get_eval_report) -- not a hand-rolled diff
+# comparison. See score-instance.sh for the exact apply+test+grade logic,
+# verified line-for-line against swebench.harness.run_evaluation's own
+# GIT_APPLY_CMDS / DOCKER_WORKDIR / DOCKER_PATCH constants and TestSpec.eval_script.
+#
+# Run this only after dspark-swebench-gen-pilot-20260715 has completed (or at
+# least produced patches for the instances you want scored) -- it reads
+# patches/<id>.patch from the same /output/swebench-pilot/ tree.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-swebench-score-instance-script
+  namespace: dspark-swebench
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+data:
+  score-instance.sh: |
+    #!/bin/bash
+    # Runs inside a fresh Pod of the SAME official SWE-bench per-instance image
+    # used for generation. Applies the model's generated patch (from
+    # /output/swebench-pilot/patches/<instance_id>.patch, written by the
+    # generation phase), runs the repo's real FAIL_TO_PASS/PASS_TO_PASS test
+    # commands, and grades the result -- all via the swebench.harness.grading
+    # module itself (not a hand-rolled diff comparison), so the pass/fail
+    # determination matches upstream SWE-bench semantics exactly.
+    #
+    # This is a deliberately separate phase from generation: it re-pulls the
+    # same base image fresh (so the repo is in its pristine base_commit state,
+    # uncontaminated by whatever the agent did during generation) and only
+    # needs the already-captured patch text, not the agent/vLLM at all.
+    set -uo pipefail
+
+    INSTANCE_ID="${SWEBENCH_INSTANCE_ID:?missing SWEBENCH_INSTANCE_ID}"
+    OUT_DIR=/output/swebench-pilot
+    PATCH_DIR="$OUT_DIR/patches"
+    SCORE_DIR="$OUT_DIR/scores"
+    LOG_DIR="$OUT_DIR/logs"
+    EVAL_LOG_DIR="$OUT_DIR/eval_logs"
+    mkdir -p "$SCORE_DIR" "$LOG_DIR" "$EVAL_LOG_DIR"
+
+    LOG_FILE="$LOG_DIR/${INSTANCE_ID}.score.log"
+    exec > >(tee -a "$LOG_FILE") 2>&1
+    echo "=== [$(date -u +%FT%TZ)] scoring start: $INSTANCE_ID ==="
+
+    export HF_HOME="${HF_HOME:-$OUT_DIR/hf-cache}"
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-$OUT_DIR/uv-cache}"
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$OUT_DIR/uv-python}"
+    mkdir -p "$HF_HOME" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
+
+    PATCH_FILE="$PATCH_DIR/${INSTANCE_ID}.patch"
+
+    write_score() {
+      python3 - "$INSTANCE_ID" "$1" "$SCORE_DIR/${INSTANCE_ID}.json" <<'PYEOF' 2>/dev/null || true
+    import json, sys
+    instance_id, status, path = sys.argv[1:4]
+    json.dump({"instance_id": instance_id, "phase": "scoring", "status": status, "resolved": False}, open(path, "w"))
+    PYEOF
+    }
+
+    if [ ! -s "$PATCH_FILE" ]; then
+        echo "No non-empty patch for $INSTANCE_ID (agent did not submit a patch) -- not resolved, skipping test run."
+        write_score "no_patch"
+        echo "=== [$(date -u +%FT%TZ)] scoring end (no_patch): $INSTANCE_ID ==="
+        exit 0
+    fi
+
+    UV_BIN=""
+    if command -v uv >/dev/null 2>&1; then
+        UV_BIN="uv"
+    elif command -v python3 >/dev/null 2>&1 && python3 -m pip install --quiet --no-input --root-user-action ignore uv 2>/tmp/pip_uv.log; then
+        UV_BIN="python3 -m uv"
+    else
+        (curl -LsSf https://astral.sh/uv/install.sh | sh) 2>&1 | tail -30
+        export PATH="$HOME/.local/bin:$PATH"
+        command -v uv >/dev/null 2>&1 && UV_BIN="uv"
+    fi
+
+    if [ -z "$UV_BIN" ]; then
+        echo "ERROR: could not obtain a working uv in this image"
+        write_score "toolchain_unavailable"
+        exit 0
+    fi
+
+    # --- Apply the patch, run the real eval script, grade with swebench.harness ---
+    $UV_BIN run --python 3.12 --with "swebench==4.1.0" -- python3 - "$INSTANCE_ID" "$PATCH_FILE" "$SCORE_DIR/${INSTANCE_ID}.json" "$EVAL_LOG_DIR/${INSTANCE_ID}.txt" <<'PYEOF'
+    import json
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+
+    instance_id, patch_file, score_path, eval_log_out_path = sys.argv[1:5]
+
+    from datasets import load_dataset
+    from swebench.harness.test_spec.test_spec import make_test_spec
+    from swebench.harness.grading import get_eval_report
+    from swebench.harness.constants import KEY_INSTANCE_ID, KEY_MODEL, KEY_PREDICTION
+
+    DOCKER_WORKDIR = "/testbed"
+    DOCKER_PATCH = "/tmp/patch.diff"
+    GIT_APPLY_CMDS = [
+        "git apply --verbose",
+        "git apply --verbose --reject",
+        "patch --batch --fuzz=5 -p1 -i",
+    ]
+
+    result = {
+        "instance_id": instance_id,
+        "phase": "scoring",
+        "status": "error",
+        "resolved": False,
+        "patch_applied": False,
+    }
+
+    try:
+        ds = load_dataset("princeton-nlp/SWE-bench", split="test")
+        rows = [r for r in ds if r["instance_id"] == instance_id]
+        if not rows:
+            result["status"] = "instance_not_found"
+            json.dump(result, open(score_path, "w"), indent=2)
+            sys.exit(0)
+        instance = rows[0]
+        test_spec = make_test_spec(instance)
+        result["repo"] = test_spec.repo
+        result["version"] = test_spec.version
+        result["fail_to_pass"] = test_spec.FAIL_TO_PASS
+        result["pass_to_pass"] = test_spec.PASS_TO_PASS
+
+        patch_text = Path(patch_file).read_text()
+        Path(DOCKER_PATCH).write_text(patch_text)
+
+        applied = False
+        apply_log = ""
+        for cmd in GIT_APPLY_CMDS:
+            proc = subprocess.run(
+                f"{cmd} {DOCKER_PATCH}", shell=True, cwd=DOCKER_WORKDIR,
+                capture_output=True, text=True,
+            )
+            apply_log += f"$ {cmd} {DOCKER_PATCH}\n{proc.stdout}\n{proc.stderr}\n"
+            if proc.returncode == 0:
+                applied = True
+                break
+        result["patch_applied"] = applied
+        if not applied:
+            result["status"] = "patch_apply_failed"
+            result["apply_log"] = apply_log[-4000:]
+            json.dump(result, open(score_path, "w"), indent=2)
+            sys.exit(0)
+
+        eval_script = test_spec.eval_script
+        Path("/eval.sh").write_text(eval_script)
+
+        t0 = time.time()
+        try:
+            proc = subprocess.run(
+                ["/bin/bash", "/eval.sh"], cwd=DOCKER_WORKDIR,
+                capture_output=True, text=True, timeout=1800,
+            )
+            test_output = proc.stdout + proc.stderr
+            timed_out = False
+        except subprocess.TimeoutExpired as e:
+            test_output = (e.stdout or "") + (e.stderr or "") + "\n\nTimeout error: 1800 seconds exceeded."
+            timed_out = True
+        runtime = time.time() - t0
+
+        test_output_path = "/tmp/test_output.txt"
+        Path(test_output_path).write_text(test_output)
+        # Persist the full raw test log off the ephemeral Pod onto the PVC --
+        # this becomes the "eval_logs" field of the normalized dataset record
+        # (matching nebius/SWE-agent-trajectories' schema, which has an
+        # eval_logs column with exactly this content).
+        Path(eval_log_out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(eval_log_out_path).write_text(test_output)
+        result["test_runtime_seconds"] = round(runtime, 1)
+        result["timed_out"] = timed_out
+        result["eval_log_path"] = eval_log_out_path
+
+        prediction = {
+            KEY_INSTANCE_ID: instance_id,
+            KEY_MODEL: "dspark-swebench-pilot",
+            KEY_PREDICTION: patch_text,
+        }
+        report = get_eval_report(
+            test_spec=test_spec, prediction=prediction,
+            test_log_path=test_output_path, include_tests_status=True,
+        )
+        inst_report = report.get(instance_id, {})
+        result["status"] = "graded"
+        result["resolved"] = bool(inst_report.get("resolved", False))
+        result["patch_successfully_applied"] = inst_report.get("patch_successfully_applied", False)
+        result["tests_status"] = inst_report.get("tests_status", {})
+    except Exception as e:
+        result["status"] = f"exception:{type(e).__name__}"
+        result["error_detail"] = str(e)
+
+    json.dump(result, open(score_path, "w"), indent=2)
+    print(f"Score result: status={result['status']} resolved={result['resolved']}")
+    PYEOF
+
+    echo "=== [$(date -u +%FT%TZ)] scoring end: $INSTANCE_ID ==="
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-swebench-score-controller-script
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+data:
+  score_controller.py: |
+    #!/usr/bin/env python3
+    """DSpark SWE-bench scoring controller (issue #51).
+
+    Separate phase from generation, run afterward: for every pilot instance that
+    produced a non-empty patch during generation, spins up a FRESH Pod of that
+    instance's official SWE-bench image (pristine repo state, not the Pod the
+    agent worked in), applies the patch, runs the real FAIL_TO_PASS/PASS_TO_PASS
+    test commands, and grades the result via swebench.harness.grading -- see
+    score-instance.sh for the actual apply+test+grade logic.
+
+    Kept deliberately separate from generation (rather than a second phase in
+    the same controller) for two reasons: (1) re-running generation should never
+    imply re-running tests, and vice versa -- they have very different failure
+    modes and re-run costs; (2) scoring doesn't touch vLLM/the GPU at all, so it
+    can be resource-shaped completely differently (no per-instance GPU
+    contention concern) and re-run independently if grading logic needs a fix
+    without regenerating any trajectories.
+
+    Instances with no captured patch are graded as "no_patch" / resolved=False
+    directly by the controller, without spinning a Pod for them at all (nothing
+    to apply or test).
+    """
+
+    import hashlib
+    import json
+    import os
+    import time
+    from pathlib import Path
+
+    from kubernetes import client, config as kconfig
+    from kubernetes.client.rest import ApiException
+
+    NAMESPACE = os.environ.get("SWEBENCH_NAMESPACE", "dspark-swebench")
+    OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/output/swebench-pilot"))
+    INSTANCES_FILE = Path(os.environ.get("INSTANCES_FILE", "/config/instances-pilot.json"))
+    RUN_SCRIPT_CONFIGMAP = os.environ.get("RUN_SCRIPT_CONFIGMAP", "dspark-swebench-score-instance-script")
+    RUNNER_SA = os.environ.get("RUNNER_SERVICE_ACCOUNT", "dspark-swebench-runner")
+    OUTPUT_PVC = os.environ.get("OUTPUT_PVC", "dspark-output-hdd-v2")
+    NODE_NAME = os.environ.get("PIN_NODE", "")
+
+    MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "4"))
+    PER_INSTANCE_TIMEOUT_SECONDS = int(os.environ.get("PER_INSTANCE_TIMEOUT_SECONDS", "2400"))
+    POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
+
+    LABEL_SELECTOR = "app.kubernetes.io/name=dspark-swebench,dspark.io/phase=scoring,dspark.io/batch=pilot"
+
+
+    def ts() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+    def log(msg: str) -> None:
+        print(f"[{ts()}] {msg}", flush=True)
+
+
+    def get_swebench_docker_image_name(instance_id: str) -> str:
+        id_docker_compatible = instance_id.replace("__", "_1776_")
+        return f"docker.io/swebench/sweb.eval.x86_64.{id_docker_compatible}:latest".lower()
+
+
+    def pod_name_for(instance_id: str) -> str:
+        h = hashlib.sha256(instance_id.encode()).hexdigest()[:16]
+        return f"dspark-sweb-score-{h}"
+
+
+    def patch_path_for(instance_id: str) -> Path:
+        return OUTPUT_ROOT / "patches" / f"{instance_id}.patch"
+
+
+    def score_path_for(instance_id: str) -> Path:
+        return OUTPUT_ROOT / "scores" / f"{instance_id}.json"
+
+
+    def write_score(instance_id: str, status: str, resolved: bool = False, **extra) -> None:
+        p = score_path_for(instance_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists():
+            return
+        data = {"instance_id": instance_id, "phase": "scoring", "status": status, "resolved": resolved, **extra}
+        p.write_text(json.dumps(data, indent=2))
+
+
+    def build_pod(instance_id: str) -> client.V1Pod:
+        image = get_swebench_docker_image_name(instance_id)
+        container = client.V1Container(
+            name="score",
+            image=image,
+            image_pull_policy="IfNotPresent",
+            command=["/bin/bash", "/scripts/score-instance.sh"],
+            env=[client.V1EnvVar(name="SWEBENCH_INSTANCE_ID", value=instance_id)],
+            resources=client.V1ResourceRequirements(
+                requests={"cpu": "1", "memory": "4Gi"},
+                limits={"cpu": "2", "memory": "10Gi"},
+            ),
+            volume_mounts=[
+                client.V1VolumeMount(name="output", mount_path="/output"),
+                client.V1VolumeMount(name="scripts", mount_path="/scripts"),
+            ],
+        )
+        spec = client.V1PodSpec(
+            restart_policy="Never",
+            service_account_name=RUNNER_SA,
+            automount_service_account_token=False,
+            enable_service_links=False,
+            containers=[container],
+            volumes=[
+                client.V1Volume(
+                    name="output",
+                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=OUTPUT_PVC),
+                ),
+                client.V1Volume(
+                    name="scripts",
+                    config_map=client.V1ConfigMapVolumeSource(name=RUN_SCRIPT_CONFIGMAP, default_mode=0o755),
+                ),
+            ],
+        )
+        if NODE_NAME:
+            spec.node_selector = {"kubernetes.io/hostname": NODE_NAME}
+        return client.V1Pod(
+            metadata=client.V1ObjectMeta(
+                name=pod_name_for(instance_id),
+                namespace=NAMESPACE,
+                labels={
+                    "app.kubernetes.io/name": "dspark-swebench",
+                    "dspark.io/phase": "scoring",
+                    "dspark.io/batch": "pilot",
+                },
+                annotations={"dspark.io/instance-id": instance_id},
+            ),
+            spec=spec,
+        )
+
+
+    def capture_log_tail(v1: client.CoreV1Api, pod_name: str, instance_id: str) -> None:
+        try:
+            tail = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE, tail_lines=200)
+        except ApiException as e:
+            tail = f"<could not fetch pod log: {e}>"
+        log_dir = OUTPUT_ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{instance_id}.score-controller-capture.log").write_text(tail or "")
+
+
+    def delete_pod(v1: client.CoreV1Api, pod_name: str) -> None:
+        try:
+            v1.delete_namespaced_pod(
+                name=pod_name,
+                namespace=NAMESPACE,
+                body=client.V1DeleteOptions(grace_period_seconds=5, propagation_policy="Background"),
+            )
+        except ApiException as e:
+            if e.status != 404:
+                log(f"WARNING: failed to delete pod {pod_name}: {e}")
+
+
+    def reconcile_orphans(v1: client.CoreV1Api) -> None:
+        try:
+            pods = v1.list_namespaced_pod(namespace=NAMESPACE, label_selector=LABEL_SELECTOR)
+        except ApiException as e:
+            log(f"WARNING: could not list pods for reconcile: {e}")
+            return
+        if not pods.items:
+            log("Reconcile: no orphaned scoring pods found.")
+            return
+        log(f"Reconcile: found {len(pods.items)} orphaned scoring pod(s), deleting...")
+        for pod in pods.items:
+            inst = pod.metadata.annotations.get("dspark.io/instance-id", "?") if pod.metadata.annotations else "?"
+            log(f"  deleting orphan pod {pod.metadata.name} (instance {inst}, phase {pod.status.phase})")
+            delete_pod(v1, pod.metadata.name)
+        for _ in range(12):
+            time.sleep(5)
+            remaining = v1.list_namespaced_pod(namespace=NAMESPACE, label_selector=LABEL_SELECTOR)
+            if not remaining.items:
+                log("Reconcile: all orphaned scoring pods gone.")
+                return
+        log("Reconcile: some orphaned scoring pods still terminating after 60s, proceeding anyway.")
+
+
+    def main() -> None:
+        kconfig.load_incluster_config()
+        v1 = client.CoreV1Api()
+
+        (OUTPUT_ROOT / "scores").mkdir(parents=True, exist_ok=True)
+
+        all_instances = json.loads(INSTANCES_FILE.read_text())["instance_ids"]
+        log(f"Loaded {len(all_instances)} instances from {INSTANCES_FILE}")
+
+        reconcile_orphans(v1)
+
+        to_score = []
+        for inst in all_instances:
+            if score_path_for(inst).exists():
+                continue
+            pf = patch_path_for(inst)
+            if not pf.exists() or pf.stat().st_size == 0:
+                write_score(inst, "no_patch", resolved=False)
+                continue
+            to_score.append(inst)
+
+        already_scored = sum(1 for i in all_instances if score_path_for(i).exists()) - len(
+            [i for i in all_instances if score_path_for(i).exists() and json.loads(score_path_for(i).read_text()).get("status") == "no_patch"]
+        )
+        log(f"{len(to_score)} instance(s) with a patch need scoring Pods; rest handled directly (no_patch) or already scored")
+
+        pending = list(to_score)
+        in_flight: dict[str, dict] = {}
+
+        def launch_next() -> None:
+            while len(in_flight) < MAX_CONCURRENCY and pending:
+                inst = pending.pop(0)
+                pod = build_pod(inst)
+                try:
+                    v1.create_namespaced_pod(namespace=NAMESPACE, body=pod)
+                    in_flight[inst] = {"pod_name": pod.metadata.name, "started": time.time()}
+                    log(
+                        f"launched {inst} as pod {pod.metadata.name} "
+                        f"({len(in_flight)}/{MAX_CONCURRENCY} in flight, {len(pending)} still pending)"
+                    )
+                except ApiException as e:
+                    log(f"ERROR creating scoring pod for {inst}: {e}")
+                    write_score(inst, "pod_create_error", resolved=False, api_status=e.status)
+
+        launch_next()
+        while in_flight:
+            time.sleep(POLL_INTERVAL_SECONDS)
+            for inst in list(in_flight.keys()):
+                meta = in_flight[inst]
+                pod_name = meta["pod_name"]
+                elapsed = time.time() - meta["started"]
+                try:
+                    pod = v1.read_namespaced_pod(name=pod_name, namespace=NAMESPACE)
+                except ApiException as e:
+                    if e.status == 404:
+                        log(f"{inst}: scoring pod {pod_name} disappeared unexpectedly")
+                        write_score(inst, "pod_disappeared", resolved=False)
+                        del in_flight[inst]
+                        launch_next()
+                    continue
+
+                phase = pod.status.phase
+                timed_out = elapsed > PER_INSTANCE_TIMEOUT_SECONDS
+                if phase in ("Succeeded", "Failed") or timed_out:
+                    if timed_out and phase not in ("Succeeded", "Failed"):
+                        log(f"{inst}: scoring exceeded {PER_INSTANCE_TIMEOUT_SECONDS}s (phase={phase}), killing")
+                        capture_log_tail(v1, pod_name, inst)
+                        write_score(inst, "timeout", resolved=False, elapsed_seconds=int(elapsed))
+                    elif phase == "Failed":
+                        log(f"{inst}: scoring pod Failed after {elapsed:.0f}s")
+                        capture_log_tail(v1, pod_name, inst)
+                        write_score(inst, "pod_failed_no_result", resolved=False, elapsed_seconds=int(elapsed))
+                    else:
+                        log(f"{inst}: scoring pod Succeeded after {elapsed:.0f}s")
+                        if not score_path_for(inst).exists():
+                            capture_log_tail(v1, pod_name, inst)
+                            write_score(inst, "succeeded_no_result", resolved=False, elapsed_seconds=int(elapsed))
+                    delete_pod(v1, pod_name)
+                    del in_flight[inst]
+                    launch_next()
+
+        write_summary(all_instances)
+        log("Scoring controller done.")
+
+
+    def write_summary(all_instances: list[str]) -> None:
+        by_status: dict[str, int] = {}
+        resolved_count = 0
+        missing = []
+        for inst in all_instances:
+            p = score_path_for(inst)
+            if not p.exists():
+                missing.append(inst)
+                continue
+            try:
+                data = json.loads(p.read_text())
+                status = data.get("status", "unknown")
+                if data.get("resolved"):
+                    resolved_count += 1
+            except Exception:
+                status = "unreadable_result"
+            by_status[status] = by_status.get(status, 0) + 1
+
+        summary = {
+            "generated_at": ts(),
+            "total_instances": len(all_instances),
+            "by_status": by_status,
+            "resolved_count": resolved_count,
+            "missing_result": missing,
+        }
+        (OUTPUT_ROOT / "scoring_summary.json").write_text(json.dumps(summary, indent=2))
+        log(f"Summary: {json.dumps(by_status)}, resolved={resolved_count}, missing={len(missing)}")
+
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-swebench-score-pilot-20260715
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+    app.kubernetes.io/component: scoring-controller
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 172800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dspark-swebench
+        app.kubernetes.io/component: scoring-controller
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: dspark-swebench-controller
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      containers:
+        - name: controller
+          image: python:3.12-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              pip install --quiet --no-input --root-user-action ignore "kubernetes>=30,<32"
+              exec python3 /scripts/score_controller.py
+          env:
+            - name: SWEBENCH_NAMESPACE
+              value: dspark-swebench
+            - name: OUTPUT_ROOT
+              value: /output/swebench-pilot
+            - name: INSTANCES_FILE
+              value: /config/instances-pilot.json
+            - name: RUN_SCRIPT_CONFIGMAP
+              value: dspark-swebench-score-instance-script
+            - name: RUNNER_SERVICE_ACCOUNT
+              value: dspark-swebench-runner
+            - name: OUTPUT_PVC
+              value: dspark-output-hdd-v2
+            - name: PIN_NODE
+              value: talos-210-73x
+            - name: MAX_CONCURRENCY
+              value: "4"
+            - name: PER_INSTANCE_TIMEOUT_SECONDS
+              value: "2400"
+            - name: POLL_INTERVAL_SECONDS
+              value: "10"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: output
+              mountPath: /output
+            - name: instances-config
+              mountPath: /config
+            - name: controller-script
+              mountPath: /scripts
+      volumes:
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: instances-config
+          configMap:
+            name: dspark-swebench-instances-pilot-config
+        - name: controller-script
+          configMap:
+            name: dspark-swebench-score-controller-script
+            defaultMode: 0755

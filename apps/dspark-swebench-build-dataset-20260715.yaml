@@ -1,0 +1,260 @@
+# DSpark SWE-bench dataset builder (issue #51), pilot batch
+#
+# Third, deliberately separate phase, run after generation
+# (dspark-swebench-controller-20260715.yaml) and scoring
+# (dspark-swebench-score-20260715.yaml) have both produced their per-instance
+# artifacts on the PVC. Joins them into a schema that matches comparable
+# public trajectory datasets rather than mini-swe-agent's own raw nested
+# .traj.json shape -- checked directly against the actual HF dataset
+# viewers/READMEs for nvidia/Open-SWE-Traces, SWE-bench/SWE-smith-trajectories,
+# and nebius/SWE-agent-trajectories (all three: single flat table, one row
+# per trajectory, top-level instance_id/model_name/resolved/trajectory/patch
+# columns -- not a nested blob with the pass/fail signal buried inside).
+# See build_dataset.py's own docstring for the exact schema and reasoning.
+#
+# This is a lightweight single Pod (no per-instance fan-out needed -- it
+# only reads files already on the PVC plus one HF dataset load for repo
+# metadata), so it's a plain Job, not a Kubernetes-API controller.
+#
+# Output: /output/swebench-pilot/normalized/<instance_id>.json (one flat
+# record each, for spot inspection) and
+# /output/swebench-pilot/dataset/dspark-swebench-pilot.jsonl (all records,
+# one JSON object per line -- the artifact a future HF publish step would
+# load directly via `datasets.Dataset.from_json(...)`). The raw
+# mini-swe-agent trajectories/ files are untouched -- this only reads them.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-swebench-build-dataset-script
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+data:
+  build_dataset.py: |
+    #!/usr/bin/env python3
+    """DSpark SWE-bench dataset builder / normalizer (issue #51).
+
+    Third, deliberately separate phase, run after both generation and scoring
+    have produced their per-instance artifacts on the PVC. Joins:
+
+      - generation:  results/<id>.json (status, exit_status, n_messages, ...)
+                     + trajectories/<id>.traj.json (mini-swe-agent's own raw
+                       trajectory -- kept as-is, full fidelity, for provenance)
+                     + patches/<id>.patch
+      - scoring:     scores/<id>.json (resolved, FAIL_TO_PASS/PASS_TO_PASS, ...)
+                     + eval_logs/<id>.txt (real test-run output)
+      - SWE-bench instance metadata (repo, for the handful of fields that aren't
+        already captured by generation/scoring): one HF dataset load, not one
+        per instance.
+
+    ...into ONE FLAT record per instance, matching the schema convention of
+    comparable public trajectory datasets rather than mini-swe-agent's own
+    nested `.traj.json` shape. Checked directly against the actual HF dataset
+    viewers/READMEs for:
+
+      - nvidia/Open-SWE-Traces           (instance_id, repo, trajectory, resolved, metadata.model_patch)
+      - SWE-bench/SWE-smith-trajectories (instance_id, messages, resolved, model, patch)
+      - nebius/SWE-agent-trajectories    (instance_id, model_name, trajectory, target/exit_status, generated_patch, eval_logs)
+
+    All three publish a single flat table (parquet), one row per trajectory,
+    with top-level instance_id / model name / resolved / trajectory(messages)
+    / patch / (sometimes) exit_status+eval_logs columns -- NOT a nested blob
+    with the pass/fail signal buried inside. This builder produces exactly that
+    shape:
+
+      normalized/<instance_id>.json   -- one flat record (for spot inspection)
+      dataset/dspark-swebench-pilot.jsonl -- ALL records, one JSON object per
+                                              line -- the artifact a future HF
+                                              publish step would load directly
+                                              via `datasets.Dataset.from_json(...)`
+
+    The raw mini-swe-agent `.traj.json` files are NOT deleted or replaced --
+    they stay under trajectories/ as the full-fidelity source of truth (includes
+    full model/agent/environment config dumps that don't belong in the flat
+    table but are useful for debugging a specific run).
+    """
+
+    import json
+    import os
+    from pathlib import Path
+
+    from datasets import load_dataset
+
+    OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/output/swebench-pilot"))
+    INSTANCES_FILE = Path(os.environ.get("INSTANCES_FILE", "/config/instances-pilot.json"))
+    MODEL_DESCRIPTION = os.environ.get(
+        "MODEL_DESCRIPTION",
+        "hosted_vllm/main (unsloth/Qwen3.6-27B-NVFP4, self-hosted vLLM, DSpark/DFlash speculative decoding)",
+    )
+    FULL_DATASET = "princeton-nlp/SWE-bench"
+    SPLIT = "test"
+
+
+    def read_json(path: Path, default=None):
+        if not path.exists():
+            return default
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return default
+
+
+    def build_repo_lookup() -> dict[str, dict]:
+        print(f"Loading {FULL_DATASET} [{SPLIT}] once to look up repo/version per instance...")
+        ds = load_dataset(FULL_DATASET, split=SPLIT)
+        lookup = {row["instance_id"]: {"repo": row["repo"], "version": row.get("version")} for row in ds}
+        print(f"  {len(lookup)} instances indexed")
+        return lookup
+
+
+    def main() -> None:
+        instance_ids = json.loads(INSTANCES_FILE.read_text())["instance_ids"]
+        print(f"Building normalized dataset for {len(instance_ids)} pilot instances...")
+
+        repo_lookup = build_repo_lookup()
+
+        normalized_dir = OUTPUT_ROOT / "normalized"
+        dataset_dir = OUTPUT_ROOT / "dataset"
+        normalized_dir.mkdir(parents=True, exist_ok=True)
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+
+        records = []
+        counts = {"resolved": 0, "with_patch": 0, "generated": 0, "scored": 0}
+
+        for instance_id in instance_ids:
+            gen_result = read_json(OUTPUT_ROOT / "results" / f"{instance_id}.json", {}) or {}
+            traj = read_json(OUTPUT_ROOT / "trajectories" / f"{instance_id}.traj.json", {}) or {}
+            patch_path = OUTPUT_ROOT / "patches" / f"{instance_id}.patch"
+            patch_text = patch_path.read_text() if patch_path.exists() else ""
+
+            score_result = read_json(OUTPUT_ROOT / "scores" / f"{instance_id}.json", {}) or {}
+            eval_log_path = OUTPUT_ROOT / "eval_logs" / f"{instance_id}.txt"
+            eval_log_text = eval_log_path.read_text() if eval_log_path.exists() else ""
+
+            messages = traj.get("messages", [])
+            info = traj.get("info", {})
+            meta = repo_lookup.get(instance_id, {})
+
+            if gen_result:
+                counts["generated"] += 1
+            if score_result:
+                counts["scored"] += 1
+            if patch_text.strip():
+                counts["with_patch"] += 1
+            if score_result.get("resolved"):
+                counts["resolved"] += 1
+
+            record = {
+                # --- identity / provenance ---
+                "instance_id": instance_id,
+                "trajectory_id": f"{instance_id}--dspark-swebench-pilot-v1",
+                "repo": meta.get("repo"),
+                "version": meta.get("version"),
+                "language": "python",  # SWE-bench full pool is Python-only
+                "source_pool": "princeton-nlp/SWE-bench[test] minus SWE-bench_Lite minus SWE-bench_Verified",
+                "dataset_split": "train_candidate_pilot",
+                "model_name": MODEL_DESCRIPTION,
+                # --- trajectory (nested list of role/content messages, same
+                #     role vocabulary -- system/user/assistant/tool -- as
+                #     nvidia/Open-SWE-Traces) ---
+                "trajectory": messages,
+                "n_messages": len(messages),
+                "n_agent_steps": gen_result.get("n_agent_steps", info.get("model_stats", {}).get("api_calls")),
+                # --- outcome ---
+                "exit_status": info.get("exit_status"),
+                "patch": patch_text,
+                "resolved": bool(score_result.get("resolved", False)),
+                "fail_to_pass": score_result.get("fail_to_pass", []),
+                "pass_to_pass": score_result.get("pass_to_pass", []),
+                "eval_logs": eval_log_text,
+                # --- pipeline bookkeeping (not part of the "core" schema, but
+                #     useful for filtering a training batch, e.g. excluding
+                #     toolchain failures that have nothing to do with model quality) ---
+                "generation_status": gen_result.get("status"),
+                "scoring_status": score_result.get("status"),
+            }
+            records.append(record)
+            (normalized_dir / f"{instance_id}.json").write_text(json.dumps(record, indent=2))
+
+        jsonl_path = dataset_dir / "dspark-swebench-pilot.jsonl"
+        with open(jsonl_path, "w") as f:
+            for record in records:
+                f.write(json.dumps(record) + "\n")
+
+        summary = {
+            "total_instances": len(instance_ids),
+            **counts,
+            "jsonl_path": str(jsonl_path),
+        }
+        (OUTPUT_ROOT / "dataset_build_summary.json").write_text(json.dumps(summary, indent=2))
+        print(f"Wrote {len(records)} normalized records to {normalized_dir}")
+        print(f"Wrote flat dataset table to {jsonl_path}")
+        print(f"Summary: {json.dumps(summary)}")
+
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-swebench-build-dataset-pilot-20260715
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-swebench
+    app.kubernetes.io/component: dataset-builder
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dspark-swebench
+        app.kubernetes.io/component: dataset-builder
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      containers:
+        - name: build-dataset
+          image: python:3.12-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              pip install --quiet --no-input --root-user-action ignore datasets
+              exec python3 /scripts/build_dataset.py
+          env:
+            - name: OUTPUT_ROOT
+              value: /output/swebench-pilot
+            - name: INSTANCES_FILE
+              value: /config/instances-pilot.json
+            - name: MODEL_DESCRIPTION
+              value: "hosted_vllm/main (unsloth/Qwen3.6-27B-NVFP4, self-hosted vLLM, DSpark/DFlash speculative decoding)"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: output
+              mountPath: /output
+            - name: instances-config
+              mountPath: /config
+            - name: build-script
+              mountPath: /scripts
+      volumes:
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: instances-config
+          configMap:
+            name: dspark-swebench-instances-pilot-config
+        - name: build-script
+          configMap:
+            name: dspark-swebench-build-dataset-script
+            defaultMode: 0755
