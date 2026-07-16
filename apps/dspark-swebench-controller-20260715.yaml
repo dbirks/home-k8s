@@ -137,7 +137,16 @@ data:
     echo "Using: $($UV_BIN --version 2>&1 || echo 'uv (version unknown)')"
 
     set +e
-    $UV_BIN run --python 3.12 --with "mini-swe-agent==2.4.5" -- \
+    # fastapi + orjson: NOT declared dependencies of mini-swe-agent/litellm, but
+    # litellm.completion()'s tool-calling code path lazily imports both when
+    # validating/encoding the `tools=[...]` schema -- confirmed by reproducing
+    # `ModuleNotFoundError: No module named 'fastapi'` (then 'orjson') locally
+    # with a bare `litellm.completion(..., tools=[...])` call, no vLLM involved.
+    # Without these, every single run hits an infinite retry loop (litellm_model.py's
+    # retry() doesn't treat ModuleNotFoundError as fatal) until the controller's
+    # per-instance wall-clock timeout kills the Pod -- silently producing zero
+    # real trajectories. Pinning both alongside mini-swe-agent avoids that.
+    $UV_BIN run --python 3.12 --with "mini-swe-agent==2.4.5" --with fastapi --with orjson -- \
         python3 -m minisweagent.run.utilities.mini_extra swebench-single \
             --subset full --split test \
             -i "$INSTANCE_ID" \
