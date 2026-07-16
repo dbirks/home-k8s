@@ -604,7 +604,7 @@ spec:
             - name: PIN_NODE
               value: talos-210-73x
             - name: MAX_CONCURRENCY
-              value: "2"
+              value: "4"
             - name: PER_INSTANCE_TIMEOUT_SECONDS
               value: "2400"
             - name: POLL_INTERVAL_SECONDS
