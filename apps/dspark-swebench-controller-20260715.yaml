@@ -18,6 +18,16 @@
 # dspark-output-hdd-v2 PVC under /output/swebench-pilot/ -- additive only,
 # does not touch any dspark-train-*/dspark-benchmark-*/checkpoint data.
 #
+# The PVC lives in `default`; runner Pods live in `dspark-swebench` -- PVCs
+# are namespace-scoped, so a runner Pod cannot mount it directly. Runner Pods
+# instead write locally and print base64-wrapped artifacts on stdout; this
+# controller (which DOES mount the PVC) reads each finished Pod's full log
+# and decodes them (see controller.py / run-instance.sh for the exact
+# marker format). Known tradeoff: this also means the HF dataset cache and
+# uv's package/Python cache can't be shared across ephemeral Pods (no shared
+# writable volume), so each Pod re-downloads them -- acceptable overhead at
+# 75-instance pilot scale.
+#
 # Scoring (apply patch, run real tests, compare against FAIL_TO_PASS/
 # PASS_TO_PASS via swebench.harness.grading) is a deliberately separate later
 # phase -- see apps/dspark-swebench-score-20260715.yaml -- so a generation
@@ -41,29 +51,58 @@ data:
     # `mini-extra swebench-single` with --environment-class local so the agent
     # executes bash commands directly in THIS container (no nested Docker, no
     # DockerEnvironment) against the repo already checked out at /testbed.
-    set -uo pipefail  # deliberately not -e: we want to always write a result.json
+    #
+    # NOTE on how output leaves this Pod: this Pod runs in the `dspark-swebench`
+    # namespace, which is intentionally a DIFFERENT namespace than the
+    # dspark-output-hdd-v2 PVC (which lives in `default`) -- PersistentVolumeClaims
+    # are namespace-scoped, so this Pod cannot mount that PVC directly. Instead,
+    # everything is written locally under /tmp, then base64-encoded and printed
+    # to stdout between machine-readable markers; the controller (which DOES run
+    # in `default` with the PVC mounted) reads this Pod's log via the
+    # `pods/log:get` RBAC it already has, decodes the markers, and persists the
+    # real files onto the PVC before deleting this Pod. A side effect: the HF
+    # dataset cache / uv package cache / uv managed-Python download can't be
+    # shared across ephemeral Pods (no shared writable volume) -- each Pod
+    # re-downloads these the same way DockerEnvironment-based batch runs would
+    # on separate machines. Acceptable for a 75-instance pilot; a real concern
+    # only if this scales to thousands of instances (see project report).
+    set -uo pipefail  # deliberately not -e: we want to always emit a result
 
     INSTANCE_ID="${SWEBENCH_INSTANCE_ID:?missing SWEBENCH_INSTANCE_ID}"
-    OUT_DIR=/output/swebench-pilot
+    OUT_DIR=/tmp/dspark-out
     TRAJ_DIR="$OUT_DIR/trajectories"
     PATCH_DIR="$OUT_DIR/patches"
-    LOG_DIR="$OUT_DIR/logs"
     RESULT_DIR="$OUT_DIR/results"
-    mkdir -p "$TRAJ_DIR" "$PATCH_DIR" "$LOG_DIR" "$RESULT_DIR"
+    mkdir -p "$TRAJ_DIR" "$PATCH_DIR" "$RESULT_DIR"
 
-    LOG_FILE="$LOG_DIR/${INSTANCE_ID}.log"
-    exec > >(tee -a "$LOG_FILE") 2>&1
     echo "=== [$(date -u +%FT%TZ)] generation start: $INSTANCE_ID ==="
 
-    # Shared caches on the PVC -- reused across every ephemeral per-instance Pod
-    # in this batch: the HF dataset arrow cache (so only the first Pod pays for
-    # downloading the 2,294-row SWE-bench test split), uv's own package cache,
-    # and uv's managed-Python install dir (so only the first Pod downloads a
-    # CPython 3.12 build; every later Pod reuses it).
     export HF_HOME="${HF_HOME:-$OUT_DIR/hf-cache}"
     export UV_CACHE_DIR="${UV_CACHE_DIR:-$OUT_DIR/uv-cache}"
     export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$OUT_DIR/uv-python}"
     mkdir -p "$HF_HOME" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
+
+    emit_artifacts() {
+      # Print base64-wrapped file contents between markers the controller parses
+      # out of this Pod's log. Always emits the result; trajectory/patch only if
+      # they exist.
+      echo "##DSPARK-RESULT-B64-BEGIN##"
+      base64 -w0 "$RESULT_DIR/${INSTANCE_ID}.json" 2>/dev/null || base64 "$RESULT_DIR/${INSTANCE_ID}.json" | tr -d '\n'
+      echo
+      echo "##DSPARK-RESULT-B64-END##"
+      if [ -s "$TRAJ_DIR/${INSTANCE_ID}.traj.json" ]; then
+        echo "##DSPARK-TRAJ-B64-BEGIN##"
+        base64 -w0 "$TRAJ_DIR/${INSTANCE_ID}.traj.json" 2>/dev/null || base64 "$TRAJ_DIR/${INSTANCE_ID}.traj.json" | tr -d '\n'
+        echo
+        echo "##DSPARK-TRAJ-B64-END##"
+      fi
+      if [ -s "$PATCH_DIR/${INSTANCE_ID}.patch" ]; then
+        echo "##DSPARK-PATCH-B64-BEGIN##"
+        base64 -w0 "$PATCH_DIR/${INSTANCE_ID}.patch" 2>/dev/null || base64 "$PATCH_DIR/${INSTANCE_ID}.patch" | tr -d '\n'
+        echo
+        echo "##DSPARK-PATCH-B64-END##"
+      fi
+    }
 
     write_result() {
       # $1=status (short machine-readable code)
@@ -91,6 +130,7 @@ data:
         echo "ERROR: could not obtain a working uv in this image (image may lack python3/pip and network egress to astral.sh failed too)"
         cat /tmp/pip_uv.log 2>/dev/null || true
         write_result "toolchain_unavailable"
+        emit_artifacts
         echo "=== [$(date -u +%FT%TZ)] generation end (toolchain_unavailable): $INSTANCE_ID ==="
         exit 0
     fi
@@ -165,6 +205,7 @@ data:
     print(f"Result: status={status} exit_status={exit_status} n_steps={n_steps} patch_written={patch_written}")
     PYEOF
 
+    emit_artifacts
     echo "=== [$(date -u +%FT%TZ)] generation end: $INSTANCE_ID ==="
 ---
 apiVersion: v1
@@ -187,6 +228,15 @@ data:
     Pod, mini-swe-agent runs via LocalEnvironment (see run-instance.sh) -- no
     nested Docker.
 
+    Output handoff: runner Pods live in `dspark-swebench`, but the
+    dspark-output-hdd-v2 PVC lives in `default` -- PersistentVolumeClaims are
+    namespace-scoped, so a Pod in `dspark-swebench` cannot mount it. Runner Pods
+    instead write their trajectory/patch/result locally and print them,
+    base64-encoded, between markers on stdout; this controller (which DOES run
+    in `default` with the PVC mounted) reads each finished Pod's full log via the
+    `pods/log:get` RBAC it already has, decodes the markers, and persists the
+    real files onto the PVC before deleting the Pod.
+
     Idempotent / resumable: before creating a Pod for an instance, checks whether
     a results/<instance_id>.json already exists on the shared PVC and skips it if
     so. On startup, does a reconcile pass that deletes any leftover Pods from a
@@ -197,7 +247,9 @@ data:
     import hashlib
     import json
     import os
+    import re
     import time
+    from base64 import b64decode
     from pathlib import Path
 
     from kubernetes import client, config as kconfig
@@ -208,7 +260,6 @@ data:
     INSTANCES_FILE = Path(os.environ.get("INSTANCES_FILE", "/config/instances-pilot.json"))
     RUN_SCRIPT_CONFIGMAP = os.environ.get("RUN_SCRIPT_CONFIGMAP", "dspark-swebench-run-instance-script")
     RUNNER_SA = os.environ.get("RUNNER_SERVICE_ACCOUNT", "dspark-swebench-runner")
-    OUTPUT_PVC = os.environ.get("OUTPUT_PVC", "dspark-output-hdd-v2")
     NODE_NAME = os.environ.get("PIN_NODE", "")
 
     MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "4"))
@@ -221,6 +272,10 @@ data:
     WALL_TIME_LIMIT = os.environ.get("WALL_TIME_LIMIT", "1500")
 
     LABEL_SELECTOR = "app.kubernetes.io/name=dspark-swebench,dspark.io/phase=generation,dspark.io/batch=pilot"
+
+    RESULT_RE = re.compile(r"##DSPARK-RESULT-B64-BEGIN##\n(.*?)\n##DSPARK-RESULT-B64-END##", re.S)
+    TRAJ_RE = re.compile(r"##DSPARK-TRAJ-B64-BEGIN##\n(.*?)\n##DSPARK-TRAJ-B64-END##", re.S)
+    PATCH_RE = re.compile(r"##DSPARK-PATCH-B64-BEGIN##\n(.*?)\n##DSPARK-PATCH-B64-END##", re.S)
 
 
     def ts() -> str:
@@ -250,7 +305,7 @@ data:
         p = result_path_for(instance_id)
         p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists():
-            return  # don't clobber a real result the Pod already wrote
+            return  # don't clobber a real result already harvested from the Pod's log
         data = {"instance_id": instance_id, "phase": "generation", "status": status, **extra}
         p.write_text(json.dumps(data, indent=2))
 
@@ -274,7 +329,6 @@ data:
                 limits={"cpu": "2", "memory": "10Gi"},
             ),
             volume_mounts=[
-                client.V1VolumeMount(name="output", mount_path="/output"),
                 client.V1VolumeMount(name="scripts", mount_path="/scripts"),
             ],
         )
@@ -285,10 +339,6 @@ data:
             enable_service_links=False,
             containers=[container],
             volumes=[
-                client.V1Volume(
-                    name="output",
-                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=OUTPUT_PVC),
-                ),
                 client.V1Volume(
                     name="scripts",
                     config_map=client.V1ConfigMapVolumeSource(name=RUN_SCRIPT_CONFIGMAP, default_mode=0o755),
@@ -312,14 +362,53 @@ data:
         )
 
 
-    def capture_log_tail(v1: client.CoreV1Api, pod_name: str, instance_id: str) -> None:
+    def harvest_pod_output(v1: client.CoreV1Api, pod_name: str, instance_id: str) -> bool:
+        """Fetch the Pod's full log, persist it, and decode any result/trajectory/
+        patch artifacts embedded in it onto the PVC. Returns True if a result.json
+        was found and written."""
         try:
-            tail = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE, tail_lines=200)
+            full_log = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE) or ""
         except ApiException as e:
-            tail = f"<could not fetch pod log: {e}>"
+            log(f"{instance_id}: could not fetch pod log: {e}")
+            return False
+
         log_dir = OUTPUT_ROOT / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / f"{instance_id}.controller-capture.log").write_text(tail or "")
+        (log_dir / f"{instance_id}.log").write_text(full_log)
+
+        found_result = False
+
+        m = RESULT_RE.search(full_log)
+        if m:
+            try:
+                raw = b64decode(m.group(1))
+                result_path_for(instance_id).parent.mkdir(parents=True, exist_ok=True)
+                result_path_for(instance_id).write_bytes(raw)
+                found_result = True
+            except Exception as e:
+                log(f"{instance_id}: failed to decode RESULT block: {e}")
+
+        m = TRAJ_RE.search(full_log)
+        if m:
+            try:
+                raw = b64decode(m.group(1))
+                traj_path = OUTPUT_ROOT / "trajectories" / f"{instance_id}.traj.json"
+                traj_path.parent.mkdir(parents=True, exist_ok=True)
+                traj_path.write_bytes(raw)
+            except Exception as e:
+                log(f"{instance_id}: failed to decode TRAJ block: {e}")
+
+        m = PATCH_RE.search(full_log)
+        if m:
+            try:
+                raw = b64decode(m.group(1))
+                patch_path = OUTPUT_ROOT / "patches" / f"{instance_id}.patch"
+                patch_path.parent.mkdir(parents=True, exist_ok=True)
+                patch_path.write_bytes(raw)
+            except Exception as e:
+                log(f"{instance_id}: failed to decode PATCH block: {e}")
+
+        return found_result
 
 
     def delete_pod(v1: client.CoreV1Api, pod_name: str) -> None:
@@ -414,19 +503,17 @@ data:
                 if phase in ("Succeeded", "Failed") or timed_out:
                     if timed_out and phase not in ("Succeeded", "Failed"):
                         log(f"{inst}: exceeded {PER_INSTANCE_TIMEOUT_SECONDS}s wall clock (phase={phase}), killing")
-                        capture_log_tail(v1, pod_name, inst)
+                        harvest_pod_output(v1, pod_name, inst)
                         write_result(inst, "timeout", elapsed_seconds=int(elapsed))
                     elif phase == "Failed":
                         log(f"{inst}: pod Failed after {elapsed:.0f}s")
-                        capture_log_tail(v1, pod_name, inst)
-                        write_result(inst, "pod_failed_no_result", elapsed_seconds=int(elapsed))
+                        found = harvest_pod_output(v1, pod_name, inst)
+                        if not found:
+                            write_result(inst, "pod_failed_no_result", elapsed_seconds=int(elapsed))
                     else:
                         log(f"{inst}: pod Succeeded after {elapsed:.0f}s")
-                        if not result_path_for(inst).exists():
-                            # Pod exited 0 but never wrote a result.json -- shouldn't
-                            # happen given run-instance.sh's structure, but don't
-                            # silently lose the instance.
-                            capture_log_tail(v1, pod_name, inst)
+                        found = harvest_pod_output(v1, pod_name, inst)
+                        if not found:
                             write_result(inst, "succeeded_no_result", elapsed_seconds=int(elapsed))
                     delete_pod(v1, pod_name)
                     del in_flight[inst]
@@ -505,8 +592,6 @@ spec:
               value: dspark-swebench-run-instance-script
             - name: RUNNER_SERVICE_ACCOUNT
               value: dspark-swebench-runner
-            - name: OUTPUT_PVC
-              value: dspark-output-hdd-v2
             - name: PIN_NODE
               value: talos-210-73x
             - name: MAX_CONCURRENCY

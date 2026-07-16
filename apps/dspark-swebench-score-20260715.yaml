@@ -24,29 +24,28 @@ data:
   score-instance.sh: |
     #!/bin/bash
     # Runs inside a fresh Pod of the SAME official SWE-bench per-instance image
-    # used for generation. Applies the model's generated patch (from
-    # /output/swebench-pilot/patches/<instance_id>.patch, written by the
-    # generation phase), runs the repo's real FAIL_TO_PASS/PASS_TO_PASS test
-    # commands, and grades the result -- all via the swebench.harness.grading
-    # module itself (not a hand-rolled diff comparison), so the pass/fail
-    # determination matches upstream SWE-bench semantics exactly.
+    # used for generation. Applies the model's generated patch, runs the repo's
+    # real FAIL_TO_PASS/PASS_TO_PASS test commands, and grades the result -- all
+    # via the swebench.harness.grading module itself (not a hand-rolled diff
+    # comparison), so the pass/fail determination matches upstream SWE-bench
+    # semantics exactly.
     #
     # This is a deliberately separate phase from generation: it re-pulls the
     # same base image fresh (so the repo is in its pristine base_commit state,
-    # uncontaminated by whatever the agent did during generation) and only
-    # needs the already-captured patch text, not the agent/vLLM at all.
+    # uncontaminated by whatever the agent did during generation).
+    #
+    # Like run-instance.sh, this Pod runs in `dspark-swebench` (a different
+    # namespace than the dspark-output-hdd-v2 PVC in `default`, so it can't be
+    # mounted here) -- the patch to apply comes IN via the SWEBENCH_PATCH_B64 env
+    # var (set by the scoring controller from what it already has on the PVC),
+    # and results go OUT via base64-wrapped markers on stdout, which the
+    # controller decodes from this Pod's log (pods/log:get) and persists.
     set -uo pipefail
 
     INSTANCE_ID="${SWEBENCH_INSTANCE_ID:?missing SWEBENCH_INSTANCE_ID}"
-    OUT_DIR=/output/swebench-pilot
-    PATCH_DIR="$OUT_DIR/patches"
-    SCORE_DIR="$OUT_DIR/scores"
-    LOG_DIR="$OUT_DIR/logs"
-    EVAL_LOG_DIR="$OUT_DIR/eval_logs"
-    mkdir -p "$SCORE_DIR" "$LOG_DIR" "$EVAL_LOG_DIR"
+    OUT_DIR=/tmp/dspark-out
+    mkdir -p "$OUT_DIR"
 
-    LOG_FILE="$LOG_DIR/${INSTANCE_ID}.score.log"
-    exec > >(tee -a "$LOG_FILE") 2>&1
     echo "=== [$(date -u +%FT%TZ)] scoring start: $INSTANCE_ID ==="
 
     export HF_HOME="${HF_HOME:-$OUT_DIR/hf-cache}"
@@ -54,19 +53,43 @@ data:
     export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$OUT_DIR/uv-python}"
     mkdir -p "$HF_HOME" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
 
-    PATCH_FILE="$PATCH_DIR/${INSTANCE_ID}.patch"
+    SCORE_FILE="$OUT_DIR/${INSTANCE_ID}.score.json"
+    EVAL_LOG_FILE="$OUT_DIR/${INSTANCE_ID}.eval.log"
+    PATCH_FILE="$OUT_DIR/${INSTANCE_ID}.patch"
+
+    emit_artifacts() {
+      echo "##DSPARK-SCORE-B64-BEGIN##"
+      base64 -w0 "$SCORE_FILE" 2>/dev/null || base64 "$SCORE_FILE" | tr -d '\n'
+      echo
+      echo "##DSPARK-SCORE-B64-END##"
+      if [ -s "$EVAL_LOG_FILE" ]; then
+        echo "##DSPARK-EVALLOG-B64-BEGIN##"
+        base64 -w0 "$EVAL_LOG_FILE" 2>/dev/null || base64 "$EVAL_LOG_FILE" | tr -d '\n'
+        echo
+        echo "##DSPARK-EVALLOG-B64-END##"
+      fi
+    }
 
     write_score() {
-      python3 - "$INSTANCE_ID" "$1" "$SCORE_DIR/${INSTANCE_ID}.json" <<'PYEOF' 2>/dev/null || true
+      python3 - "$INSTANCE_ID" "$1" "$SCORE_FILE" <<'PYEOF' 2>/dev/null || true
     import json, sys
     instance_id, status, path = sys.argv[1:4]
     json.dump({"instance_id": instance_id, "phase": "scoring", "status": status, "resolved": False}, open(path, "w"))
     PYEOF
     }
 
-    if [ ! -s "$PATCH_FILE" ]; then
-        echo "No non-empty patch for $INSTANCE_ID (agent did not submit a patch) -- not resolved, skipping test run."
+    if [ -z "${SWEBENCH_PATCH_B64:-}" ]; then
+        echo "No patch provided for $INSTANCE_ID (agent did not submit one) -- not resolved, skipping test run."
         write_score "no_patch"
+        emit_artifacts
+        echo "=== [$(date -u +%FT%TZ)] scoring end (no_patch): $INSTANCE_ID ==="
+        exit 0
+    fi
+    echo "$SWEBENCH_PATCH_B64" | base64 -d > "$PATCH_FILE"
+    if [ ! -s "$PATCH_FILE" ]; then
+        echo "Decoded patch is empty for $INSTANCE_ID -- not resolved, skipping test run."
+        write_score "no_patch"
+        emit_artifacts
         echo "=== [$(date -u +%FT%TZ)] scoring end (no_patch): $INSTANCE_ID ==="
         exit 0
     fi
@@ -85,11 +108,13 @@ data:
     if [ -z "$UV_BIN" ]; then
         echo "ERROR: could not obtain a working uv in this image"
         write_score "toolchain_unavailable"
+        emit_artifacts
+        echo "=== [$(date -u +%FT%TZ)] scoring end (toolchain_unavailable): $INSTANCE_ID ==="
         exit 0
     fi
 
     # --- Apply the patch, run the real eval script, grade with swebench.harness ---
-    $UV_BIN run --python 3.12 --with "swebench==4.1.0" -- python3 - "$INSTANCE_ID" "$PATCH_FILE" "$SCORE_DIR/${INSTANCE_ID}.json" "$EVAL_LOG_DIR/${INSTANCE_ID}.txt" <<'PYEOF'
+    $UV_BIN run --python 3.12 --with "swebench==4.1.0" -- python3 - "$INSTANCE_ID" "$PATCH_FILE" "$SCORE_FILE" "$EVAL_LOG_FILE" <<'PYEOF'
     import json
     import subprocess
     import sys
@@ -172,15 +197,9 @@ data:
 
         test_output_path = "/tmp/test_output.txt"
         Path(test_output_path).write_text(test_output)
-        # Persist the full raw test log off the ephemeral Pod onto the PVC --
-        # this becomes the "eval_logs" field of the normalized dataset record
-        # (matching nebius/SWE-agent-trajectories' schema, which has an
-        # eval_logs column with exactly this content).
-        Path(eval_log_out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(eval_log_out_path).write_text(test_output)
         result["test_runtime_seconds"] = round(runtime, 1)
         result["timed_out"] = timed_out
-        result["eval_log_path"] = eval_log_out_path
 
         prediction = {
             KEY_INSTANCE_ID: instance_id,
@@ -204,6 +223,7 @@ data:
     print(f"Score result: status={result['status']} resolved={result['resolved']}")
     PYEOF
 
+    emit_artifacts
     echo "=== [$(date -u +%FT%TZ)] scoring end: $INSTANCE_ID ==="
 ---
 apiVersion: v1
@@ -236,12 +256,21 @@ data:
     Instances with no captured patch are graded as "no_patch" / resolved=False
     directly by the controller, without spinning a Pod for them at all (nothing
     to apply or test).
+
+    Output handoff: same as the generation controller -- scoring Pods live in
+    `dspark-swebench`, a different namespace than the dspark-output-hdd-v2 PVC
+    (`default`), so they can't mount it. The patch to grade is passed IN via the
+    SWEBENCH_PATCH_B64 env var (this controller already has the patch bytes on
+    its own PVC mount); the score + eval log come back OUT base64-encoded on
+    stdout, parsed from the Pod's log (pods/log:get) by this controller.
     """
 
     import hashlib
     import json
     import os
+    import re
     import time
+    from base64 import b64decode, b64encode
     from pathlib import Path
 
     from kubernetes import client, config as kconfig
@@ -252,7 +281,6 @@ data:
     INSTANCES_FILE = Path(os.environ.get("INSTANCES_FILE", "/config/instances-pilot.json"))
     RUN_SCRIPT_CONFIGMAP = os.environ.get("RUN_SCRIPT_CONFIGMAP", "dspark-swebench-score-instance-script")
     RUNNER_SA = os.environ.get("RUNNER_SERVICE_ACCOUNT", "dspark-swebench-runner")
-    OUTPUT_PVC = os.environ.get("OUTPUT_PVC", "dspark-output-hdd-v2")
     NODE_NAME = os.environ.get("PIN_NODE", "")
 
     MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "4"))
@@ -260,6 +288,9 @@ data:
     POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
 
     LABEL_SELECTOR = "app.kubernetes.io/name=dspark-swebench,dspark.io/phase=scoring,dspark.io/batch=pilot"
+
+    SCORE_RE = re.compile(r"##DSPARK-SCORE-B64-BEGIN##\n(.*?)\n##DSPARK-SCORE-B64-END##", re.S)
+    EVALLOG_RE = re.compile(r"##DSPARK-EVALLOG-B64-BEGIN##\n(.*?)\n##DSPARK-EVALLOG-B64-END##", re.S)
 
 
     def ts() -> str:
@@ -297,20 +328,22 @@ data:
         p.write_text(json.dumps(data, indent=2))
 
 
-    def build_pod(instance_id: str) -> client.V1Pod:
+    def build_pod(instance_id: str, patch_b64: str) -> client.V1Pod:
         image = get_swebench_docker_image_name(instance_id)
         container = client.V1Container(
             name="score",
             image=image,
             image_pull_policy="IfNotPresent",
             command=["/bin/bash", "/scripts/score-instance.sh"],
-            env=[client.V1EnvVar(name="SWEBENCH_INSTANCE_ID", value=instance_id)],
+            env=[
+                client.V1EnvVar(name="SWEBENCH_INSTANCE_ID", value=instance_id),
+                client.V1EnvVar(name="SWEBENCH_PATCH_B64", value=patch_b64),
+            ],
             resources=client.V1ResourceRequirements(
                 requests={"cpu": "1", "memory": "4Gi"},
                 limits={"cpu": "2", "memory": "10Gi"},
             ),
             volume_mounts=[
-                client.V1VolumeMount(name="output", mount_path="/output"),
                 client.V1VolumeMount(name="scripts", mount_path="/scripts"),
             ],
         )
@@ -321,10 +354,6 @@ data:
             enable_service_links=False,
             containers=[container],
             volumes=[
-                client.V1Volume(
-                    name="output",
-                    persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=OUTPUT_PVC),
-                ),
                 client.V1Volume(
                     name="scripts",
                     config_map=client.V1ConfigMapVolumeSource(name=RUN_SCRIPT_CONFIGMAP, default_mode=0o755),
@@ -348,14 +377,39 @@ data:
         )
 
 
-    def capture_log_tail(v1: client.CoreV1Api, pod_name: str, instance_id: str) -> None:
+    def harvest_pod_output(v1: client.CoreV1Api, pod_name: str, instance_id: str) -> bool:
+        """Fetch the scoring Pod's full log, persist it + the eval log, and decode
+        the score result embedded in it. Returns True if a score.json was found."""
         try:
-            tail = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE, tail_lines=200)
+            full_log = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE) or ""
         except ApiException as e:
-            tail = f"<could not fetch pod log: {e}>"
+            log(f"{instance_id}: could not fetch pod log: {e}")
+            return False
+
         log_dir = OUTPUT_ROOT / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / f"{instance_id}.score-controller-capture.log").write_text(tail or "")
+        (log_dir / f"{instance_id}.score.log").write_text(full_log)
+
+        found_score = False
+        m = SCORE_RE.search(full_log)
+        if m:
+            try:
+                score_path_for(instance_id).parent.mkdir(parents=True, exist_ok=True)
+                score_path_for(instance_id).write_bytes(b64decode(m.group(1)))
+                found_score = True
+            except Exception as e:
+                log(f"{instance_id}: failed to decode SCORE block: {e}")
+
+        m = EVALLOG_RE.search(full_log)
+        if m:
+            try:
+                eval_log_path = OUTPUT_ROOT / "eval_logs" / f"{instance_id}.txt"
+                eval_log_path.parent.mkdir(parents=True, exist_ok=True)
+                eval_log_path.write_bytes(b64decode(m.group(1)))
+            except Exception as e:
+                log(f"{instance_id}: failed to decode EVALLOG block: {e}")
+
+        return found_score
 
 
     def delete_pod(v1: client.CoreV1Api, pod_name: str) -> None:
@@ -404,7 +458,7 @@ data:
 
         reconcile_orphans(v1)
 
-        to_score = []
+        to_score: list[tuple[str, str]] = []  # (instance_id, patch_b64)
         for inst in all_instances:
             if score_path_for(inst).exists():
                 continue
@@ -412,11 +466,9 @@ data:
             if not pf.exists() or pf.stat().st_size == 0:
                 write_score(inst, "no_patch", resolved=False)
                 continue
-            to_score.append(inst)
+            patch_b64 = b64encode(pf.read_bytes()).decode("ascii")
+            to_score.append((inst, patch_b64))
 
-        already_scored = sum(1 for i in all_instances if score_path_for(i).exists()) - len(
-            [i for i in all_instances if score_path_for(i).exists() and json.loads(score_path_for(i).read_text()).get("status") == "no_patch"]
-        )
         log(f"{len(to_score)} instance(s) with a patch need scoring Pods; rest handled directly (no_patch) or already scored")
 
         pending = list(to_score)
@@ -424,8 +476,8 @@ data:
 
         def launch_next() -> None:
             while len(in_flight) < MAX_CONCURRENCY and pending:
-                inst = pending.pop(0)
-                pod = build_pod(inst)
+                inst, patch_b64 = pending.pop(0)
+                pod = build_pod(inst, patch_b64)
                 try:
                     v1.create_namespaced_pod(namespace=NAMESPACE, body=pod)
                     in_flight[inst] = {"pod_name": pod.metadata.name, "started": time.time()}
@@ -459,16 +511,17 @@ data:
                 if phase in ("Succeeded", "Failed") or timed_out:
                     if timed_out and phase not in ("Succeeded", "Failed"):
                         log(f"{inst}: scoring exceeded {PER_INSTANCE_TIMEOUT_SECONDS}s (phase={phase}), killing")
-                        capture_log_tail(v1, pod_name, inst)
+                        harvest_pod_output(v1, pod_name, inst)
                         write_score(inst, "timeout", resolved=False, elapsed_seconds=int(elapsed))
                     elif phase == "Failed":
                         log(f"{inst}: scoring pod Failed after {elapsed:.0f}s")
-                        capture_log_tail(v1, pod_name, inst)
-                        write_score(inst, "pod_failed_no_result", resolved=False, elapsed_seconds=int(elapsed))
+                        found = harvest_pod_output(v1, pod_name, inst)
+                        if not found:
+                            write_score(inst, "pod_failed_no_result", resolved=False, elapsed_seconds=int(elapsed))
                     else:
                         log(f"{inst}: scoring pod Succeeded after {elapsed:.0f}s")
-                        if not score_path_for(inst).exists():
-                            capture_log_tail(v1, pod_name, inst)
+                        found = harvest_pod_output(v1, pod_name, inst)
+                        if not found:
                             write_score(inst, "succeeded_no_result", resolved=False, elapsed_seconds=int(elapsed))
                     delete_pod(v1, pod_name)
                     del in_flight[inst]
@@ -552,8 +605,6 @@ spec:
               value: dspark-swebench-score-instance-script
             - name: RUNNER_SERVICE_ACCOUNT
               value: dspark-swebench-runner
-            - name: OUTPUT_PVC
-              value: dspark-output-hdd-v2
             - name: PIN_NODE
               value: talos-210-73x
             - name: MAX_CONCURRENCY
