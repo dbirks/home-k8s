@@ -1,0 +1,35 @@
+# OpenHands (agent-canvas) — Tailscale Ingress
+#
+# Second Ingress pointed at the same `openhands` Service as the existing
+# private (nginx, openhands.hoam.lan) Ingress created by the agent-canvas
+# Helm chart -- a Service can have multiple Ingresses, so this doesn't change
+# the existing LAN access path.
+#
+# Same pattern as apps/vllm-tailscale-ingress.yaml and
+# apps/omnigent-tailscale-ingress.yaml: uses the already-installed `tailscale`
+# IngressClass (tailscale.com/ts-ingress). Tailscale provisions a dedicated
+# tailnet node with a real, auto-renewing Let's Encrypt cert for its MagicDNS
+# name (openhands.<tailnet>.ts.net) -- reachable only over the tailnet, never
+# the public internet. Requires "HTTPS Certificates" enabled in the Tailscale
+# admin console (already on for the vllm-ts / omnigent-ts Ingresses).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openhands-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - openhands
+  rules:
+    - host: openhands
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openhands
+                port:
+                  number: 8000
