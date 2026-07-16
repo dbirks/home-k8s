@@ -1,0 +1,33 @@
+# Grafana — Tailscale Ingress
+#
+# Second Ingress on the same `grafana` Service as the existing private
+# (nginx, grafana.hoam.lan) Ingress from the Grafana Helm chart -- a Service
+# can have multiple Ingresses, so this doesn't change the LAN access path.
+#
+# Same pattern as apps/vllm-tailscale-ingress.yaml / omnigent-ts / openhands-ts:
+# uses the already-installed `tailscale` IngressClass (tailscale.com/ts-ingress).
+# Tailscale provisions a dedicated tailnet node with a real, auto-renewing
+# Let's Encrypt cert for its MagicDNS name (grafana.<tailnet>.ts.net) --
+# reachable only over the tailnet. Requires "HTTPS Certificates" enabled in
+# the Tailscale admin console (already on for the other *-ts Ingresses).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-ts
+  namespace: monitoring
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - grafana
+  rules:
+    - host: grafana
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 80
