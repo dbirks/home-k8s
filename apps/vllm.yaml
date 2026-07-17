@@ -44,11 +44,12 @@ metadata:
   name: vllm-qwen27
   namespace: default
 spec:
-  # replicas: 0 -- scaled down 2026-07-17 to free the single GPU for the
-  # SWE-bench-trajectory training run (dspark-train-swebench-traj-20260717).
-  # Restore to 1 once that Job completes. Comes back up with the bumped
-  # concurrency settings below (max-num-seqs 32, gpu-mem 0.85, batched 16384).
-  replicas: 0
+  # Restored to 1 (2026-07-17) after the SWE-bench-trajectory training + eval
+  # finished. That checkpoint REGRESSED on held-out data (combined accept_len
+  # 1.341 vs baseline 1.455; overfit the 164 trajectories -- see issue #51), so
+  # production stays on the published drafter, NOT that checkpoint. Kept the
+  # concurrency bumps below (max-num-seqs 32, gpu-mem 0.85, batched 16384).
+  replicas: 1
   strategy:
     type: Recreate
   selector:
