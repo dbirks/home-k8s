@@ -1,0 +1,2 @@
+[     436ms] [LOG] not correct url correcting /d/performance-statistics/performance-statistics /d/performance-statistics @ http://localhost:3000/public/build/9414.62caf44012390cfdd223.js:128
+[     559ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/api/dashboards/uid/performance-statistics/public-dashboards:0

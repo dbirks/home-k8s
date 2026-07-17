@@ -1,0 +1,45 @@
+- generic [ref=f4e3]:
+  - complementary "Conversations" [ref=f4e4]:
+    - separator "Resize sidebar" [ref=f4e5]
+    - generic [ref=f4e6]:
+      - link "Omnigent" [ref=f4e7] [cursor=pointer]:
+        - /url: /
+      - generic [ref=f4e8]:
+        - link "Inbox" [ref=f4e9] [cursor=pointer]:
+          - /url: /inbox
+        - button "Close sidebar" [ref=f4e10] [cursor=pointer]
+    - generic [ref=f4e11]:
+      - link "New session" [ref=f4e12] [cursor=pointer]:
+        - /url: /
+      - generic [ref=f4e13]:
+        - button "Search" [ref=f4e14]
+        - button "Select sessions" [ref=f4e16] [cursor=pointer]
+    - tablist [ref=f4e19]:
+      - tab "My sessions" [selected] [ref=f4e20] [cursor=pointer]
+      - tab "Shared with me" [ref=f4e21] [cursor=pointer]
+    - navigation [ref=f4e22]:
+      - paragraph [ref=f4e23]: Loading…
+    - link "Settings" [ref=f4e25] [cursor=pointer]:
+      - /url: /settings
+  - generic [ref=f4e28]:
+    - banner [ref=f4e29]
+    - main [ref=f4e30]:
+      - generic [ref=f4e32]:
+        - generic [ref=f4e33]:
+          - img "Omnigent" [ref=f4e34]
+          - heading "What should we do?" [level=1] [ref=f4e83]
+        - generic [ref=f4e84]:
+          - generic [ref=f4e85]:
+            - textbox "Describe a task to start a new session" [active] [ref=f4e86]:
+              - /placeholder: Describe a task to start a new session…
+            - generic [ref=f4e87]:
+              - generic [ref=f4e88]:
+                - button "Attach files" [ref=f4e89] [cursor=pointer]
+                - button "Voice dictation" [ref=f4e91] [cursor=pointer]
+              - generic [ref=f4e92]:
+                - button "No agents" [disabled]
+                - generic [ref=f4e93]:
+                  - button "Start session" [disabled]
+          - generic [ref=f4e95]:
+            - button "Kubernetes Sandbox" [ref=f4e96]
+            - button "Repository" [ref=f4e103]

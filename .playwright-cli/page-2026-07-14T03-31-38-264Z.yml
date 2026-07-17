@@ -1,0 +1,61 @@
+- generic [ref=f6e3]:
+  - complementary "Conversations" [ref=f6e4]:
+    - separator "Resize sidebar" [ref=f6e5]
+    - generic [ref=f6e6]:
+      - link "Omnigent" [ref=f6e7] [cursor=pointer]:
+        - /url: /
+      - generic [ref=f6e8]:
+        - link "Inbox" [ref=f6e9] [cursor=pointer]:
+          - /url: /inbox
+        - button "Close sidebar" [ref=f6e10] [cursor=pointer]
+    - generic [ref=f6e11]:
+      - link "New session" [ref=f6e12] [cursor=pointer]:
+        - /url: /
+      - generic [ref=f6e13]:
+        - button "Search" [ref=f6e14]
+        - button "Select sessions" [ref=f6e16] [cursor=pointer]
+    - tablist [ref=f6e19]:
+      - tab "My sessions" [selected] [ref=f6e20] [cursor=pointer]
+      - tab "Shared with me" [ref=f6e21] [cursor=pointer]
+    - navigation [ref=f6e22]:
+      - paragraph [ref=f6e23]: Loading…
+    - link "Settings" [ref=f6e25] [cursor=pointer]:
+      - /url: /settings
+  - generic [ref=f6e27]:
+    - generic [ref=f6e28]:
+      - banner [ref=f6e29]:
+        - generic [ref=f6e30]:
+          - button "Agent tools and policies" [ref=f6e31] [cursor=pointer]
+          - button "Collapse right panel" [ref=f6e32] [cursor=pointer]
+      - main [ref=f6e33]:
+        - generic [ref=f6e34]: Loading conversation…
+      - complementary "Workspace" [ref=f6e37]:
+        - separator "Resize panel" [ref=f6e38]
+        - tablist [ref=f6e41]:
+          - tab "Files" [selected] [ref=f6e42] [cursor=pointer]
+          - tab "Agents 1" [ref=f6e43] [cursor=pointer]:
+            - text: Agents
+            - generic [ref=f6e44]: "1"
+        - generic [ref=f6e46]:
+          - generic [ref=f6e47]:
+            - generic [ref=f6e48]: Working folder
+            - button "Show hidden files" [ref=f6e50] [cursor=pointer]
+          - generic [ref=f6e56]:
+            - radiogroup "File scope" [ref=f6e57]:
+              - radio "Changed" [ref=f6e58] [cursor=pointer]
+              - radio "All" [checked] [ref=f6e60] [cursor=pointer]
+            - generic [ref=f6e66]:
+              - searchbox "Search all files" [ref=f6e71]
+              - button "Show search filters" [ref=f6e72] [cursor=pointer]
+              - 'button "Sort: Last edited" [ref=f6e74] [cursor=pointer]':
+                - generic [ref=f6e75]: "Sort:"
+          - paragraph [ref=f6e82]: No files in workspace
+    - separator [ref=f6e83]
+    - generic [ref=f6e84]:
+      - heading [level=2] [ref=f6e85]: Shells
+      - button [ref=f6e87] [cursor=pointer]
+    - separator [ref=f6e88]
+    - generic [ref=f6e89]:
+      - heading [level=2] [ref=f6e90]: Execution logs
+      - button [ref=f6e91] [cursor=pointer]
+    - separator [ref=f6e93]

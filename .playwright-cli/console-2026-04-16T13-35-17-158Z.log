@@ -1,0 +1,2 @@
+[     409ms] [LOG] not correct url correcting /d/query-statistics4/query-statistics-new4 /d/query-statistics4 @ http://localhost:3000/public/build/9414.62caf44012390cfdd223.js:128
+[     518ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/api/dashboards/uid/query-statistics4/public-dashboards:0

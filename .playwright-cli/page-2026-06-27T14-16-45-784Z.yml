@@ -1,0 +1,20 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - heading "Sign in" [level=1] [ref=e6]
+    - paragraph [ref=e7]: Welcome to Omnigent.
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - text: Username
+      - textbox "Username" [active] [ref=e10]
+      - paragraph [ref=e11]:
+        - text: On a fresh install your username is your machine login (the output of
+        - code [ref=e12]: whoami
+        - text: ), unless an admin set a different one.
+    - generic [ref=e13]:
+      - text: Password
+      - textbox "Password" [ref=e14]
+    - button "Sign in" [disabled]
+  - paragraph [ref=e15]:
+    - text: On a fresh install the initial admin password was printed to the server's stderr and saved to
+    - code [ref=e16]: ~/.omnigent/admin-credentials
+    - text: .

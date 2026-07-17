@@ -1,0 +1,124 @@
+- generic:
+  - generic:
+    - generic:
+      - complementary "Conversations":
+        - separator
+        - generic:
+          - link:
+            - /url: /
+            - text: Omnigent
+          - generic:
+            - link:
+              - /url: /inbox
+            - button
+        - generic:
+          - link:
+            - /url: /
+            - text: New session
+          - generic:
+            - button:
+              - generic: Search
+            - button
+        - generic:
+          - generic:
+            - tablist:
+              - tab [selected]: My sessions
+              - tab: Shared with me
+        - navigation:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - heading [level=2]:
+                    - button [expanded]:
+                      - generic: Sessions
+                - list:
+                  - listitem:
+                    - link:
+                      - /url: /c/conv_76b40644e9b24090b2bdf3b1e0e5d457
+                      - generic:
+                        - generic:
+                          - text: Hi
+                          - generic: (unread)
+                    - button
+                    - button
+                  - listitem:
+                    - link:
+                      - /url: /c/conv_6d0b6853d3a04dadb3acac5d69243937
+                      - generic: hi
+                    - generic: 2w
+                    - button
+                    - button
+          - status
+        - generic:
+          - link:
+            - /url: /settings
+            - generic: Settings
+      - generic:
+        - generic:
+          - banner
+          - main:
+            - generic:
+              - generic:
+                - generic:
+                  - heading [level=1]: What should we do?
+                - generic:
+                  - generic:
+                    - textbox:
+                      - /placeholder: Describe a task to start a new session…
+                    - generic:
+                      - generic:
+                        - button:
+                          - generic: Attach files
+                        - button
+                      - generic:
+                        - button:
+                          - generic: Antigravity
+                        - generic:
+                          - button [disabled]
+                  - generic:
+                    - generic:
+                      - button:
+                        - generic: Kubernetes Sandbox
+                      - button:
+                        - generic: Repository
+  - dialog:
+    - generic:
+      - heading [level=2]: Create custom agent
+    - generic:
+      - generic:
+        - generic: Name *
+        - textbox:
+          - /placeholder: my-agent
+      - generic:
+        - generic: Description
+        - textbox:
+          - /placeholder: A short summary of what this agent does
+      - generic:
+        - generic: Harness *
+        - combobox [expanded]:
+          - generic: Claude SDK
+      - generic:
+        - generic: Model *
+        - textbox:
+          - /placeholder: claude-sonnet-4-20250514
+      - generic:
+        - generic: System instructions
+        - textbox:
+          - /placeholder: You are a helpful assistant that...
+      - generic:
+        - generic:
+          - generic: MCP Tools
+          - button: Add server
+    - generic:
+      - button: Cancel
+      - button [disabled]: Create
+    - button:
+      - generic: Close
+  - listbox [ref=f8e211]:
+    - option "Claude SDK" [active] [selected] [ref=f8e212]
+    - option "Codex" [ref=f8e214]
+    - option "Cursor" [ref=f8e216]
+    - option "Pi" [ref=f8e218]
+    - option "Antigravity" [ref=f8e220]
+    - option "Copilot" [ref=f8e222]

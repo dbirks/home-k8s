@@ -1,0 +1,38 @@
+# Keeps vllm/vllm-openai:v0.24.0 referenced by a running pod so kubelet's
+# image GC won't evict it between dspark training job runs. Without this,
+# GC reclaims the ~25GB image as soon as the training pod stops, forcing a
+# re-pull (and matching disk-pressure spike) on every resume.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dspark-train-image-keepalive
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dspark-train-image-keepalive
+  template:
+    metadata:
+      labels:
+        app: dspark-train-image-keepalive
+    spec:
+      containers:
+        - name: keepalive
+          image: vllm/vllm-openai:v0.24.0
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault

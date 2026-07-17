@@ -1,0 +1,38 @@
+# Second disk: 4TB WD HDD (WDC WD40EZZX-00C) added 2026-07-09 for bulk/archival
+# storage — hidden-state caches, model checkpoints, media, anything not latency
+# sensitive. The original sda SSD was full (see issue tracking the DSpark disk
+# crisis); this gives Kubernetes a second local-path StorageClass to target.
+#
+# diskSelector matches on wwid (globally unique) rather than transport, since
+# both disks are SATA and a transport-only match would be ambiguous.
+#
+# Apply (from repo root):
+#   talhelper genconfig
+#   talhelper gencommand apply | bash
+#
+# No reboot required — UserVolumeConfig provisions live against an
+# already-visible disk.
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: hdd-storage
+provisioning:
+  diskSelector:
+    match: disk.wwid == "naa.50014ee2c1dd7d14"
+  minSize: 3500GB
+  grow: true
+filesystem:
+  type: xfs
+---
+# Kubelet needs an explicit extraMount to see the new volume for hostPath
+# use (local-path-provisioner's PVs are hostPath under the hood) — mirrors
+# the existing local-storage.yaml pattern for the original SSD's path.
+machine:
+  kubelet:
+    extraMounts:
+      - destination: /var/mnt/hdd-storage
+        type: bind
+        source: /var/mnt/hdd-storage
+        options:
+          - bind
+          - rshared
+          - rw

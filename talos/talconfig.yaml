@@ -18,16 +18,25 @@
 #   talhelper gencommand kubeconfig | bash
 ---
 clusterName: home
-talosVersion: v1.12.6
+talosVersion: v1.13.6
 kubernetesVersion: v1.35.0
 endpoint: https://10.0.0.30:6443
 
 # Talos Image Factory schematic — installer image with NVIDIA extensions
-# (siderolabs/nvidia-open-gpu-kernel-modules, siderolabs/nvidia-container-toolkit).
+# (siderolabs/nvidia-open-gpu-kernel-modules-production,
+# siderolabs/nvidia-container-toolkit-production — the "-production" suffix
+# is now required; the old bare names still resolve via Image Factory's
+# schematic endpoint but newer talhelper releases validate against the
+# current extension catalog, which only lists the suffixed forms. See
+# issue tracking the talhelper validation gap.
+# "-production" (vs "-lts") tracks the newest NVIDIA driver releases, needed
+# for Blackwell (SM120) support.
 # Regenerate at https://factory.talos.dev if the extension set changes; the ID
 # is content-addressable so any change produces a new ID.
-imageFactory:
-  schematicEndpoint: https://factory.talos.dev
+# (imageFactory block omitted — talhelper's registryURL/protocol/schematicEndpoint
+# defaults already resolve to factory.talos.dev over https, which is what we want.
+# An older single-field "schematicEndpoint: https://factory.talos.dev" override
+# here broke URL construction on talhelper 3.1.12's newer imageFactory schema.)
 
 nodes:
   - hostname: talos-210-73x
@@ -39,9 +48,10 @@ nodes:
       customization:
         systemExtensions:
           officialExtensions:
-            - siderolabs/nvidia-open-gpu-kernel-modules
-            - siderolabs/nvidia-container-toolkit
+            - siderolabs/nvidia-open-gpu-kernel-modules-production
+            - siderolabs/nvidia-container-toolkit-production
     # Per-node patches
     patches:
       - "@./patches/local-storage.yaml"
       - "@./patches/nvidia-module-options.yaml"
+      - "@./patches/hdd-storage.yaml"
