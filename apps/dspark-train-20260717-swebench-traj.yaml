@@ -1,0 +1,323 @@
+# DSpark experiment: warm-start on SWE-bench coding-AGENT trajectories
+#
+# First training batch built from agentic (mini-swe-agent) trajectories rather
+# than dataset self-distillation. Goal: test whether a small amount of ON-
+# DISTRIBUTION coding-agent data (tool-use, multi-turn) moves acceptance-length
+# on coding traffic. See issue #51.
+#
+# Data reality (measured): the 164 kept trajectories are only ~162K assistant-
+# generated tokens (~0.8% of the 22M-token base set) -- mini-swe-agent is terse
+# (~19 tokens/turn). So the trajectories are OVERSAMPLED 3x (~486K tok) and
+# blended ~50/50 with a ~500K-token chat-heavy general anchor sliced from the
+# existing mixdata (batch2's regression traced to a too-lean-on-chat mix, so the
+# anchor is deliberately ultrachat/magpie-weighted). Without upweighting, <1% of
+# data would be invisible.
+#
+# Data prepared out-of-band on the PVC (/output/swebench-traj-data/):
+#   traj_x3.jsonl  -- 164 trajectories x3, key "conversations", roles
+#                     system/user/assistant/tool (prepare_data tokenizes from
+#                     scratch; loss masked to assistant turns only -- tool
+#                     observations are context, not targets).
+#   anchor.jsonl   -- ~282 mixdata rows (already carry input_ids/loss_mask ->
+#                     prepare_data passthrough path).
+#
+# Warm-start from checkpoints-batch1k-v1/1 (accept_len 1.5316, current best),
+# same as batch3. Fail-fast prep check guards the cheap CPU phase so a data-
+# format problem dies BEFORE the GPU-heavy hidden-state extraction.
+#
+# GPU: single-GPU node -- production vLLM (vllm-qwen27) is scaled to replicas:0
+# in the same commit so this Job can hold nvidia.com/gpu:1. Scale vLLM back up
+# after this completes.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-swebench-traj-script
+  namespace: default
+data:
+  train.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    echo "=== [$(date)] SWE-bench-trajectory training started ==="
+
+    apt-get update -qq 2>&1 | tail -3
+    apt-get install -y git --no-install-recommends -qq
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"
+    hash -r
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+
+    git clone --depth=1 https://github.com/dbirks/speculators /tmp/speculators-repo
+    SPEC_SCRIPTS=/tmp/speculators-repo/scripts
+
+    python3 << 'PYPATCH'
+    f = '/tmp/speculators-repo/src/speculators/utils/loading.py'
+    c = open(f).read().replace('device="cpu"', 'device="cuda"')
+    open(f, 'w').write(c)
+    for f2 in [
+        '/tmp/speculators-repo/src/speculators/models/dflash/core.py',
+        '/tmp/speculators-repo/src/speculators/models/dspark/core.py',
+    ]:
+        c = open(f2).read().replace(
+            'model.load_verifier_weights()',
+            'model.to("cuda"); model.load_verifier_weights()'
+        )
+        open(f2, 'w').write(c)
+    core_file = '/tmp/speculators-repo/src/speculators/models/dflash/core.py'
+    c = open(core_file).read()
+    OLD_BLOCK = (
+        '        if config.transformer_layer_config._attn_implementation is None:  # noqa: SLF001\n'
+        '            config.transformer_layer_config._attn_implementation = (  # noqa: SLF001\n'
+        '                "simple_flex_attention"\n'
+        '            )\n'
+        '        self._attn_impl = config.transformer_layer_config._attn_implementation  # noqa: SLF001\n'
+    )
+    NEW_BLOCK = (
+        '        config.transformer_layer_config._attn_implementation = "eager"  # noqa: SLF001\n'
+        '        self._attn_impl = "eager"\n'
+    )
+    if OLD_BLOCK in c:
+        open(core_file, 'w').write(c.replace(OLD_BLOCK, NEW_BLOCK))
+    PYPATCH
+    uv pip install /tmp/speculators-repo hf_transfer --system --quiet
+    uv pip install aiohttp datasets tqdm --system --quiet
+    python3 << 'POSTINSTALL'
+    dspark_inst = '/usr/local/lib/python3.12/dist-packages/speculators/models/dspark/core.py'
+    c = open(dspark_inst).read()
+    OLD = '        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
+    NEW = '        max_anchors = min(max_anchors, 384)  # SM120 VRAM: 384*16=6144 Q, 1.87 GB attn\n        hidden, logits, targets, aligned_loss_mask, anchored_block_indices = (\n'
+    if OLD in c:
+        open(dspark_inst, 'w').write(c.replace(OLD, NEW, 1))
+        import py_compile; py_compile.compile(dspark_inst)
+    POSTINSTALL
+
+    cat > /tmp/patch_flex_attention.py << 'PYFA'
+    import os, glob
+    th_file = '/usr/local/lib/python3.12/dist-packages/torch/_inductor/template_heuristics/triton.py'
+    c = open(th_file).read()
+    OLD_SM12X = (
+        '            "sm12x": lambda h: (\n'
+        '                FlexBwDConfig(32, 128, 128, 32, 3, 4)\n'
+        '                if h < 64\n'
+        '                else FlexBwDConfig(\n'
+        '                    64, 64, 64, 64, 1 if h >= 128 else 2, 4\n'
+        '                )\n'
+        '            ),'
+    )
+    NEW_SM12X = (
+        '            "sm12x": lambda h: (\n'
+        '                FlexBwDConfig(32, 128, 128, 32, 3, 4)\n'
+        '                if h < 64\n'
+        '                else FlexBwDConfig(64, 16, 64, 16, 1, 4)\n'
+        '            ),'
+    )
+    if OLD_SM12X in c:
+        open(th_file, 'w').write(c.replace(OLD_SM12X, NEW_SM12X))
+    for pyc in glob.glob(os.path.join(os.path.dirname(th_file), '__pycache__', 'triton.cpython*')):
+        os.remove(pyc)
+    PYFA
+    python3 /tmp/patch_flex_attention.py
+
+    TRAJ_DIR=/output/swebench-traj-data
+    PREP_DIR=/output/data-swebench-traj
+    HS_DIR=$PREP_DIR/hidden-states
+    CKPT_DIR=/output/checkpoints-swebench-traj-v1
+    mkdir -p "$PREP_DIR" "$HS_DIR" "$CKPT_DIR" /output/logs
+
+    # ----------------------------------------------------------------
+    # Prep (CPU-only): tokenize the oversampled trajectories + anchor.
+    # This is the FAIL-FAST gate: if the tool-role trajectory format
+    # tokenizes to nothing, we die here before any GPU-heavy work.
+    # ----------------------------------------------------------------
+    if [ ! -f "$PREP_DIR/token_freq.pt" ]; then
+        echo "=== [$(date)] Preparing SWE-bench-trajectory data ==="
+        python3 "$SPEC_SCRIPTS/prepare_data.py" \
+            --model unsloth/Qwen3.6-27B-NVFP4 \
+            --data "$TRAJ_DIR/traj_x3.jsonl" \
+            --data "$TRAJ_DIR/anchor.jsonl" \
+            --output "$PREP_DIR" \
+            --seq-length 16384 \
+            2>&1 | tee /output/logs/prepare_data_swebench_traj.log
+        n_arrow=$(ls "$PREP_DIR"/*.arrow 2>/dev/null | wc -l)
+        echo "[$(date)] Prep done -- $n_arrow arrow files"
+        # FAIL-FAST: require arrow output + a token_freq.pt, else abort before GPU work
+        if [ "$n_arrow" -eq 0 ] || [ ! -f "$PREP_DIR/token_freq.pt" ]; then
+            echo "FATAL: prep produced no arrow files / token_freq.pt -- trajectory format likely rejected. Aborting before GPU phase."
+            echo "--- tail of prep log ---"; tail -40 /output/logs/prepare_data_swebench_traj.log
+            exit 1
+        fi
+        # sanity: prepped dataset should be non-trivial (traj_x3 + anchor)
+        prep_bytes=$(du -sb "$PREP_DIR" | cut -f1)
+        echo "[$(date)] prepped dir size: $prep_bytes bytes"
+        if [ "$prep_bytes" -lt 1000000 ]; then
+            echo "FATAL: prepped data suspiciously small ($prep_bytes bytes). Aborting."
+            exit 1
+        fi
+    else
+        echo "[$(date)] Skipping prep -- token_freq.pt exists"
+    fi
+
+    # ----------------------------------------------------------------
+    # Phase 1: hidden-state extraction (needs vLLM on the GPU).
+    # ----------------------------------------------------------------
+    if [ ! -f "$PREP_DIR/phase1_complete" ]; then
+        echo "=== [$(date)] Phase 1: hidden states ==="
+        unset PYTORCH_CUDA_ALLOC_CONF
+        python3 "$SPEC_SCRIPTS/launch_vllm.py" unsloth/Qwen3.6-27B-NVFP4 \
+            --target-layer-ids 1 16 31 46 61 \
+            --hidden-states-path "$HS_DIR" \
+            -- \
+            --gpu-memory-utilization 0.75 --port 8001 \
+            --max-model-len 16384 --dtype bfloat16 --trust-remote-code \
+            --served-model-name main \
+            --kv-cache-dtype fp8_e4m3 \
+            --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+            --enforce-eager --max-num-seqs 4 \
+            > /output/logs/vllm_phase1_swebench_traj.log 2>&1 &
+        VLLM_PID=$!
+        trap "kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null" EXIT
+        for i in $(seq 1 540); do
+            curl -sf http://localhost:8001/health >/dev/null 2>&1 && break
+            if ! kill -0 $VLLM_PID 2>/dev/null; then
+                echo "ERROR: vLLM died in Phase 1. Full log:"; cat /output/logs/vllm_phase1_swebench_traj.log; exit 1
+            fi
+            sleep 10
+        done
+        echo "[$(date)] vLLM healthy for Phase 1"
+        find "$HS_DIR" -maxdepth 1 -name "*.lock" -delete
+        find "$HS_DIR" -maxdepth 1 -name "cmpl-*.safetensors" -delete
+
+        python3 "$SPEC_SCRIPTS/data_generation_offline.py" \
+            --endpoint http://localhost:8001/v1 \
+            --preprocessed-data "$PREP_DIR" \
+            --output "$HS_DIR" \
+            --concurrency 4 --max-consecutive-errors 10 \
+            2>&1 | tee /output/logs/data_gen_swebench_traj.log
+
+        kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null || true
+        trap - EXIT
+        touch "$PREP_DIR/phase1_complete"
+        echo "[$(date)] Phase 1 complete -- $(find "$HS_DIR" -maxdepth 1 -name 'hs_*.safetensors' | wc -l) hidden states"
+    else
+        echo "[$(date)] Skipping Phase 1 -- sentinel exists"
+    fi
+
+    # ----------------------------------------------------------------
+    # Phase 2: warm-start from checkpoints-batch1k-v1/1 (accept_len 1.5316).
+    # ----------------------------------------------------------------
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    echo "=== [$(date)] Phase 2: warm-start training on trajectories ==="
+
+    python3 "$SPEC_SCRIPTS/train.py" \
+        --verifier-name-or-path unsloth/Qwen3.6-27B-NVFP4 \
+        --speculator-type dspark \
+        --from-pretrained /output/checkpoints-batch1k-v1/1 \
+        --max-anchors 384 \
+        --target-layer-ids 1 16 31 46 61 \
+        --loss-fn '{"ce": 0.1, "tv": 0.9}' \
+        --confidence-head-alpha 1.0 \
+        --total-seq-len 2048 \
+        --epochs 2 \
+        --lr 3e-4 \
+        --on-missing skip \
+        --data-path "$PREP_DIR" \
+        --hidden-states-path "$HS_DIR" \
+        --save-path "$CKPT_DIR" \
+        --checkpoint-freq 0.25 \
+        --num-workers 2 --prefetch-factor 1 \
+        2>&1 | tee /output/logs/trainer_swebench_traj.log
+
+    echo "=== [$(date)] SWE-bench-trajectory training complete ==="
+    ls -lh "$CKPT_DIR"/
+
+    echo "[$(date)] Reclaiming hidden-state disk ($(du -sh "$HS_DIR" | cut -f1))..."
+    rm -rf "$HS_DIR"
+    echo "[$(date)] Done."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-swebench-traj-20260717
+  namespace: default
+spec:
+  backoffLimit: 200
+  activeDeadlineSeconds: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: gpu-clock-lock
+          image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: utility
+          command:
+            - sh
+            - -c
+            - |
+              nvidia-smi -pm 1
+              nvidia-smi -pl 400
+      containers:
+        - name: trainer
+          image: vllm/vllm-openai:v0.24.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 24Gi
+            requests:
+              cpu: "4"
+              memory: 24Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-swebench-traj-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
