@@ -91,12 +91,13 @@ spec:
             # DeltaNet recurrent state cannot be FP8 — must be float16
             - "--mamba-cache-dtype=float16"
             - "--mamba-ssm-cache-dtype=float16"
-            # --enforce-eager (not PIECEWISE cudagraphs) -- matches the exact
-            # config every one of our benchmark runs verified working. Never
-            # tested dspark + cudagraphs enabled on this nightly wheel; safer
-            # to match the proven config for a production deployment and
-            # revisit cudagraphs as a later optimization once this is stable.
-            - "--enforce-eager"
+            # CUDA graphs ENABLED (removed --enforce-eager 2026-07-16). In
+            # production the GPU sat at ~38% util at accept-length ~1.26 --
+            # decode was kernel-launch/overhead bound, which is exactly what
+            # CUDA graphs fix (expect ~10-20% on small-batch decode). Spec
+            # decode is CUDA-graph compatible in vLLM V1 (drafting is treated
+            # as a uniform decode batch). A/B lever: if dspark + cudagraphs
+            # misbehaves on this nightly wheel, re-add "--enforce-eager".
             - "--enable-prefix-caching"
             - "--trust-remote-code"
             - "--enable-auto-tool-choice"
@@ -104,8 +105,12 @@ spec:
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
             - "--max-num-batched-tokens=8192"
+            # num_speculative_tokens 15 -> 3 (2026-07-16): live vllm counters
+            # showed 99.6% of all accepted tokens came from positions 0-2, so
+            # drafting 15 was verifying 12 dead positions/round for ~0.4% gain.
+            # 3 captures ~all of the benefit at ~1/5 the draft+verify width.
             - "--speculative-config"
-            - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":15}'
+            - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":3}'
           ports:
             - containerPort: 8000
           env:
