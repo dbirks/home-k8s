@@ -1,0 +1,206 @@
+# Benchmark: SWE-bench-trajectory checkpoint (checkpoints-swebench-traj-v1/1)
+#
+# Evaluates the trajectory-warm-started checkpoint (val/accept_len 1.821, but
+# that's in-distribution to training -- this is the independent read). Splits
+# prompts into CODING (generic algorithmic, NOT the django/sympy repos it
+# trained on -> fair held-out) vs GENERAL, measuring accept_len for each via
+# counter deltas, to check both (a) did coding acceptance rise and (b) did
+# general acceptance regress (the batch2 failure mode). See issue #51.
+#
+# Baselines: batch1k-v1 = 1.5316 (warm-start source), mixdata10k = 1.5098.
+# Same harness/wheel/num_speculative_tokens=15 as the progression table.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-benchmark-20260717-swebench-traj-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    export HF_HOME=/data
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    echo "=== [$(date)] Starting vLLM with SWE-bench-trajectory checkpoint ==="
+    vllm serve unsloth/Qwen3.6-27B-NVFP4 \
+        --host 0.0.0.0 --port 8000 \
+        --served-model-name main qwen27 \
+        --max-model-len 16384 \
+        --dtype bfloat16 \
+        --gpu-memory-utilization 0.75 \
+        --max-num-seqs 16 \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 \
+        --mamba-ssm-cache-dtype float16 \
+        --enable-prefix-caching \
+        --trust-remote-code \
+        --enforce-eager \
+        --speculative-config '{"method":"dspark","model":"/output/checkpoints-swebench-traj-v1/1","num_speculative_tokens":15}' \
+        > /output/logs/bench_vllm_swebench_traj.log 2>&1 &
+    VLLM_PID=$!
+    trap "kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null" EXIT
+
+    echo "=== Waiting for vLLM /health (up to 30 min) ==="
+    for i in $(seq 1 180); do
+        if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+            echo "[$(date)] vLLM healthy after $((i * 10))s"; break
+        fi
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "ERROR: vLLM died. Full log:"; cat /output/logs/bench_vllm_swebench_traj.log; exit 1
+        fi
+        [ "$i" -eq 180 ] && echo "ERROR: vLLM timeout 30 min" && exit 1
+        sleep 10
+    done
+
+    cat > /tmp/bench.py << 'PYEOF'
+    import concurrent.futures, json, re, time, urllib.request
+
+    CODING = [
+        "Write a Python function that merges two sorted linked lists.",
+        "Implement a binary search tree with insert, delete, and in-order traversal in Python.",
+        "Write a TypeScript function that debounces another function.",
+        "Fix this Python code: def fib(n): return fib(n-1)+fib(n-2) -- it's missing a base case.",
+        "Write a Rust function that reverses a string in place.",
+        "Implement quicksort in Python with an explanation of its time complexity.",
+        "Write a SQL query to find the second-highest salary in an employees table.",
+        "Write a Python decorator that retries a function up to 3 times on exception.",
+        "Implement an LRU cache in Python using OrderedDict.",
+        "Write a bash script that finds all files larger than 100MB in a directory tree.",
+        "Refactor a function with nested if-statements into a lookup table in Python.",
+        "Write a Python context manager that times the code block inside it.",
+        "Implement a simple in-memory key-value store class with get/set/delete in Python.",
+        "Write a function to detect a cycle in a directed graph using DFS.",
+        "Add type hints and a docstring to a Python function that parses a CSV line.",
+    ]
+    GENERAL = [
+        "What are the main differences between TCP and UDP?",
+        "Explain how a Kubernetes Deployment differs from a StatefulSet.",
+        "What's the difference between supervised and unsupervised learning?",
+        "Explain the CAP theorem in distributed systems.",
+        "What are the tradeoffs between microservices and a monolith?",
+        "Explain how DNS resolution works step by step.",
+        "Summarize the plot of Romeo and Juliet in three sentences.",
+        "What's the difference between a mutex and a semaphore?",
+        "Explain how garbage collection works in a language like Python or Java.",
+        "What is the difference between HTTP/1.1 and HTTP/2?",
+        "What is eventual consistency in distributed databases?",
+        "Explain what a race condition is and give an example of how to prevent one.",
+        "What's the difference between authentication and authorization?",
+        "Explain how TLS handshakes establish a secure connection.",
+        "Explain how git rebase differs from git merge.",
+    ]
+
+    def send_one(prompt):
+        body = json.dumps({"model": "main", "messages": [{"role": "user", "content": prompt}],
+                           "max_tokens": 300, "temperature": 0.0}).encode()
+        req = urllib.request.Request("http://localhost:8000/v1/chat/completions",
+                                     data=body, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                resp.read(); return True
+        except Exception as e:
+            print("request failed:", e); return False
+
+    def counters():
+        with urllib.request.urlopen("http://localhost:8000/metrics", timeout=30) as resp:
+            lines = [l for l in resp.read().decode().splitlines() if "spec_decode" in l and not l.startswith("#")]
+        def mv(sub):
+            tot=0.0; found=False
+            for l in lines:
+                if sub in l:
+                    m=re.search(r"\s+([0-9.eE+-]+)\s*$", l)
+                    if m: tot+=float(m.group(1)); found=True
+            return tot if found else 0.0
+        return mv("num_accepted_tokens_total"), mv("num_drafts_total")
+
+    def run_set(name, prompts, base_acc, base_dr):
+        print(f"=== Sending {len(prompts)} {name} requests (concurrency 8) ===")
+        t0=time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            ok=sum(list(ex.map(send_one, prompts)))
+        # let metrics settle
+        time.sleep(3)
+        acc, dr = counters()
+        d_acc, d_dr = acc-base_acc, dr-base_dr
+        al = 1 + (d_acc/d_dr) if d_dr>0 else float('nan')
+        print(f"{name}: {ok}/{len(prompts)} ok in {time.time()-t0:.1f}s | drafts={d_dr:.0f} accepted={d_acc:.0f} | accept_len={al:.4f}")
+        return acc, dr, al
+
+    a0,d0 = counters()
+    a1,d1,al_code = run_set("CODING", CODING, a0, d0)
+    a2,d2,al_gen  = run_set("GENERAL", GENERAL, a1, d1)
+    al_all = 1 + ((a2-a0)/(d2-d0)) if (d2-d0)>0 else float('nan')
+    print("\n=== RESULT (checkpoints-swebench-traj-v1/1) ===")
+    print(f"CODING  accept_len = {al_code:.4f}")
+    print(f"GENERAL accept_len = {al_gen:.4f}")
+    print(f"COMBINED accept_len = {al_all:.4f}")
+    print("baselines: batch1k-v1=1.5316  mixdata10k=1.5098  |  val(in-dist)=1.821")
+    PYEOF
+
+    python3 /tmp/bench.py 2>&1 | tee /output/logs/bench_results_swebench_traj.txt
+    echo "=== Benchmark complete ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-benchmark-20260717-swebench-traj
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: bench
+          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: latency
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: 12.0f
+            - name: FLASHINFER_FORCE_SM
+              value: 120f
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "2"
+              memory: 16Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-benchmark-20260717-swebench-traj-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
