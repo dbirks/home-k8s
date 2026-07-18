@@ -117,12 +117,15 @@ spec:
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
             - "--max-num-batched-tokens=8192"
-            # num_speculative_tokens 15 -> 3 (2026-07-16): live vllm counters
-            # showed 99.6% of all accepted tokens came from positions 0-2, so
-            # drafting 15 was verifying 12 dead positions/round for ~0.4% gain.
-            # 3 captures ~all of the benefit at ~1/5 the draft+verify width.
-            - "--speculative-config"
-            - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":3}'
+            # dspark speculative decoding DISABLED 2026-07-18 for DeepSWE data-gen.
+            # At high concurrency the drafter's draft+verify overhead COMPETES with
+            # the batch and hurts throughput (SGLang research #51; confirmed live:
+            # 8.4s for a 5-token request at 100% GPU under 6 concurrent agents,
+            # causing worker litellm timeouts). Plain batched decode is faster for
+            # this workload. Re-add for interactive serving (the 1.28-1.36x
+            # single-stream win) once data-gen is done.
+            # - "--speculative-config"
+            # - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":3}'
           ports:
             - containerPort: 8000
           env:
