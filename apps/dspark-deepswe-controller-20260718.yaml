@@ -396,7 +396,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "8"}
+            - {name: MAX_CONCURRENCY, value: "4"}
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
