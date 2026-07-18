@@ -32,3 +32,28 @@ spec:
                 name: vllm
                 port:
                   number: 80
+---
+# Second Tailscale Ingress on the same vllm Service, host `llm` -> gives an
+# `llm.beluga-wyvern.ts.net` MagicDNS name alongside `vllm.beluga-wyvern.ts.net`
+# (mirrors the vllm.hoam.lan / llm.hoam.lan dual-name convention on the LAN side).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - llm
+  rules:
+    - host: llm
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vllm
+                port:
+                  number: 80
