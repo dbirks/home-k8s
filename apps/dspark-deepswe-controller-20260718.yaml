@@ -153,7 +153,7 @@ data:
     `dspark-swebench`, artifacts harvested from Pod logs onto the PVC in `default`.
     Resumable via <task_id>.<sample>.json result files.
     """
-    import hashlib, json, os, re, time
+    import hashlib, json, os, re, time, urllib.request
     from base64 import b64decode
     from pathlib import Path
     from kubernetes import client, config as kconfig
@@ -183,6 +183,25 @@ data:
 
     def ts(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     def log(m): print(f"[{ts()}] {m}", flush=True)
+
+    VLLM_HEALTH = VLLM_API_BASE.rsplit("/v1", 1)[0].rstrip("/") + "/health"
+    def vllm_healthy():
+        try:
+            with urllib.request.urlopen(VLLM_HEALTH, timeout=5) as r:
+                return r.status == 200
+        except Exception:
+            return False
+    def wait_for_vllm():
+        # Pause launches while vLLM is down (e.g. GPU GSP crash -> reboot needed,
+        # issue #46) so we DON'T burn through pending tasks marking them failed.
+        warned = False
+        while not vllm_healthy():
+            if not warned:
+                log("vLLM UNHEALTHY -- pausing launches until it recovers (not burning tasks)")
+                warned = True
+            time.sleep(30)
+        if warned:
+            log("vLLM healthy again -- resuming launches")
 
     def pod_name_for(name):
         return f"dspark-dswe-gen-{hashlib.sha256(name.encode()).hexdigest()[:16]}"
@@ -288,6 +307,8 @@ data:
 
         in_flight = {}
         def launch_next():
+            if pending:
+                wait_for_vllm()   # gate: don't launch into a dead vLLM
             while len(in_flight) < MAX_CONCURRENCY and pending:
                 t, s = pending.pop(0)
                 name = f"{t['task_id']}.{s}"
