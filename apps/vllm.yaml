@@ -90,13 +90,15 @@ spec:
             - qwen27
             - "--max-model-len=262144"
             - "--dtype=bfloat16"
-            # Bumped 2026-07-17 (see issue #51 vLLM concurrency sweep): the
-            # binding constraint was max-num-seqs=16 (KV cache peaked at 21.5%,
-            # 38GB VRAM free). 16->32 seqs + 0.60->0.85 gpu-mem (more KV for
-            # long-context agent sessions) ~doubles the healthy concurrent-
-            # session count -- needed for high-concurrency trajectory data-gen.
-            - "--gpu-memory-utilization=0.85"
-            - "--max-num-seqs=32"
+            # REVERTED 2026-07-18 to proven-stable 0.60/16 after the aggressive
+            # 0.85/32 config (+ concurrent DeepSWE data-gen load) triggered an
+            # NVIDIA GSP firmware crash (Xid 154, NV_ERR_GPU_IN_FULLCHIP_RESET --
+            # issue #46) that wedged the GPU and required a node reboot. This
+            # Blackwell card cannot be pushed to 32 seqs / 0.85 mem safely; keep
+            # the throughput wins (CUDA graphs, spec-tokens 3) but back off the
+            # memory/concurrency. Data-gen must run at conservative concurrency.
+            - "--gpu-memory-utilization=0.60"
+            - "--max-num-seqs=16"
             - "--kv-cache-dtype=fp8_e4m3"
             # DeltaNet recurrent state cannot be FP8 — must be float16
             - "--mamba-cache-dtype=float16"
@@ -114,9 +116,7 @@ spec:
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
-            # 8192->16384 so simultaneous long-context prefills (agents paste
-            # large tool outputs) don't throttle at 32 concurrent sessions.
-            - "--max-num-batched-tokens=16384"
+            - "--max-num-batched-tokens=8192"
             # num_speculative_tokens 15 -> 3 (2026-07-16): live vllm counters
             # showed 99.6% of all accepted tokens came from positions 0-2, so
             # drafting 15 was verifying 12 dead positions/round for ~0.4% gain.
