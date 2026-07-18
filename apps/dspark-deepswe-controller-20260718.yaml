@@ -228,7 +228,7 @@ data:
                 client.V1EnvVar(name="SAMPLE_TEMP", value=str(SAMPLE_TEMP)),
             ],
             resources=client.V1ResourceRequirements(
-                requests={"cpu": "1", "memory": "4Gi"}, limits={"cpu": "2", "memory": "10Gi"}),
+                requests={"cpu": "1", "memory": "2Gi"}, limits={"cpu": "2", "memory": "10Gi"}),
             volume_mounts=[client.V1VolumeMount(name="scripts", mount_path="/scripts")],
         )
         spec = client.V1PodSpec(
@@ -396,7 +396,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "6"}
+            - {name: MAX_CONCURRENCY, value: "8"}
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
