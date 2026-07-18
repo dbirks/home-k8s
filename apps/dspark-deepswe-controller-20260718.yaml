@@ -1,0 +1,397 @@
+# DSpark DeepSWE trajectory-generation controller (issue #56 / #51)
+#
+# Same architecture as the SWE-bench controller (single Job in `default` driving
+# ephemeral per-run Pods in `dspark-swebench` via the k8s API, artifacts handed
+# back base64-over-logs), adapted for DeepSWE (datacurve.ai):
+#   - Task source: 113-task manifest ConfigMap (task_id + ECR image + instruction)
+#     instead of SWE-bench instance IDs. 91 repos, 5 languages (go/py/ts/rust/js)
+#     -- the DIVERSITY the failed narrow-agentic run (#51) showed we need.
+#   - Runner: mini-swe-agent GENERIC run (`minisweagent.run.mini`, validated) with
+#     MSWEA_CONFIGURED=true (skip setup wizard) + `-c mini.yaml`, task = the task's
+#     instruction.md (passed via env), cwd=/app (Harbor), temperature>0 per sample.
+#   - MULTI-SAMPLE: N_SAMPLES runs per task at temp>0 for solution diversity/volume.
+#   - DISK-SAFE: the work queue is TASK-ORDERED so a task's N samples cluster in
+#     flight -- image is pulled once (IfNotPresent) and reused across its samples,
+#     keeping only ~ceil(MAX_CONCURRENCY/N_SAMPLES) distinct images resident. This
+#     structurally prevents the concurrent-distinct-image-pull storm that melted
+#     etcd during the SWE-bench run. DeepSWE images also share the mars-base layer.
+#   - Backend: vLLM at VLLM_API_BASE (data-gen wants spec-decode OFF + high
+#     max-num-seqs for batch throughput -- see #51 SGLang research).
+#
+# Node has 32 cores; MAX_CONCURRENCY=20 leaves headroom for vLLM (cpu:1) + system.
+# TASK_LIMIT>0 restricts to the first N tasks (validation runs). Resumable: skips
+# any <task_id>.<sample> that already has a result on the PVC.
+#
+# Output: /output/deepswe/{results,trajectories,logs}/ on dspark-output-hdd-v2.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-deepswe-run-instance-script
+  namespace: dspark-swebench
+  labels:
+    app.kubernetes.io/name: dspark-deepswe
+data:
+  run-instance.sh: |
+    #!/bin/bash
+    # Runs inside a Pod whose IMAGE IS the DeepSWE per-task image
+    # (public.ecr.aws/d3j8x8q7/swe-bench-202605:<ext_id>-v1.1, repo checked out at
+    # /app). Installs mini-swe-agent via uv, runs the GENERIC `mini` agent on the
+    # task's instruction (passed via $INSTRUCTION) against our vLLM, and prints the
+    # trajectory base64-wrapped for the controller to harvest (the PVC lives in
+    # `default`, this Pod in `dspark-swebench`, so no direct mount).
+    set -uo pipefail
+
+    TASK_ID="${TASK_ID:?missing TASK_ID}"
+    SAMPLE_IDX="${SAMPLE_IDX:?missing SAMPLE_IDX}"
+    NAME="${TASK_ID}.${SAMPLE_IDX}"
+    OUT_DIR=/tmp/dspark-out
+    TRAJ_DIR="$OUT_DIR/trajectories"; RESULT_DIR="$OUT_DIR/results"
+    mkdir -p "$TRAJ_DIR" "$RESULT_DIR"
+
+    export HF_HOME="${HF_HOME:-$OUT_DIR/hf-cache}"
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-$OUT_DIR/uv-cache}"
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$OUT_DIR/uv-python}"
+    export MSWEA_CONFIGURED=true   # skip mini-swe-agent first-run setup wizard (aborts on non-TTY)
+    mkdir -p "$HF_HOME" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
+
+    echo "=== [$(date -u +%FT%TZ)] generation start: $NAME ==="
+    echo "cwd-check: /app present? $([ -d /app ] && echo yes || echo NO)"
+    printf '%s' "${INSTRUCTION:?missing INSTRUCTION}" > "$OUT_DIR/instruction.md"
+
+    emit_artifacts() {
+      echo "##DSPARK-RESULT-B64-BEGIN##"
+      base64 -w0 "$RESULT_DIR/${NAME}.json" 2>/dev/null || base64 "$RESULT_DIR/${NAME}.json" | tr -d '\n'
+      echo; echo "##DSPARK-RESULT-B64-END##"
+      if [ -s "$TRAJ_DIR/${NAME}.traj.json" ]; then
+        echo "##DSPARK-TRAJ-B64-BEGIN##"
+        base64 -w0 "$TRAJ_DIR/${NAME}.traj.json" 2>/dev/null || base64 "$TRAJ_DIR/${NAME}.traj.json" | tr -d '\n'
+        echo; echo "##DSPARK-TRAJ-B64-END##"
+      fi
+    }
+
+    write_result() {
+      python3 - "$NAME" "$TASK_ID" "$SAMPLE_IDX" "$1" "$RESULT_DIR/${NAME}.json" <<'PYEOF' 2>/dev/null || true
+    import json, sys
+    name, task_id, sample, status, path = sys.argv[1:6]
+    json.dump({"name": name, "task_id": task_id, "sample": int(sample), "phase": "generation", "status": status}, open(path, "w"))
+    PYEOF
+    }
+
+    UV_BIN=""
+    if command -v uv >/dev/null 2>&1; then UV_BIN="uv"
+    elif command -v python3 >/dev/null 2>&1 && python3 -m pip install --quiet --no-input --root-user-action ignore uv 2>/tmp/pip_uv.log; then UV_BIN="python3 -m uv"
+    else
+        (curl -LsSf https://astral.sh/uv/install.sh | sh) 2>&1 | tail -10
+        export PATH="$HOME/.local/bin:$PATH"
+        command -v uv >/dev/null 2>&1 && UV_BIN="uv"
+    fi
+    if [ -z "$UV_BIN" ]; then
+        echo "ERROR: no uv available in this image"
+        write_result "toolchain_unavailable"; emit_artifacts
+        echo "=== generation end (toolchain_unavailable): $NAME ==="; exit 0
+    fi
+
+    set +e
+    cd /app 2>/dev/null || cd /
+    $UV_BIN run --python 3.12 --with "mini-swe-agent==2.4.5" --with fastapi --with orjson -- \
+        python3 -m minisweagent.run.mini \
+            -c mini.yaml \
+            -c "model.model_kwargs.api_base=${VLLM_API_BASE:-http://vllm.default.svc.cluster.local/v1}" \
+            -c "model.model_kwargs.api_key=dummy" \
+            -c "model.model_kwargs.temperature=${SAMPLE_TEMP:-0.7}" \
+            -c "model.cost_tracking=ignore_errors" \
+            -c "agent.step_limit=${STEP_LIMIT:-75}" \
+            -t "$(cat "$OUT_DIR/instruction.md")" \
+            -m "${MSWEA_MODEL_NAME:-hosted_vllm/main}" \
+            -y \
+            -o "$TRAJ_DIR/${NAME}.traj.json"
+    AGENT_RC=$?
+    set -e
+    echo "mini exit code: $AGENT_RC"
+
+    python3 - "$NAME" "$TASK_ID" "$SAMPLE_IDX" "$TRAJ_DIR/${NAME}.traj.json" "$RESULT_DIR/${NAME}.json" "$AGENT_RC" <<'PYEOF'
+    import json, sys
+    name, task_id, sample, traj_path, result_path, agent_rc = sys.argv[1:7]
+    status = "error"; exit_status = None; n_messages = 0; n_steps = 0; err = ""
+    try:
+        data = json.load(open(traj_path))
+        info = data.get("info", {})
+        exit_status = info.get("exit_status")
+        messages = data.get("messages", [])
+        n_messages = len(messages)
+        n_steps = sum(1 for m in messages if m.get("role") == "assistant")
+        status = "completed" if n_steps >= 1 else "no_assistant_turns"
+    except FileNotFoundError:
+        status = "no_trajectory"
+    except Exception as e:
+        status = "parse_error"; err = str(e)
+    json.dump({"name": name, "task_id": task_id, "sample": int(sample), "phase": "generation",
+               "status": status, "agent_exit_code": int(agent_rc), "exit_status": exit_status,
+               "n_messages": n_messages, "n_agent_steps": n_steps, "error_detail": err},
+              open(result_path, "w"), indent=2)
+    print(f"Result: status={status} exit_status={exit_status} n_steps={n_steps}")
+    PYEOF
+
+    emit_artifacts
+    echo "=== [$(date -u +%FT%TZ)] generation end: $NAME ==="
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-deepswe-controller-script
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-deepswe
+data:
+  controller.py: |
+    #!/usr/bin/env python3
+    """DSpark DeepSWE generation controller (issue #56).
+
+    Adapts the SWE-bench controller: manifest of 113 DeepSWE tasks x N_SAMPLES runs
+    each, TASK-ORDERED work queue (disk-safe image reuse), ephemeral runner Pods in
+    `dspark-swebench`, artifacts harvested from Pod logs onto the PVC in `default`.
+    Resumable via <task_id>.<sample>.json result files.
+    """
+    import hashlib, json, os, re, time
+    from base64 import b64decode
+    from pathlib import Path
+    from kubernetes import client, config as kconfig
+    from kubernetes.client.rest import ApiException
+
+    NAMESPACE = os.environ.get("SWEBENCH_NAMESPACE", "dspark-swebench")
+    OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/output/deepswe"))
+    MANIFEST_FILE = Path(os.environ.get("MANIFEST_FILE", "/manifest/deepswe-tasks-full.json"))
+    RUN_SCRIPT_CONFIGMAP = os.environ.get("RUN_SCRIPT_CONFIGMAP", "dspark-deepswe-run-instance-script")
+    RUNNER_SA = os.environ.get("RUNNER_SERVICE_ACCOUNT", "dspark-swebench-runner")
+    NODE_NAME = os.environ.get("PIN_NODE", "")
+
+    N_SAMPLES = int(os.environ.get("N_SAMPLES", "20"))
+    TASK_LIMIT = int(os.environ.get("TASK_LIMIT", "0"))   # >0 => first N tasks (validation)
+    MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "20"))
+    PER_RUN_TIMEOUT_SECONDS = int(os.environ.get("PER_RUN_TIMEOUT_SECONDS", "3600"))
+    POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
+
+    VLLM_API_BASE = os.environ.get("VLLM_API_BASE", "http://vllm.default.svc.cluster.local/v1")
+    MODEL_NAME = os.environ.get("MSWEA_MODEL_NAME", "hosted_vllm/main")
+    STEP_LIMIT = os.environ.get("STEP_LIMIT", "75")
+    SAMPLE_TEMP = os.environ.get("SAMPLE_TEMP", "0.7")
+
+    LABEL_SELECTOR = "app.kubernetes.io/name=dspark-deepswe,dspark.io/phase=generation"
+    RESULT_RE = re.compile(r"##DSPARK-RESULT-B64-BEGIN##\n(.*?)\n##DSPARK-RESULT-B64-END##", re.S)
+    TRAJ_RE = re.compile(r"##DSPARK-TRAJ-B64-BEGIN##\n(.*?)\n##DSPARK-TRAJ-B64-END##", re.S)
+
+    def ts(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    def log(m): print(f"[{ts()}] {m}", flush=True)
+
+    def pod_name_for(name):
+        return f"dspark-dswe-gen-{hashlib.sha256(name.encode()).hexdigest()[:16]}"
+    def result_path_for(name):
+        return OUTPUT_ROOT / "results" / f"{name}.json"
+
+    def write_result(name, status, **extra):
+        p = result_path_for(name); p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists(): return
+        p.write_text(json.dumps({"name": name, "phase": "generation", "status": status, **extra}, indent=2))
+
+    def build_pod(task, sample):
+        name = f"{task['task_id']}.{sample}"
+        container = client.V1Container(
+            name="agent", image=task["image"], image_pull_policy="IfNotPresent",
+            command=["/bin/bash", "/scripts/run-instance.sh"],
+            env=[
+                client.V1EnvVar(name="TASK_ID", value=task["task_id"]),
+                client.V1EnvVar(name="SAMPLE_IDX", value=str(sample)),
+                client.V1EnvVar(name="INSTRUCTION", value=task["instruction"]),
+                client.V1EnvVar(name="VLLM_API_BASE", value=VLLM_API_BASE),
+                client.V1EnvVar(name="MSWEA_MODEL_NAME", value=MODEL_NAME),
+                client.V1EnvVar(name="STEP_LIMIT", value=str(STEP_LIMIT)),
+                client.V1EnvVar(name="SAMPLE_TEMP", value=str(SAMPLE_TEMP)),
+            ],
+            resources=client.V1ResourceRequirements(
+                requests={"cpu": "1", "memory": "4Gi"}, limits={"cpu": "2", "memory": "10Gi"}),
+            volume_mounts=[client.V1VolumeMount(name="scripts", mount_path="/scripts")],
+        )
+        spec = client.V1PodSpec(
+            restart_policy="Never", service_account_name=RUNNER_SA,
+            automount_service_account_token=False, enable_service_links=False,
+            containers=[container],
+            volumes=[client.V1Volume(name="scripts",
+                     config_map=client.V1ConfigMapVolumeSource(name=RUN_SCRIPT_CONFIGMAP, default_mode=0o755))],
+        )
+        if NODE_NAME: spec.node_selector = {"kubernetes.io/hostname": NODE_NAME}
+        return client.V1Pod(metadata=client.V1ObjectMeta(
+            name=pod_name_for(name), namespace=NAMESPACE,
+            labels={"app.kubernetes.io/name": "dspark-deepswe", "dspark.io/phase": "generation"},
+            annotations={"dspark.io/run-name": name}), spec=spec)
+
+    def harvest(v1, pod_name, name):
+        try:
+            full_log = v1.read_namespaced_pod_log(name=pod_name, namespace=NAMESPACE) or ""
+        except ApiException as e:
+            log(f"{name}: could not fetch pod log: {e}"); return False
+        (OUTPUT_ROOT / "logs").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_ROOT / "logs" / f"{name}.log").write_text(full_log)
+        found = False
+        m = RESULT_RE.search(full_log)
+        if m:
+            try:
+                result_path_for(name).parent.mkdir(parents=True, exist_ok=True)
+                result_path_for(name).write_bytes(b64decode(m.group(1))); found = True
+            except Exception as e: log(f"{name}: RESULT decode failed: {e}")
+        m = TRAJ_RE.search(full_log)
+        if m:
+            try:
+                tp = OUTPUT_ROOT / "trajectories" / f"{name}.traj.json"
+                tp.parent.mkdir(parents=True, exist_ok=True)
+                tp.write_bytes(b64decode(m.group(1)))
+            except Exception as e: log(f"{name}: TRAJ decode failed: {e}")
+        return found
+
+    def delete_pod(v1, pod_name):
+        try:
+            v1.delete_namespaced_pod(name=pod_name, namespace=NAMESPACE,
+                body=client.V1DeleteOptions(grace_period_seconds=5, propagation_policy="Background"))
+        except ApiException as e:
+            if e.status != 404: log(f"WARNING: delete {pod_name} failed: {e}")
+
+    def reconcile_orphans(v1):
+        try:
+            pods = v1.list_namespaced_pod(namespace=NAMESPACE, label_selector=LABEL_SELECTOR)
+        except ApiException as e:
+            log(f"WARNING: reconcile list failed: {e}"); return
+        for pod in pods.items:
+            log(f"reconcile: deleting orphan {pod.metadata.name}")
+            delete_pod(v1, pod.metadata.name)
+        for _ in range(12):
+            time.sleep(5)
+            if not v1.list_namespaced_pod(namespace=NAMESPACE, label_selector=LABEL_SELECTOR).items:
+                return
+
+    def main():
+        kconfig.load_incluster_config()
+        v1 = client.CoreV1Api()
+        for sub in ("results", "trajectories", "logs"):
+            (OUTPUT_ROOT / sub).mkdir(parents=True, exist_ok=True)
+
+        tasks = json.loads(MANIFEST_FILE.read_text())
+        if TASK_LIMIT > 0: tasks = tasks[:TASK_LIMIT]
+        log(f"Loaded {len(tasks)} tasks x {N_SAMPLES} samples (MAX_CONCURRENCY={MAX_CONCURRENCY})")
+
+        reconcile_orphans(v1)
+
+        # TASK-ORDERED queue: a task's samples cluster in flight -> image reused,
+        # only ~ceil(MAX_CONCURRENCY/N_SAMPLES) distinct images resident (disk-safe).
+        queue = [(t, s) for t in tasks for s in range(N_SAMPLES)]
+        pending = [(t, s) for (t, s) in queue if not result_path_for(f"{t['task_id']}.{s}").exists()]
+        log(f"{len(queue)-len(pending)} already done (resumed); {len(pending)} pending")
+
+        in_flight = {}
+        def launch_next():
+            while len(in_flight) < MAX_CONCURRENCY and pending:
+                t, s = pending.pop(0)
+                name = f"{t['task_id']}.{s}"
+                pod = build_pod(t, s)
+                try:
+                    v1.create_namespaced_pod(namespace=NAMESPACE, body=pod)
+                    in_flight[name] = {"pod_name": pod.metadata.name, "started": time.time()}
+                    log(f"launched {name} ({len(in_flight)}/{MAX_CONCURRENCY} in flight, {len(pending)} pending)")
+                except ApiException as e:
+                    log(f"ERROR creating pod {name}: {e}"); write_result(name, "pod_create_error", api_status=e.status)
+
+        launch_next()
+        while in_flight:
+            time.sleep(POLL_INTERVAL_SECONDS)
+            for name in list(in_flight.keys()):
+                meta = in_flight[name]; elapsed = time.time() - meta["started"]
+                try:
+                    pod = v1.read_namespaced_pod(name=meta["pod_name"], namespace=NAMESPACE)
+                except ApiException as e:
+                    if e.status == 404:
+                        write_result(name, "pod_disappeared"); del in_flight[name]; launch_next()
+                    continue
+                phase = pod.status.phase; timed_out = elapsed > PER_RUN_TIMEOUT_SECONDS
+                if phase in ("Succeeded", "Failed") or timed_out:
+                    if timed_out and phase not in ("Succeeded", "Failed"):
+                        log(f"{name}: timeout {int(elapsed)}s (phase={phase})")
+                        harvest(v1, meta["pod_name"], name); write_result(name, "timeout", elapsed_seconds=int(elapsed))
+                    else:
+                        log(f"{name}: {phase} after {elapsed:.0f}s")
+                        if not harvest(v1, meta["pod_name"], name):
+                            write_result(name, f"{phase.lower()}_no_result", elapsed_seconds=int(elapsed))
+                    delete_pod(v1, meta["pod_name"]); del in_flight[name]; launch_next()
+
+        # summary
+        by_status = {}
+        for t in tasks:
+            for s in range(N_SAMPLES):
+                p = result_path_for(f"{t['task_id']}.{s}")
+                st = json.loads(p.read_text()).get("status", "unknown") if p.exists() else "missing"
+                by_status[st] = by_status.get(st, 0) + 1
+        (OUTPUT_ROOT / "generation_summary.json").write_text(json.dumps(
+            {"generated_at": ts(), "tasks": len(tasks), "n_samples": N_SAMPLES, "by_status": by_status}, indent=2))
+        log(f"Done. Summary: {json.dumps(by_status)}")
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-deepswe-gen-20260718
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-deepswe
+    app.kubernetes.io/component: generation-controller
+spec:
+  backoffLimit: 30
+  activeDeadlineSeconds: 259200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dspark-deepswe
+        app.kubernetes.io/component: generation-controller
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: dspark-swebench-controller
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      containers:
+        - name: controller
+          image: python:3.12-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              pip install --quiet --no-input --root-user-action ignore "kubernetes>=30,<32"
+              exec python3 /scripts/controller.py
+          env:
+            - {name: SWEBENCH_NAMESPACE, value: dspark-swebench}
+            - {name: OUTPUT_ROOT, value: /output/deepswe}
+            - {name: MANIFEST_FILE, value: /manifest/deepswe-tasks-full.json}
+            - {name: RUN_SCRIPT_CONFIGMAP, value: dspark-deepswe-run-instance-script}
+            - {name: RUNNER_SERVICE_ACCOUNT, value: dspark-swebench-runner}
+            - {name: PIN_NODE, value: talos-210-73x}
+            - {name: N_SAMPLES, value: "20"}
+            - {name: TASK_LIMIT, value: "0"}
+            - {name: MAX_CONCURRENCY, value: "12"}
+            - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
+            - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
+            - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
+            - {name: STEP_LIMIT, value: "250"}
+            - {name: SAMPLE_TEMP, value: "0.7"}
+          resources:
+            requests: {cpu: "250m", memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: output, mountPath: /output}
+            - {name: manifest, mountPath: /manifest}
+            - {name: controller-script, mountPath: /scripts}
+      volumes:
+        - name: output
+          persistentVolumeClaim: {claimName: dspark-output-hdd-v2}
+        - name: manifest
+          configMap: {name: dspark-deepswe-manifest}
+        - name: controller-script
+          configMap: {name: dspark-deepswe-controller-script, defaultMode: 0755}
