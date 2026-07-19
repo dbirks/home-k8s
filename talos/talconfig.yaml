@@ -19,7 +19,7 @@
 ---
 clusterName: home
 talosVersion: v1.13.6
-kubernetesVersion: v1.35.0
+kubernetesVersion: v1.36.2
 endpoint: https://10.0.0.30:6443
 
 # Talos Image Factory schematic — installer image with NVIDIA extensions
