@@ -23,8 +23,8 @@ kubernetesVersion: v1.35.0
 endpoint: https://10.0.0.30:6443
 
 # Talos Image Factory schematic — installer image with NVIDIA extensions
-# (siderolabs/nvidia-open-gpu-kernel-modules-production,
-# siderolabs/nvidia-container-toolkit-production — the "-production" suffix
+# (siderolabs/nvidia-open-gpu-kernel-modules-lts,
+# siderolabs/nvidia-container-toolkit-lts — the "-production" suffix
 # is now required; the old bare names still resolve via Image Factory's
 # schematic endpoint but newer talhelper releases validate against the
 # current extension catalog, which only lists the suffixed forms. See
@@ -48,8 +48,8 @@ nodes:
       customization:
         systemExtensions:
           officialExtensions:
-            - siderolabs/nvidia-open-gpu-kernel-modules-production
-            - siderolabs/nvidia-container-toolkit-production
+            - siderolabs/nvidia-open-gpu-kernel-modules-lts
+            - siderolabs/nvidia-container-toolkit-lts
     # Per-node patches
     patches:
       - "@./patches/local-storage.yaml"
