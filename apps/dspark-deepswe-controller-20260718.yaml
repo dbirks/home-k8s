@@ -18,7 +18,12 @@
 #   - Backend: vLLM at VLLM_API_BASE (data-gen wants spec-decode OFF + high
 #     max-num-seqs for batch throughput -- see #51 SGLang research).
 #
-# Node has 32 cores; MAX_CONCURRENCY=20 leaves headroom for vLLM (cpu:1) + system.
+# Node has 32 cores, BUT each openhands worker is heavily disk-I/O-bound during
+# repo build/test (D-state pileup), not just CPU. Observed 2026-07-19: conc=8 drove
+# loadavg to ~40-62 which starved the apiserver (KubePrism 5s lease timeouts) and
+# crash-looped kube-scheduler. Empirically ~5 loadavg per worker; scheduler is
+# stable below ~15, crash-loops above ~35. Keep MAX_CONCURRENCY low (2-3) on this
+# single-node control-plane+worker box. Do NOT raise without watching loadavg.
 # TASK_LIMIT>0 restricts to the first N tasks (validation runs). Resumable: skips
 # any <task_id>.<sample> that already has a result on the PVC.
 #
@@ -396,7 +401,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "8"}
+            - {name: MAX_CONCURRENCY, value: "2"}
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
