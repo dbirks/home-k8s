@@ -8,7 +8,7 @@
 #   - api (Service literally named "api"): Go monolith, port 8081 — the UI's
 #     baked-in nginx.conf hardcodes `proxy_pass http://api:8081`, so the
 #     Service name/port must match exactly (see web/nginx.conf upstream).
-#   - shepherd-web: nginx + React PWA, port 80, proxies /api -> api:8081
+#   - shepherd-ui: nginx + React PWA, port 80, proxies /api -> api:8081
 #   - shepherd-searxng: private SearxNG instance backing web.search
 #
 # Docker-image/uvx/pnpx capability runners are disabled in-cluster: the
@@ -321,7 +321,7 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: shepherd-web
+  name: shepherd-ui
   namespace: default
 spec:
   replicas: 1
@@ -329,16 +329,16 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app: shepherd-web
+      app: shepherd-ui
   template:
     metadata:
       labels:
-        app: shepherd-web
+        app: shepherd-ui
     spec:
       imagePullSecrets:
         - name: ghcr-pull
       containers:
-        - name: web
+        - name: ui
           # {"$imagepolicy": "flux-system:shepherd-ui"}
           image: ghcr.io/dbirks/shepherd-agents/ui:78d27b6-1784536081
           ports:
@@ -367,11 +367,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: shepherd-web
+  name: shepherd-ui
   namespace: default
 spec:
   selector:
-    app: shepherd-web
+    app: shepherd-ui
   ports:
     - port: 80
       targetPort: http
@@ -396,7 +396,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: shepherd-web
+                name: shepherd-ui
                 port:
                   number: 80
 ---
@@ -421,6 +421,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: shepherd-web
+                name: shepherd-ui
                 port:
                   number: 80
