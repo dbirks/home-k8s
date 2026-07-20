@@ -103,7 +103,7 @@ data:
         python3 -m minisweagent.run.mini \
             -c mini.yaml \
             -c "model.model_kwargs.api_base=${VLLM_API_BASE:-http://vllm.default.svc.cluster.local/v1}" \
-            -c "model.model_kwargs.api_key=dummy" \
+            -c "model.model_kwargs.api_key=${LLM_API_KEY:-dummy}" \
             -c "model.model_kwargs.temperature=${SAMPLE_TEMP:-0.7}" \
             -c "model.cost_tracking=ignore_errors" \
             -c "agent.step_limit=${STEP_LIMIT:-75}" \
@@ -181,6 +181,7 @@ data:
     MODEL_NAME = os.environ.get("MSWEA_MODEL_NAME", "hosted_vllm/main")
     STEP_LIMIT = os.environ.get("STEP_LIMIT", "75")
     SAMPLE_TEMP = os.environ.get("SAMPLE_TEMP", "0.7")
+    LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 
     LABEL_SELECTOR = "app.kubernetes.io/name=dspark-deepswe,dspark.io/phase=generation"
     RESULT_RE = re.compile(r"##DSPARK-RESULT-B64-BEGIN##\n(.*?)\n##DSPARK-RESULT-B64-END##", re.S)
@@ -189,10 +190,15 @@ data:
     def ts(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     def log(m): print(f"[{ts()}] {m}", flush=True)
 
-    VLLM_HEALTH = VLLM_API_BASE.rsplit("/v1", 1)[0].rstrip("/") + "/health"
+    # /v1/models returns 200 on vLLM (no auth) AND DashScope (with bearer key),
+    # so this doubles as a first-call auth/connectivity check for the hosted endpoint.
+    HEALTH_URL = VLLM_API_BASE.rstrip("/") + "/models"
     def vllm_healthy():
         try:
-            with urllib.request.urlopen(VLLM_HEALTH, timeout=5) as r:
+            req = urllib.request.Request(HEALTH_URL)
+            if LLM_API_KEY:
+                req.add_header("Authorization", f"Bearer {LLM_API_KEY}")
+            with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status == 200
         except Exception:
             return False
@@ -231,6 +237,7 @@ data:
                 client.V1EnvVar(name="MSWEA_MODEL_NAME", value=MODEL_NAME),
                 client.V1EnvVar(name="STEP_LIMIT", value=str(STEP_LIMIT)),
                 client.V1EnvVar(name="SAMPLE_TEMP", value=str(SAMPLE_TEMP)),
+                client.V1EnvVar(name="LLM_API_KEY", value=LLM_API_KEY),
             ],
             resources=client.V1ResourceRequirements(
                 requests={"cpu": "1", "memory": "2Gi"}, limits={"cpu": "2", "memory": "10Gi"}),
@@ -394,19 +401,25 @@ spec:
               exec python3 /scripts/controller.py
           env:
             - {name: SWEBENCH_NAMESPACE, value: dspark-swebench}
-            - {name: OUTPUT_ROOT, value: /output/deepswe}
+            # SMOKE TEST — DashScope-hosted qwen3.6-27b, 5 tasks x 1 sample, isolated
+            # output root so it doesn't collide with the local /output/deepswe dataset.
+            # For the full run: OUTPUT_ROOT=/output/deepswe, TASK_LIMIT=0, N_SAMPLES=N.
+            - {name: OUTPUT_ROOT, value: /output/deepswe-dashscope}
             - {name: MANIFEST_FILE, value: /manifest/deepswe-tasks-full.json}
             - {name: RUN_SCRIPT_CONFIGMAP, value: dspark-deepswe-run-instance-script}
             - {name: RUNNER_SERVICE_ACCOUNT, value: dspark-swebench-runner}
             - {name: PIN_NODE, value: talos-210-73x}
-            - {name: N_SAMPLES, value: "20"}
-            - {name: TASK_LIMIT, value: "0"}
+            - {name: N_SAMPLES, value: "1"}
+            - {name: TASK_LIMIT, value: "5"}
             - {name: MAX_CONCURRENCY, value: "2"}
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
-            - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
-            - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
-            - {name: STEP_LIMIT, value: "250"}
+            - {name: VLLM_API_BASE, value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
+            - {name: MSWEA_MODEL_NAME, value: hosted_vllm/qwen3.6-27b}
+            - {name: STEP_LIMIT, value: "75"}
             - {name: SAMPLE_TEMP, value: "0.7"}
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef: {name: dashscope-api-key, key: DASHSCOPE_API_KEY}
           resources:
             requests: {cpu: "250m", memory: 512Mi}
             limits: {cpu: "1", memory: 1Gi}
