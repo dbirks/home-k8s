@@ -401,21 +401,22 @@ spec:
               exec python3 /scripts/controller.py
           env:
             - {name: SWEBENCH_NAMESPACE, value: dspark-swebench}
-            # SMOKE TEST — DashScope-hosted qwen3.6-27b, 5 tasks x 1 sample, isolated
-            # output root so it doesn't collide with the local /output/deepswe dataset.
+            # $5 TEST — DashScope-hosted qwen3.6-27b, 15 tasks x 1 sample, STEP_LIMIT=20
+            # (short trajectories = cheap; caching does NOT engage for this model, so
+            # we're at no-cache list price ~$0.30/sample). Isolated output root.
             # For the full run: OUTPUT_ROOT=/output/deepswe, TASK_LIMIT=0, N_SAMPLES=N.
-            - {name: OUTPUT_ROOT, value: /output/deepswe-dashscope}
+            - {name: OUTPUT_ROOT, value: /output/deepswe-5test}
             - {name: MANIFEST_FILE, value: /manifest/deepswe-tasks-full.json}
             - {name: RUN_SCRIPT_CONFIGMAP, value: dspark-deepswe-run-instance-script}
             - {name: RUNNER_SERVICE_ACCOUNT, value: dspark-swebench-runner}
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "1"}
-            - {name: TASK_LIMIT, value: "5"}
+            - {name: TASK_LIMIT, value: "15"}
             - {name: MAX_CONCURRENCY, value: "2"}
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/qwen3.6-27b}
-            - {name: STEP_LIMIT, value: "75"}
+            - {name: STEP_LIMIT, value: "20"}
             - {name: SAMPLE_TEMP, value: "0.7"}
             - name: LLM_API_KEY
               valueFrom:
