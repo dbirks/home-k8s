@@ -40,7 +40,8 @@ metadata:
   name: gemma
   namespace: default
 spec:
-  replicas: 1
+  # replicas: 0 — parked (see granite-stt.yaml). Bring up one model at a time.
+  replicas: 0
   strategy:
     type: Recreate
   selector:
