@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    DASHSCOPE_API_KEY: ENC[AES256_GCM,data:anLRi19EAVvFrwsdaO3RS5s8CIv8JMdM5FkZnXSwL8asQHqTWhCUsxFjegTJBwhCnbPCsJqEEvUOvIBrfabI2lGs7mLNDb0UGq7wSxFVPbdEXO7u71bclMLX+K7ELQV4lXxHx6HK4mJdg+HMGfgBamzCiaOmQBtm/rIy9rnPnjpeAcXoj4DJFq0n9eLQXeKgQLQfpkr6IOW2Z3e3,iv:v3Fzi1K2/Ogmr6hBgBcAxgzRnD2o4lhjtLcW8GY34ok=,tag:tjjrCmWpIOFG1Aa5DW+tFw==,type:str]
+kind: Secret
+metadata:
+    name: dashscope-api-key
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAvNXUwNHEyRzYxSVRTd0I1
+            Nkl6dzhMV0xMY242QWpCRTIzeHBJNzc4RWhrCmNqYjl4YnUvemZpMFhybW5tWVJp
+            eGt3aElJcDJhUnhSSXhuUFZVOWZlUHcKLS0tIHMxSHk1QUt1TXg5SmlnbzVyNmha
+            RFNEN1gxcm1hRGxVK0VIWnp6dlM3TEUKGfHTNzaCf8fkpkwWJ7BEea61CbVBJnFN
+            +oggFKo0uE6BNDZjxgEAAjBe00aoxa5Qd9oZ1Ni8s9NppALzeSPIkw==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-20T09:24:18Z"
+    mac: ENC[AES256_GCM,data:dzjSGyDqmZWPc+s6zD7/dKpLRPRbPdA5mVuuRxs6ByFD5ShH8v+cPWTEy/xb63JGOp+lCcIY3FJ1ZEbC7j9SLO+RXuek/3XQnfaq6XDWFGE8y5TBTRm0aBna4mG0wZniQ2psrzO+g9Yq0bChbovGPPu5Id16L78qVn7L3+HcEqY=,iv:JPekZQTujZMhu/GaJGBsiMVuemCjq+bglrQ2wXd55DM=,tag:tetJJGaQ1NV5NkFCSQpQ1A==,type:str]
+    version: 3.13.1
