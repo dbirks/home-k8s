@@ -1,0 +1,70 @@
+# Shepherd — GHCR pull credentials
+#
+# ghcr.io/dbirks/shepherd-agents/{api,ui} are private packages (the source
+# repo is private, so the packages inherit private visibility). Two copies
+# of the same dockerconfigjson are needed:
+#   - default ns: imagePullSecrets on the shepherd-api/shepherd-web Deployments
+#   - flux-system ns: secretRef on the ImageRepository objects (the
+#     image-reflector-controller needs its own credential to list tags)
+#
+# PLACEHOLDER CREDENTIALS: the password below is a dummy string, not a real
+# token. Until this is replaced, both the Deployments (ImagePullBackOff) and
+# the ImageRepository scans (auth errors) will fail. To fix:
+#   1. Mint a GitHub PAT (classic) with `read:packages` scope, scoped to
+#      dbirks/shepherd-agents (or make the packages public and delete this
+#      follow-up + the imagePullSecrets/secretRef references instead).
+#   2. sops apps/shepherd-ghcr-pull.enc.yaml
+#   3. Replace both `.dockerconfigjson` values with the output of:
+#      kubectl create secret docker-registry ghcr-pull \
+#        --docker-server=ghcr.io --docker-username=dbirks \
+#        --docker-password=<PAT> --docker-email=none@example.com \
+#        --dry-run=client -o jsonpath='{.data.__dockerconfigjson}'
+#      (base64-encoded value goes directly in `data:`, or decode it for
+#      `stringData:` — either works since sops only touches these keys.)
+apiVersion: v1
+kind: Secret
+metadata:
+    name: ghcr-pull
+    namespace: default
+type: kubernetes.io/dockerconfigjson
+data:
+    .dockerconfigjson: ENC[AES256_GCM,data:0R+F43BdqDn7kNb1mG745zKW+kGeLMmAv44YkzJF/+tk9W0wUbUs3JarpJBmEMlgZmazoIHuffow/GJPLBsA4PtTnJXMbMyxf9K4+UGAu/Sfy4EH+fQ+UKbtN1LaoMMDFGpAKqaVBv75VQ+rWMXu9bAzvLPo7TwGs2tAxVceDOJYVcWwQWPF32ZOhAoRqbbbQf4OdK1brtdV45HFj+ssv4sM4o65rREoqj0s2dHJr4nWK43xWsTpDFEAd0UghAwtBSY7WFNIwkzw69BuBhwtH3dnY/qOKwffBMRSl5bUbs5xViMbQUCtVRKOEUZHe7ZzrY2SysrERp8NQaKxGvnA9zwCiyfOmXR3uuZmlw==,iv:ACmgprJbVBfKe6mXXzWHATbjJtvLh0a7QgHIEOsggRs=,tag:4M4C073o06iwim0acCsGJw==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBZMXFLTjlqYWUxNTJSdWt5
+            OFVBSVU5R3NXWEhOWjEvN3kwRXdBR3BQVlZ3CjExdmhQaVpnSW9ITk5EN1hkd0J1
+            TDdyZzBzM1J6ZzRVNmxvd0lSVWNZNlEKLS0tIG1YL0owVkd0dU5MS1hzN0wrbkJ4
+            OGVuK3lTcC9PL3lEbnZUUE4zejVyMUEKVjau+uwtjqibxl0fU+zeZeErCxheBNex
+            OJ/cONLYCIJtP8KaShNQMpfyHST5qjG3AMHaQ0ZGXYGsvWWUapVy8g==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-20T08:35:07Z"
+    mac: ENC[AES256_GCM,data:yRWtUmLzEj4+ZDJuD4hPfcs+KMndhoCLjDPel6xatL7McmTl7MpXg/TTkAoxgBI+0FOS48uulKjGUJ+cJ6iGrhaxxZmWB0F4Y1lQEVNDTSbSduBgwrkqVOLMT5dRYDMR4G3gndy86ropa8x5lSJcI2PT0wr/xbJbGPU5O5y1eQo=,iv:TsUwgaouofiBu8/3suCCTobtmK+jN4zgElvowPrJC+Y=,tag:R2BfhszYAbSrpbocq/VHsg==,type:str]
+    version: 3.13.0
+---
+apiVersion: v1
+kind: Secret
+metadata:
+    name: ghcr-pull
+    namespace: flux-system
+type: kubernetes.io/dockerconfigjson
+data:
+    .dockerconfigjson: ENC[AES256_GCM,data:thoxcV/vWf5EfzPQ6U7Py2Bdn3JO6c6uf+hL6cS7sviNykUMA6t2qjxxfx9DHJPq3EziCO1QZpPGCRNQDuvlfXltz8EOaahdzeg1CLS7bzJBG4fj32wVtdK1Nj2nDwEH2TeRuvj29wrXipYYygCHFTCdtFA84KVupmr+LUlNRjQ5sdJPVSUhCgRdzzDFN0Bdd40FhXiTpmF7a9NVOENuFvKo2kXEkdbPY7OFBT9Mh8jieBftDEeZ3LuZB+lxyi94iNdNJx9fA9NsE+JFTeoYdFsFZnS6e6n4c+l9QDETvPKzMzXBfqcmgyzk6X5rONse9olVaQKyoKOPI7zG8h4x5ASFTDGhv34LRUqLPw==,iv:czVx2nzuboVo3qrbYPqq6xUMuscpPD9EFrzD2biatCM=,tag:2Ag7aGgw4cTl7hORYAiOnQ==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBZMXFLTjlqYWUxNTJSdWt5
+            OFVBSVU5R3NXWEhOWjEvN3kwRXdBR3BQVlZ3CjExdmhQaVpnSW9ITk5EN1hkd0J1
+            TDdyZzBzM1J6ZzRVNmxvd0lSVWNZNlEKLS0tIG1YL0owVkd0dU5MS1hzN0wrbkJ4
+            OGVuK3lTcC9PL3lEbnZUUE4zejVyMUEKVjau+uwtjqibxl0fU+zeZeErCxheBNex
+            OJ/cONLYCIJtP8KaShNQMpfyHST5qjG3AMHaQ0ZGXYGsvWWUapVy8g==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-20T08:35:07Z"
+    mac: ENC[AES256_GCM,data:yRWtUmLzEj4+ZDJuD4hPfcs+KMndhoCLjDPel6xatL7McmTl7MpXg/TTkAoxgBI+0FOS48uulKjGUJ+cJ6iGrhaxxZmWB0F4Y1lQEVNDTSbSduBgwrkqVOLMT5dRYDMR4G3gndy86ropa8x5lSJcI2PT0wr/xbJbGPU5O5y1eQo=,iv:TsUwgaouofiBu8/3suCCTobtmK+jN4zgElvowPrJC+Y=,tag:R2BfhszYAbSrpbocq/VHsg==,type:str]
+    version: 3.13.0

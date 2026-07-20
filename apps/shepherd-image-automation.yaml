@@ -1,0 +1,99 @@
+# Shepherd — Flux image automation.
+#
+# CI (shepherd-agents/.github/workflows/build.yaml) pushes tags shaped
+# <short-sha>-<epoch-seconds> on every push to main. These ImageRepository/
+# ImagePolicy/ImageUpdateAutomation objects watch ghcr.io/dbirks/shepherd-agents/{api,ui}
+# and land a commit on this repo's main bumping the marker-commented image
+# lines in apps/shepherd.yaml whenever a newer (by epoch) tag appears.
+#
+# Requires image-reflector-controller + image-automation-controller, which
+# were NOT previously installed in this cluster (only source/kustomize/helm/
+# notification-controller were running) — added via
+# `flux install --components-extra=image-reflector-controller,image-automation-controller`,
+# see flux-system/gotk-components.yaml.
+#
+# Both packages are private (inherited from the private shepherd-agents
+# repo), so the ImageRepository objects need a pull credential — see the
+# secretRef below and apps/shepherd-ghcr-pull.enc.yaml (placeholder creds
+# until a real PAT is added).
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: shepherd-api
+  namespace: flux-system
+spec:
+  image: ghcr.io/dbirks/shepherd-agents/api
+  interval: 2m0s
+  secretRef:
+    name: ghcr-pull
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: shepherd-ui
+  namespace: flux-system
+spec:
+  image: ghcr.io/dbirks/shepherd-agents/ui
+  interval: 2m0s
+  secretRef:
+    name: ghcr-pull
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: shepherd-api
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: shepherd-api
+  filterTags:
+    pattern: '^[a-f0-9]+-(?P<ts>[0-9]+)$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: shepherd-ui
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: shepherd-ui
+  filterTags:
+    pattern: '^[a-f0-9]+-(?P<ts>[0-9]+)$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+# No ImageUpdateAutomation existed anywhere in this repo before this change
+# (verified: grep -rl ImageUpdateAutomation apps flux-system was empty) — this
+# is the first one.
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: shepherd
+  namespace: flux-system
+spec:
+  interval: 5m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: fluxcdbot
+        email: fluxcdbot@users.noreply.github.com
+      messageTemplate: |
+        chore(shepherd): {{range .Updated.Images}}{{println .}}{{end}}
+    push:
+      branch: main
+  update:
+    path: ./apps
+    strategy: Setters

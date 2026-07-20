@@ -1,0 +1,426 @@
+# Shepherd — self-hosted personal operations system (coordinator agent +
+# per-task leads + bounded research helpers) over a Go API, Postgres, and a
+# React PWA. Source: github.com/dbirks/shepherd-agents (private repo).
+#
+# Deployed in the `default` namespace alongside the other home-lab apps.
+# Components:
+#   - shepherd-postgres: in-cluster Postgres 17 (Deployment + PVC)
+#   - api (Service literally named "api"): Go monolith, port 8081 — the UI's
+#     baked-in nginx.conf hardcodes `proxy_pass http://api:8081`, so the
+#     Service name/port must match exactly (see web/nginx.conf upstream).
+#   - shepherd-web: nginx + React PWA, port 80, proxies /api -> api:8081
+#   - shepherd-searxng: private SearxNG instance backing web.search
+#
+# Docker-image/uvx/pnpx capability runners are disabled in-cluster: the
+# compose docker-runner capability needs the host's /var/run/docker.sock
+# mounted into the api container (root-equivalent), which doesn't translate
+# safely to Kubernetes. Registering docker-runner capabilities won't work
+# here — accepted per deploy instructions.
+#
+# GHCR pull creds: apps/shepherd-ghcr-pull.enc.yaml (packages are private —
+# placeholder credentials until a real PAT is added, see that file).
+# App secrets (DB password, bootstrap admin password): apps/shepherd-secrets.enc.yaml
+# Image automation (ImageRepository/ImagePolicy/ImageUpdateAutomation):
+# apps/shepherd-image-automation.yaml
+#
+# Endpoints: shepherd.hoam.lan (private LAN ingress), shepherd (Tailscale
+# MagicDNS, i.e. shepherd.<tailnet>.ts.net)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shepherd-config
+  namespace: default
+data:
+  OPENAI_BASE_URL: "http://vllm.default.svc.cluster.local/v1"
+  OPENAI_MODEL: "main"
+  ARTIFACT_DIR: "/data/artifacts"
+  SEARX_URL: "http://shepherd-searxng:8080"
+  TZ: "America/Indiana/Indianapolis"
+---
+# Minimal SearxNG settings for Shepherd's web.search capability — mirrors
+# shepherd-agents/deploy/searxng/settings.yml exactly.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shepherd-searxng-settings
+  namespace: default
+data:
+  settings.yml: |
+    use_default_settings: true
+
+    server:
+      secret_key: "shepherd-local-only-not-secret"
+      limiter: false
+      image_proxy: false
+
+    search:
+      formats:
+        - html
+        - json
+
+    engines:
+      - name: google
+        disabled: false
+      - name: duckduckgo
+        disabled: false
+      - name: bing
+        disabled: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shepherd-searxng
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: shepherd-searxng
+  template:
+    metadata:
+      labels:
+        app: shepherd-searxng
+    spec:
+      containers:
+        - name: searxng
+          image: searxng/searxng:latest
+          env:
+            - name: SEARXNG_BASE_URL
+              value: "http://shepherd-searxng:8080/"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: settings
+          configMap:
+            name: shepherd-searxng-settings
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shepherd-searxng
+  namespace: default
+spec:
+  selector:
+    app: shepherd-searxng
+  ports:
+    - port: 8080
+      targetPort: http
+      name: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shepherd-postgres-data
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shepherd-postgres
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: shepherd-postgres
+  template:
+    metadata:
+      labels:
+        app: shepherd-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              value: shepherd
+            - name: POSTGRES_DB
+              value: shepherd
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shepherd-secrets
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "shepherd", "-d", "shepherd"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "shepherd", "-d", "shepherd"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: shepherd-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shepherd-postgres
+  namespace: default
+spec:
+  selector:
+    app: shepherd-postgres
+  ports:
+    - port: 5432
+      targetPort: postgres
+      name: postgres
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shepherd-artifacts
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shepherd-api
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: shepherd-api
+  template:
+    metadata:
+      labels:
+        app: shepherd-api
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      initContainers:
+        - name: migrate
+          # {"$imagepolicy": "flux-system:shepherd-api"}
+          image: ghcr.io/dbirks/shepherd-agents/api:d1ecf9b-1784535416
+          command: ["shepherd", "migrate", "up"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shepherd-secrets
+                  key: DATABASE_URL
+            - name: OPENAI_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: shepherd-config
+                  key: OPENAI_BASE_URL
+      containers:
+        - name: api
+          # {"$imagepolicy": "flux-system:shepherd-api"}
+          image: ghcr.io/dbirks/shepherd-agents/api:d1ecf9b-1784535416
+          command: ["shepherd", "serve"]
+          ports:
+            - containerPort: 8081
+              name: http
+          envFrom:
+            - configMapRef:
+                name: shepherd-config
+            - secretRef:
+                name: shepherd-secrets
+          env:
+            - name: OPENAI_API_KEY
+              value: "none"
+          volumeMounts:
+            - name: artifacts
+              mountPath: /data/artifacts
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: shepherd-artifacts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # Literal name "api" — required by the baked-in web/nginx.conf, which
+  # hardcodes `proxy_pass http://api:8081;`. Don't rename without also
+  # shipping an nginx.conf ConfigMap override.
+  name: api
+  namespace: default
+spec:
+  selector:
+    app: shepherd-api
+  ports:
+    - port: 8081
+      targetPort: http
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shepherd-web
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: shepherd-web
+  template:
+    metadata:
+      labels:
+        app: shepherd-web
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: web
+          # {"$imagepolicy": "flux-system:shepherd-ui"}
+          image: ghcr.io/dbirks/shepherd-agents/ui:d1ecf9b-1784535416
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shepherd-web
+  namespace: default
+spec:
+  selector:
+    app: shepherd-web
+  ports:
+    - port: 80
+      targetPort: http
+      name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shepherd
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+spec:
+  ingressClassName: private
+  rules:
+    - host: shepherd.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shepherd-web
+                port:
+                  number: 80
+---
+# Tailscale Ingress — same pattern as apps/omnigent-tailscale-ingress.yaml
+# and apps/vllm-tailscale-ingress.yaml. Gives shepherd.<tailnet>.ts.net
+# (e.g. shepherd.beluga-wyvern.ts.net), reachable only over the tailnet.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shepherd-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - shepherd
+  rules:
+    - host: shepherd
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: shepherd-web
+                port:
+                  number: 80
