@@ -8,7 +8,7 @@
 # Requires "HTTPS Certificates" enabled in the Tailscale admin console (already
 # on for the vllm-ts / shepherd-ts / openhands-ts Ingresses).
 #
-# host: speech  ->  speech.<tailnet>.ts.net  (i.e. speech.beluga-wyvern.ts.net)
+# host: stt  ->  stt.<tailnet>.ts.net  (i.e. stt.beluga-wyvern.ts.net)
 #
 # ADDITIVE: this points at the NEW granite-stt Service (apps/granite-stt.yaml),
 # NOT at the existing granite-speech Service / speech.hoam.lan private Ingress
@@ -24,9 +24,9 @@ spec:
   ingressClassName: tailscale
   tls:
     - hosts:
-        - speech
+        - stt
   rules:
-    - host: speech
+    - host: stt
       http:
         paths:
           - path: /
