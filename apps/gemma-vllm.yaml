@@ -55,7 +55,11 @@ spec:
       enableServiceLinks: false
       containers:
         - name: gemma
-          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
+          # Qwen's pinned nightly has a Gemma-4 config-schema mismatch
+          # (Gemma4UnifiedVisionConfig.num_soft_tokens AttributeError); use latest
+          # stable, which matches the current gemma-4 checkpoints. Separate pod, so
+          # this does NOT affect Qwen's pinned image.
+          image: vllm/vllm-openai:latest
           args:
             - "--model=unsloth/gemma-4-12B-it-qat-w4a16"
             - "--served-model-name=gemma"
