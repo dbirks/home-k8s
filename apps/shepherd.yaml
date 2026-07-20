@@ -243,7 +243,7 @@ spec:
       initContainers:
         - name: migrate
           # {"$imagepolicy": "flux-system:shepherd-api"}
-          image: ghcr.io/dbirks/shepherd-agents/api:d1ecf9b-1784535416
+          image: ghcr.io/dbirks/shepherd-agents/api:78d27b6-1784536081
           command: ["shepherd", "migrate", "up"]
           env:
             - name: DATABASE_URL
@@ -259,7 +259,7 @@ spec:
       containers:
         - name: api
           # {"$imagepolicy": "flux-system:shepherd-api"}
-          image: ghcr.io/dbirks/shepherd-agents/api:d1ecf9b-1784535416
+          image: ghcr.io/dbirks/shepherd-agents/api:78d27b6-1784536081
           command: ["shepherd", "serve"]
           ports:
             - containerPort: 8081
@@ -340,7 +340,7 @@ spec:
       containers:
         - name: web
           # {"$imagepolicy": "flux-system:shepherd-ui"}
-          image: ghcr.io/dbirks/shepherd-agents/ui:d1ecf9b-1784535416
+          image: ghcr.io/dbirks/shepherd-agents/ui:78d27b6-1784536081
           ports:
             - containerPort: 80
               name: http
