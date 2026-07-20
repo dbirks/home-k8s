@@ -69,11 +69,11 @@ metadata:
   name: granite-stt
   namespace: default
 spec:
-  # replicas: 0 — parked. The concurrent granite+gemma deploy (2026-07-20)
-  # saturated HDD I/O (huge vLLM image pulls) and starved etcd/apiserver.
-  # Bring up ONE model at a time: set to 1, commit, wait until fully Running
-  # before enabling the next. Do NOT run both cold-starts concurrently.
-  replicas: 0
+  # Brought up 2026-07-20 AFTER pre-pulling the v0.20.1 image + granite-speech
+  # model into the PVC (isolated, no I/O storm). gemma stays parked at 0 until
+  # granite is confirmed Running — do NOT cold-start both concurrently (that
+  # saturated HDD I/O and starved etcd earlier).
+  replicas: 1
   strategy:
     type: Recreate
   selector:
