@@ -1,0 +1,157 @@
+# Granite Speech-to-Text — STANDALONE deployment (DRAFT, not yet applied)
+#
+# Serves ibm-granite/granite-speech-4.1-2b (IBM Granite Speech 4.1 2B) as its
+# own pod, exposing the OpenAI-compatible /v1/audio/transcriptions endpoint on
+# port 8001, model name "granite-speech".
+#
+# WHY A STANDALONE DEPLOYMENT (not the old vllm.yaml sidecar):
+#   The Granite Speech sidecar was disabled in apps/vllm.yaml (commit a9ad113)
+#   because two vLLM processes in the SAME pod share a fault domain — when the
+#   main Qwen container crashed (frequent on this card, GSP bug #46), it
+#   corrupted the shared CUDA device handle and took the STT process down with
+#   it. Running STT as a separate Deployment decouples it from the Qwen
+#   container's restart cycle. (They still share the physical GPU, so a
+#   full-chip GSP reset still hits both — see risks in the report.)
+#
+# WHY vLLM, NOT llama-server:
+#   The original ask was "llama-server + Granite 4.1 2B for speech-to-text."
+#   That combination is NOT coherent:
+#     - llama.cpp / llama-server is a text-LLM server with no audio/ASR input
+#       path. Local STT in the llama.cpp world is whisper.cpp serving *Whisper*
+#       (a different model), not Granite Speech.
+#     - Granite Speech 4.1 2B is a speech encoder + LoRA audio projector on top
+#       of a Granite text LLM; it needs a runtime that implements that audio
+#       pipeline. There is no mainstream GGUF/llama.cpp path for it.
+#     - vLLM (transformers-backed) is the runtime IBM documents and the one this
+#       repo already proved works (the disabled sidecar used exactly this).
+#   ("Granite 4.1" is also ambiguous: granite-4.1 is a TEXT LLM family;
+#   granite-speech-4.1-2b is the STT/ASR model. This deploys the STT one.)
+#
+# GPU SHARING:
+#   The node runs the nvidia-device-plugin in time-slicing mode with replicas: 2
+#   (prereqs/nvidia-device-plugin.yaml), so nvidia.com/gpu is advertised as 2
+#   schedulable slots on one physical card. vllm-qwen27 holds slot 1; slot 2 is
+#   currently free (apps/autoresearch.yaml is replicas: 0). This pod requests
+#   nvidia.com/gpu: 1 and lands on that free slot. Time-slicing gives NO memory
+#   or fault isolation — so gpu-memory-utilization here (fraction of the FULL
+#   96GB card) must stay small enough to coexist with vLLM's 0.60. 0.10 ≈ 9.8GB;
+#   measured free headroom next to vLLM is ~38GB, so this fits comfortably.
+#
+# OPEN QUESTIONS / REVIEW POINTS:
+#   - Image tag: pinned to vllm/vllm-openai:v0.20.1, the version the sidecar was
+#     proven on. Main Qwen runs a nightly only because of a Blackwell spec-decode
+#     bug unrelated to STT; v0.20.1 is fine here. Bump if desired.
+#   - Uses a SEPARATE PVC (granite-stt-models). The existing vllm-models PVC is
+#     RWO/local-path and effectively single-pod, so it is not shared.
+#   - This does NOT touch the existing speech.hoam.lan Ingress or the
+#     granite-speech Service in apps/vllm.yaml (both point at the now-disabled
+#     sidecar and are left exactly as-is per instructions). New, distinct names
+#     are used throughout (granite-stt).
+#   - If autoresearch is ever scaled back up, three GPU workloads would contend
+#     for two time-slice slots — revisit then (MPS or scheduling).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: granite-stt-models
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: granite-stt
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: granite-stt
+  template:
+    metadata:
+      labels:
+        app: granite-stt
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: granite-stt
+          image: vllm/vllm-openai:v0.20.1
+          command:
+            - sh
+            - -c
+            - >-
+              pip install --no-cache-dir librosa soundfile &&
+              exec vllm serve ibm-granite/granite-speech-4.1-2b
+              --host=0.0.0.0
+              --port=8001
+              --served-model-name=granite-speech
+              --max-model-len=2048
+              --dtype=bfloat16
+              --gpu-memory-utilization=0.10
+              --enforce-eager
+              --skip-mm-profiling
+              --trust-remote-code
+          ports:
+            - containerPort: 8001
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 6Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: granite-stt-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: granite-stt
+  namespace: default
+spec:
+  selector:
+    app: granite-stt
+  ports:
+    - port: 80
+      targetPort: 8001

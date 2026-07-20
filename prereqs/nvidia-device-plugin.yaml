@@ -19,7 +19,11 @@ data:
       timeSlicing:
         resources:
         - name: nvidia.com/gpu
-          replicas: 2
+          # 4 slots for concurrent GPU pods: vllm-qwen27 (main, 0.60) +
+          # granite-stt (0.10) + gemma (0.12) + 1 spare. Time-slicing has no
+          # memory isolation, so each pod's --gpu-memory-utilization must sum
+          # to < 1.0 across all running pods (currently ~0.82).
+          replicas: 4
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease

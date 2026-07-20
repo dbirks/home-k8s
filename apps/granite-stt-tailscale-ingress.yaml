@@ -1,0 +1,38 @@
+# Granite STT — Tailscale Ingress (DRAFT, not yet applied)
+#
+# Same pattern as apps/vllm-tailscale-ingress.yaml, apps/shepherd.yaml (-ts) and
+# apps/openhands-tailscale-ingress.yaml: an Ingress on the already-installed
+# `tailscale` IngressClass (tailscale.com/ts-ingress). Tailscale provisions a
+# dedicated tailnet node with an auto-renewing Let's Encrypt cert for its
+# MagicDNS name — reachable only over the tailnet, never the public internet.
+# Requires "HTTPS Certificates" enabled in the Tailscale admin console (already
+# on for the vllm-ts / shepherd-ts / openhands-ts Ingresses).
+#
+# host: speech  ->  speech.<tailnet>.ts.net  (i.e. speech.beluga-wyvern.ts.net)
+#
+# ADDITIVE: this points at the NEW granite-stt Service (apps/granite-stt.yaml),
+# NOT at the existing granite-speech Service / speech.hoam.lan private Ingress
+# in apps/vllm.yaml — those are left untouched. This gives the STT service its
+# own working tailnet endpoint independent of the disabled in-pod sidecar.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: granite-stt-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - speech
+  rules:
+    - host: speech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: granite-stt
+                port:
+                  number: 80

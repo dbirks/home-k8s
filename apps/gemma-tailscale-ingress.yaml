@@ -1,0 +1,25 @@
+# Gemma 4 — Tailscale Ingress. Same pattern as vllm/openhands/shepherd -ts.
+# host: gemma -> gemma.<tailnet>.ts.net (e.g. gemma.beluga-wyvern.ts.net),
+# reachable only over the tailnet. Backend -> the gemma Service (port 80 -> 8000).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gemma-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - gemma
+  rules:
+    - host: gemma
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gemma
+                port:
+                  number: 80

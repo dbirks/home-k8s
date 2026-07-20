@@ -1,0 +1,120 @@
+# Gemma 4 — secondary chat LLM (standalone vLLM), alongside the main Qwen.
+#
+# Serves unsloth/gemma-4-12B-it-qat-w4a16 (Google Gemma 4 12B, QAT 4-bit
+# compressed-tensors — vLLM-native, ~7GB weights). OpenAI-compatible chat API
+# on port 8000, model name "gemma". Qwen stays the primary model, untouched.
+#
+# WHY 12B (not the beefier 31B): time-slicing gives NO memory isolation, so all
+# GPU pods' --gpu-memory-utilization must sum to < 1.0 on the one 96GB card.
+# Budget: Qwen 0.60 + granite-stt 0.10 + gemma 0.12 ≈ 0.82 (comfortable headroom
+# on a crash-prone card). The 31B QAT (unsloth/gemma-4-31B-it-qat-w4a16, ~18GB)
+# is beefier but needs ~0.25+, which only fits by trimming Qwen 0.60->0.50 and
+# restarting the main model — deferred until explicitly wanted.
+#
+# GPU: time-slicing slot (nvidia.com/gpu: 1), runtimeClassName nvidia.
+# enableServiceLinks: false is REQUIRED — the K8s Service named "vllm" injects a
+# VLLM_PORT env var that breaks vLLM startup (see CLAUDE.md).
+#
+# REVIEW POINTS:
+#   - Image: reuses Qwen's Blackwell-proven nightly. Gemma 4 is a new arch (June
+#     2026); if this nightly predates gemma-4 support, bump to a newer vLLM.
+#   - --max-model-len capped at 16384 to bound KV cache within the small budget.
+#   - compressed-tensors w4a16 is auto-detected from the model config.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gemma-models
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gemma
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gemma
+  template:
+    metadata:
+      labels:
+        app: gemma
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: gemma
+          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
+          args:
+            - "--model=unsloth/gemma-4-12B-it-qat-w4a16"
+            - "--served-model-name=gemma"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--gpu-memory-utilization=0.12"
+            - "--max-model-len=16384"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "1"
+              memory: 8Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: gemma-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 6Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gemma
+  namespace: default
+spec:
+  selector:
+    app: gemma
+  ports:
+    - port: 80
+      targetPort: 8000
