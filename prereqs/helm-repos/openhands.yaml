@@ -18,7 +18,7 @@ spec:
   interval: 1h
   url: https://github.com/OpenHands/agent-canvas
   ref:
-    tag: v1.4.0
+    tag: v1.5.2
   ignore: |
     # This checkout exists only to vendor helm/agent-canvas for the
     # HelmRelease -- exclude everything else (frontend/backend source,

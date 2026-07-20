@@ -35,7 +35,7 @@
 #
 # Endpoints: openhands.hoam.lan (private ingress)
 #
-# Chart defaults reference: https://github.com/OpenHands/agent-canvas/blob/v1.4.0/helm/agent-canvas/values.yaml
+# Chart defaults reference: https://github.com/OpenHands/agent-canvas/blob/v1.5.2/helm/agent-canvas/values.yaml
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -55,7 +55,7 @@ spec:
     # Chart's appVersion is pinned to 1.2.0 (last bumped when the chart was
     # added); override to the image tag we actually want to run.
     image:
-      tag: "1.4.0"
+      tag: "1.5.2"
 
     # Give the StatefulSet's single fullname a predictable, short name
     # instead of the chart default (release name + "agent-canvas" combined).
