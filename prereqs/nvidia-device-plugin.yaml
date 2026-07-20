@@ -32,8 +32,10 @@ spec:
     spec:
       chart: nvidia-device-plugin
       # Current version found here:
-      # https://github.com/NVIDIA/k8s-device-plugin/blob/main/deployments/helm/nvidia-device-plugin/Chart.yamlA#L5
-      version: "0.17.1"
+      # https://github.com/NVIDIA/k8s-device-plugin/blob/main/deployments/helm/nvidia-device-plugin/Chart.yaml#L5
+      # v0.18.0 added Blackwell arch detection + configurable XID health-checks;
+      # v0.19.3 is latest stable (reverted risky mofed/gdrcopy default-enablement).
+      version: "0.19.3"
       sourceRef:
         kind: HelmRepository
         name: nvdp
