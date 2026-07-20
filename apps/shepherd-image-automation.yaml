@@ -12,10 +12,8 @@
 # `flux install --components-extra=image-reflector-controller,image-automation-controller`,
 # see flux-system/gotk-components.yaml.
 #
-# Both packages are private (inherited from the private shepherd-agents
-# repo), so the ImageRepository objects need a pull credential — see the
-# secretRef below and apps/shepherd-ghcr-pull.enc.yaml (placeholder creds
-# until a real PAT is added).
+# Both packages are PUBLIC on GHCR — the ImageRepository objects scan them
+# anonymously, no secretRef/credential needed.
 ---
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageRepository
@@ -25,8 +23,6 @@ metadata:
 spec:
   image: ghcr.io/dbirks/shepherd-agents/api
   interval: 2m0s
-  secretRef:
-    name: ghcr-pull
 ---
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageRepository
@@ -36,8 +32,6 @@ metadata:
 spec:
   image: ghcr.io/dbirks/shepherd-agents/ui
   interval: 2m0s
-  secretRef:
-    name: ghcr-pull
 ---
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImagePolicy

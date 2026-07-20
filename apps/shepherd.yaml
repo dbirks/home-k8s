@@ -17,8 +17,8 @@
 # safely to Kubernetes. Registering docker-runner capabilities won't work
 # here — accepted per deploy instructions.
 #
-# GHCR pull creds: apps/shepherd-ghcr-pull.enc.yaml (packages are private —
-# placeholder credentials until a real PAT is added, see that file).
+# GHCR images are PUBLIC (dbirks/shepherd-agents/{api,ui}) — pulled anonymously,
+# no imagePullSecret needed.
 # App secrets (DB password, bootstrap admin password): apps/shepherd-secrets.enc.yaml
 # Image automation (ImageRepository/ImagePolicy/ImageUpdateAutomation):
 # apps/shepherd-image-automation.yaml
@@ -238,8 +238,6 @@ spec:
       labels:
         app: shepherd-api
     spec:
-      imagePullSecrets:
-        - name: ghcr-pull
       initContainers:
         - name: migrate
           # {"$imagepolicy": "flux-system:shepherd-api"}
@@ -335,8 +333,6 @@ spec:
       labels:
         app: shepherd-ui
     spec:
-      imagePullSecrets:
-        - name: ghcr-pull
       containers:
         - name: ui
           # {"$imagepolicy": "flux-system:shepherd-ui"}
