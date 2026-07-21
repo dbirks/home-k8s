@@ -1,0 +1,81 @@
+# Off-node backup of DeepSWE trajectories -> private HuggingFace dataset.
+#
+# WHY: the trajectories live only on dspark-output-hdd-v2 (local-path-hdd, i.e.
+# this single node's local disk — no replication/backup). Given the GPU wedges
+# and power failures this box sees, that's the sole copy of expensive-to-generate
+# data. This CronJob mirrors /output to a PRIVATE HF dataset hourly; it doubles
+# as the eventual training dataset home. upload_folder is incremental (hashes
+# files, only uploads new/changed ones), so re-running is cheap.
+#
+# REQUIRES: secret `hf-token` (key HF_TOKEN) — a HuggingFace token with WRITE
+# access. Create it SOPS-encrypted, same pattern as apps/dashscope-api-key.enc.yaml:
+#   read -rs TOK   # paste hf_... write token
+#   kubectl create secret generic hf-token --namespace=default \
+#     --from-literal=HF_TOKEN="$TOK" --dry-run=client -o yaml \
+#     | sops encrypt --input-type yaml --output-type yaml /dev/stdin \
+#     > apps/hf-token.enc.yaml
+# Set HF_REPO below to your dataset repo id (created automatically if missing).
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dspark-trajectory-backup
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-trajectory-backup
+spec:
+  schedule: "0 * * * *"          # hourly
+  concurrencyPolicy: Forbid       # never overlap two uploads
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3000
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: dspark-trajectory-backup
+        spec:
+          restartPolicy: Never
+          nodeName: talos-210-73x   # RWO PVC is node-local
+          enableServiceLinks: false
+          containers:
+            - name: backup
+              image: python:3.12-slim
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  pip install --quiet --no-input --root-user-action ignore "huggingface_hub>=0.25"
+                  python3 - <<'PY'
+                  import os
+                  from huggingface_hub import HfApi
+                  repo = os.environ["HF_REPO"]
+                  api = HfApi(token=os.environ["HF_TOKEN"])
+                  api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
+                  # incremental: only new/changed JSON (trajectories + results) get uploaded
+                  api.upload_folder(
+                      folder_path="/output",
+                      path_in_repo="output",
+                      repo_id=repo,
+                      repo_type="dataset",
+                      allow_patterns=["**/*.json"],
+                      commit_message="incremental trajectory backup",
+                  )
+                  print("backup complete ->", repo)
+                  PY
+              env:
+                - {name: HF_REPO, value: "dbirks/dspark-deepswe-trajectories"}
+                - name: HF_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: hf-token, key: HF_TOKEN}
+              resources:
+                requests: {cpu: "100m", memory: 256Mi}
+                limits: {cpu: "1", memory: 1Gi}
+              volumeMounts:
+                - {name: output, mountPath: /output, readOnly: true}
+          volumes:
+            - name: output
+              persistentVolumeClaim: {claimName: dspark-output-hdd-v2}

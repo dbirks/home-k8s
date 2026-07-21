@@ -401,18 +401,21 @@ spec:
               exec python3 /scripts/controller.py
           env:
             - {name: SWEBENCH_NAMESPACE, value: dspark-swebench}
-            # $5 TEST — DashScope-hosted qwen3.6-27b, 15 tasks x 1 sample, STEP_LIMIT=20
-            # (short trajectories = cheap; caching does NOT engage for this model, so
-            # we're at no-cache list price ~$0.30/sample). Isolated output root.
-            # For the full run: OUTPUT_ROOT=/output/deepswe, TASK_LIMIT=0, N_SAMPLES=N.
+            # FULL DIVERSE RUN — DashScope qwen3.6-27b, ALL 113 tasks x 1 sample,
+            # STEP_LIMIT=20. Reuses /output/deepswe-5test (the 15 already generated
+            # are skipped via resume -> only ~98 new). CONCURRENCY=1: the $5 test at
+            # conc 2 spiked node loadavg to ~98 (worker repo-builds are local + I/O-
+            # heavy even though inference is remote); conc 1 halves peak load. Bump
+            # later if load stays comfortable. Caching does NOT engage -> no-cache
+            # list price; est ~$17 total (uncalibrated worst-case ~$45 -- watch console).
             - {name: OUTPUT_ROOT, value: /output/deepswe-5test}
             - {name: MANIFEST_FILE, value: /manifest/deepswe-tasks-full.json}
             - {name: RUN_SCRIPT_CONFIGMAP, value: dspark-deepswe-run-instance-script}
             - {name: RUNNER_SERVICE_ACCOUNT, value: dspark-swebench-runner}
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "1"}
-            - {name: TASK_LIMIT, value: "15"}
-            - {name: MAX_CONCURRENCY, value: "2"}
+            - {name: TASK_LIMIT, value: "0"}
+            - {name: MAX_CONCURRENCY, value: "1"}
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/qwen3.6-27b}
