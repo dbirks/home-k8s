@@ -49,7 +49,7 @@ spec:
   # 1.341 vs baseline 1.455; overfit the 164 trajectories -- see issue #51), so
   # production stays on the published drafter, NOT that checkpoint. Kept the
   # concurrency bumps below (max-num-seqs 32, gpu-mem 0.85, batched 16384).
-  replicas: 0  # TEMP: down for the deepswe-diverse accept-len benchmark; revert after
+  replicas: 1
   strategy:
     type: Recreate
   selector:

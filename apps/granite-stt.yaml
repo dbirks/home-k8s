@@ -73,7 +73,7 @@ spec:
   # model into the PVC (isolated, no I/O storm). gemma stays parked at 0 until
   # granite is confirmed Running — do NOT cold-start both concurrently (that
   # saturated HDD I/O and starved etcd earlier).
-  replicas: 0  # TEMP: down for the deepswe-diverse accept-len benchmark; revert after
+  replicas: 1
   strategy:
     type: Recreate
   selector:
