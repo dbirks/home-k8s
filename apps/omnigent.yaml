@@ -136,6 +136,12 @@ data:
   OMNIGENT_WS_ALLOWED_ORIGINS: "http://omnigent.hoam.lan,https://omnigent.beluga-wyvern.ts.net"
   # Sandbox provider config file — kubernetes runner Pods
   OMNIGENT_CONFIG: "/etc/omnigent/config.yaml"
+  # Disable the anonymized usage telemetry added in v0.6.0 (private home lab).
+  # OMNIGENT_ANALYTICS=0 is the authoritative opt-out per omnigent.ai/docs/deploy/telemetry;
+  # DO_NOT_TRACK=1 is the cross-tool standard, set as belt-and-suspenders.
+  # (NB: OMNIGENT_TELEMETRY_ENABLED is for OpenTelemetry tracing, NOT this opt-out.)
+  OMNIGENT_ANALYTICS: "0"
+  DO_NOT_TRACK: "1"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -158,8 +164,8 @@ spec:
       serviceAccountName: omnigent-server
       containers:
         - name: omnigent
-          # v0.5.1, official Kubernetes image (sandbox provider SDK pre-bundled)
-          image: ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.5.1
+          # v0.6.0, official Kubernetes image (sandbox provider SDK pre-bundled)
+          image: ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.6.0
           imagePullPolicy: Always
           command:
             - python

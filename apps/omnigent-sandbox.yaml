@@ -115,8 +115,8 @@ data:
         # (see omnigent-sandbox-creds.enc.yaml)
         secret_name: omnigent-creds
         service_account: omnigent-runner
-        # Pin runner Pods to the same image version as the persistent host
-        image: ghcr.io/omnigent-ai/omnigent-host@sha256:2699f6d78f67a1c326ad6fdcd3e4507c7d5d601a0364f1e6cd13f6fc1ed7f0ea
+        # Pin runner Pods to the same image version as the persistent host (v0.6.0)
+        image: ghcr.io/omnigent-ai/omnigent-host@sha256:7096a2d8cfc61e95da0da6cf6d7ede2a38a6950cce33d90123ee0917289b6221
         # Single-node cluster — pin to this node
         node_selector:
           kubernetes.io/hostname: talos-210-73x
