@@ -1,0 +1,158 @@
+# poolside Laguna — big agentic-coding LLM (standalone vLLM), PARKED at replicas: 0.
+#
+# Serves poolside/Laguna-S-2.1-NVFP4 (118B total / 8B active MoE, NVFP4) on the
+# OpenAI-compatible chat API, port 8000, model name "laguna". Downloaded to a
+# NEW HDD-backed PVC (local-path-hdd, on the 3.7TB sdb) so it does NOT compete
+# with the SSD (sda4) that holds the Qwen model + the containerd image cache.
+#
+# WHY S-2.1 (118B-A8B), NOT the 225B M.1:
+#   - Laguna-M.1-NVFP4 is ~139GB on disk — over the 96GB card before any KV
+#     cache. Does NOT fit a single RTX PRO 6000. (Needs 2x GPU / tensor-parallel.)
+#   - S-2.1-NVFP4 is ~72GB on disk (~76-80GB in VRAM) — FITS 96GB, and it's the
+#     NEWER "2.1" generation: stronger agentic scores than the older M.1
+#     (Terminal-Bench 2.1 70.2%, SWE-bench Pro 59.4%, SWE-bench Multilingual
+#     78.5%). Only 8B active params/token, so decode stays fast.
+#   - Its 3:1 sliding-window/global attention (only 12 global layers scale with
+#     context) + first-party FP8 KV cache make a 200-256k context cheap in VRAM.
+#
+# GPU MEMORY — READ BEFORE bringing this up:
+#   Time-slicing gives NO memory isolation; all GPU pods' --gpu-memory-utilization
+#   share the one 96GB card and must sum to < 1.0. S-2.1 at ~0.85 needs ESSENTIALLY
+#   THE WHOLE CARD, so it CANNOT coexist with Qwen (0.60) or gemma. Before scaling
+#   this to 1: scale apps/vllm.yaml (Qwen) to replicas 0 (granite-stt at 0.10 can
+#   stay if you drop this to ~0.80). This is the "make Qwen smaller / take it down"
+#   tradeoff already discussed.
+#
+# NVFP4-MoE ON BLACKWELL (SM120) — canary first:
+#   You've hit generic vLLM NVFP4-MoE kernel bugs on SM120 before (dense OK, MoE
+#   buggy). poolside co-developed the vLLM path and gates NVFP4 behind vLLM >=
+#   0.22.0 (cluster has v0.24.0, OK), and labels these checkpoints "Blackwell
+#   only" — materially better odds than the generic Qwen case, but STILL a
+#   MoE+NVFP4 combo on your problem arch. RECOMMENDED: first flip --model to the
+#   tiny canary poolside/Laguna-XS-2.1-NVFP4 (33B-A3B, ~22GB) to validate the
+#   NVFP4-MoE path + tool-call round-trip on this card, THEN switch to S-2.1.
+#
+# SPECULATIVE DECODING (DFlash) — later:
+#   poolside ships a matched DFlash drafter (poolside/Laguna-S-2.1-DFlash, a
+#   5-layer Llama-style draft model, ~7 tok/step, ~70% accept) — same recipe as
+#   your speculators DSpark/DFlash drafters. But vLLM spec-decode for these needs
+#   unreleased code (PR #46853), not in v0.24.0. Run WITHOUT spec-decode for now;
+#   wire in DFlash (or a home-trained DSpark drafter) once that lands.
+#
+# vLLM: base needs >= 0.21.0; NVFP4/FP8/INT4 checkpoints need >= 0.22.0. Pinned
+# to v0.24.0 (already proven on-cluster). Quant is auto-detected from the config.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: laguna-models
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path-hdd   # 3.7TB HDD (sdb), ~2.4TB free — NOT the SSD
+  resources:
+    requests:
+      storage: 200Gi                 # room for S-2.1 (~72GB) + XS canary (~22GB) + hub metadata
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: laguna
+  namespace: default
+spec:
+  # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
+  # (see GPU MEMORY note above). Bring up ONE big model at a time.
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: laguna
+  template:
+    metadata:
+      labels:
+        app: laguna
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: laguna
+          image: vllm/vllm-openai:v0.24.0
+          args:
+            # CANARY FIRST: to validate NVFP4-MoE on SM120, temporarily set this to
+            # poolside/Laguna-XS-2.1-NVFP4 (and --gpu-memory-utilization=0.30),
+            # confirm it serves + tool-calls, then switch back to S-2.1 below.
+            - "--model=poolside/Laguna-S-2.1-NVFP4"
+            - "--served-model-name=laguna"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            # ~0.85 leaves room for weights (~76-80GB) + FP8 KV on the 96GB card,
+            # assuming Qwen is scaled to 0. Drop toward 0.80 if coexisting with
+            # granite-stt (0.10); raise toward 0.90 if running fully alone.
+            - "--gpu-memory-utilization=0.85"
+            # 256k context; 3:1 SWA + FP8 KV keeps this affordable. If it OOMs on
+            # KV allocation, lower (e.g. 200000).
+            - "--max-model-len=262144"
+            # poolside-specific parsers (required for tool calls + reasoning)
+            - "--tool-call-parser=poolside_v1"
+            - "--reasoning-parser=poolside_v1"
+            - "--enable-auto-tool-choice"
+            - "--default-chat-template-kwargs={\"enable_thinking\": true}"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "2"
+              memory: 16Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            # 118B NVFP4 first pull is ~72GB over the network to the HDD, then a
+            # long load — generous window so the pod isn't killed mid-download.
+            failureThreshold: 240
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: laguna-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: laguna
+  namespace: default
+spec:
+  selector:
+    app: laguna
+  ports:
+    - port: 80
+      targetPort: 8000
