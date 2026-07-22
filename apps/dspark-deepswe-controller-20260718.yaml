@@ -419,7 +419,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "2"}
+            - {name: MAX_CONCURRENCY, value: "1"}  # conc 2 spiked loadavg to ~40 on heavy-build tasks; conc 1 is the safe sustained setting
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
