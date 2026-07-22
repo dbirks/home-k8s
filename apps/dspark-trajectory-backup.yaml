@@ -24,6 +24,7 @@ metadata:
   labels:
     app.kubernetes.io/name: dspark-trajectory-backup
 spec:
+  suspend: true                   # OFF until a write-scoped HF token exists (403 otherwise)
   schedule: "0 * * * *"          # hourly
   concurrencyPolicy: Forbid       # never overlap two uploads
   successfulJobsHistoryLimit: 2
