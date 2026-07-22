@@ -313,7 +313,11 @@ data:
 
         # TASK-ORDERED queue: a task's samples cluster in flight -> image reused,
         # only ~ceil(MAX_CONCURRENCY/N_SAMPLES) distinct images resident (disk-safe).
-        queue = [(t, s) for t in tasks for s in range(N_SAMPLES)]
+        # BREADTH-FIRST (sample-major): sample-0 of EVERY task before any sample-1,
+        # so a crash-interrupted continual run always has broad coverage (not the
+        # depth-first front-loading that made earlier local runs narrow). Trade-off:
+        # cycles through all 113 ECR images (cached after first pass; 2.4T free, ok).
+        queue = [(t, s) for s in range(N_SAMPLES) for t in tasks]
         pending = [(t, s) for (t, s) in queue if not result_path_for(f"{t['task_id']}.{s}").exists()]
         log(f"{len(queue)-len(pending)} already done (resumed); {len(pending)} pending")
 
@@ -401,29 +405,26 @@ spec:
               exec python3 /scripts/controller.py
           env:
             - {name: SWEBENCH_NAMESPACE, value: dspark-swebench}
-            # FULL DIVERSE RUN — DashScope qwen3.6-27b, ALL 113 tasks x 1 sample,
-            # STEP_LIMIT=20. Reuses /output/deepswe-5test (the 15 already generated
-            # are skipped via resume -> only ~98 new). CONCURRENCY=1: the $5 test at
-            # conc 2 spiked node loadavg to ~98 (worker repo-builds are local + I/O-
-            # heavy even though inference is remote); conc 1 halves peak load. Bump
-            # later if load stays comfortable. Caching does NOT engage -> no-cache
-            # list price; est ~$17 total (uncalibrated worst-case ~$45 -- watch console).
-            - {name: OUTPUT_ROOT, value: /output/deepswe-5test}
+            # CONTINUAL LOCAL RUN (NO DashScope) — local vLLM (Qwen3.6-27B-NVFP4, FREE),
+            # ALL 113 tasks x 20 samples, BREADTH-FIRST. Runs for days to build volume
+            # parity with the narrow run (~7.8M tokens) while keeping full 113-task
+            # coverage — addresses the volume confound found on the first diverse run.
+            # Responses come from the actual nvfp4 verifier (also helps #51 self-distill).
+            # Resumable across #46 GPU crashes; harvest /output/deepswe-local anytime.
+            # No LLM_API_KEY -> health check hits local /v1/models unauthenticated.
+            - {name: OUTPUT_ROOT, value: /output/deepswe-local}
             - {name: MANIFEST_FILE, value: /manifest/deepswe-tasks-full.json}
             - {name: RUN_SCRIPT_CONFIGMAP, value: dspark-deepswe-run-instance-script}
             - {name: RUNNER_SERVICE_ACCOUNT, value: dspark-swebench-runner}
             - {name: PIN_NODE, value: talos-210-73x}
-            - {name: N_SAMPLES, value: "1"}
+            - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "1"}
+            - {name: MAX_CONCURRENCY, value: "2"}
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
-            - {name: VLLM_API_BASE, value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
-            - {name: MSWEA_MODEL_NAME, value: hosted_vllm/qwen3.6-27b}
-            - {name: STEP_LIMIT, value: "20"}
+            - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
+            - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
+            - {name: STEP_LIMIT, value: "30"}
             - {name: SAMPLE_TEMP, value: "0.7"}
-            - name: LLM_API_KEY
-              valueFrom:
-                secretKeyRef: {name: dashscope-api-key, key: DASHSCOPE_API_KEY}
           resources:
             requests: {cpu: "250m", memory: 512Mi}
             limits: {cpu: "1", memory: 1Gi}
