@@ -70,15 +70,15 @@ spec:
       # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
-          # v0.25.0 confirmed crashing (2026-07-16): CUDA illegal-memory-
-          # access in draft-attention-metadata construction. Root cause
-          # found upstream: vllm-project/vllm#48167 ("Fix FlashInfer
-          # non-causal draft attention (DFlash/DSpark) on Blackwell"),
-          # merged 2026-07-15 19:44 UTC -- AFTER v0.25.0/v0.25.1 and every
-          # nightly published so far. No fixed image exists yet; reverted
-          # to the last known-working nightly pending one that includes the
-          # fix. See issue #51.
-          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
+          # 2026-07-23: moved to latest STABLE v0.25.1 for the AWS-burst hammer
+          # test (issue #57). The old nightly pin existed only because v0.25.x
+          # had a Blackwell draft-attention CUDA bug (vllm#48167, fixed post-
+          # v0.25.1). That bug is in the SPEC-DECODE path ONLY, and spec-decode
+          # stays OFF here (it hurts high-concurrency batch throughput), so
+          # stable v0.25.1 is safe. FALLBACK if v0.25.1 lacks Qwen3.6 support or
+          # a flag: nightly-4080263bb2c5d10deac17aaeb88e0823bc35bca9 (2026-07-23,
+          # includes #48167 + latest model support).
+          image: vllm/vllm-openai:v0.25.1-cu129-ubuntu2404
           command:
             - vllm
             - serve
@@ -88,17 +88,18 @@ spec:
             - "--served-model-name"
             - main
             - qwen27
-            - "--max-model-len=262144"
+            # Right-sized from 256K: frees KV for more concurrency (zero
+            # crash-risk lever); 128K is ample for the agent's context.
+            - "--max-model-len=131072"
             - "--dtype=bfloat16"
-            # REVERTED 2026-07-18 to proven-stable 0.60/16 after the aggressive
-            # 0.85/32 config (+ concurrent DeepSWE data-gen load) triggered an
-            # NVIDIA GSP firmware crash (Xid 154, NV_ERR_GPU_IN_FULLCHIP_RESET --
-            # issue #46) that wedged the GPU and required a node reboot. This
-            # Blackwell card cannot be pushed to 32 seqs / 0.85 mem safely; keep
-            # the throughput wins (CUDA graphs, spec-tokens 3) but back off the
-            # memory/concurrency. Data-gen must run at conservative concurrency.
-            - "--gpu-memory-utilization=0.60"
-            - "--max-num-seqs=16"
+            # 2026-07-23: middle-ground retune for the high-concurrency burst
+            # (issue #57) — UP from proven-safe 0.60/16, but well below the
+            # 0.85/32 that triggered the #46 GSP crash. 0.70 + 24 seqs + the
+            # right-sized max-model-len gives more KV/concurrency without
+            # over-driving the card. CANARY: watch vllm:num_preemptions_total —
+            # if it climbs (KV oversubscribed) or the GSP crashes, back to 0.60/16.
+            - "--gpu-memory-utilization=0.70"
+            - "--max-num-seqs=24"
             - "--kv-cache-dtype=fp8_e4m3"
             # DeltaNet recurrent state cannot be FP8 — must be float16
             - "--mamba-cache-dtype=float16"
@@ -116,7 +117,7 @@ spec:
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
-            - "--max-num-batched-tokens=8192"
+            - "--max-num-batched-tokens=12288"
             # dspark speculative decoding DISABLED 2026-07-18 for DeepSWE data-gen.
             # At high concurrency the drafter's draft+verify overhead COMPETES with
             # the batch and hurts throughput (SGLang research #51; confirmed live:
