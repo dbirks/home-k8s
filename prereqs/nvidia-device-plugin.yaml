@@ -42,7 +42,7 @@ spec:
       # GPUs (allocatable dropped 2->0). The newer plugin's bundled NVML expects
       # a newer driver than 580.167.08. Upgrade the plugin ONLY alongside a driver
       # bump. 0.17.1 detects the Blackwell card fine (no arch label, but works).
-      version: "0.17.1"
+      version: "0.19.3"
       sourceRef:
         kind: HelmRepository
         name: nvdp
