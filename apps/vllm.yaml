@@ -150,15 +150,13 @@ spec:
             # Reduce allocator fragmentation under prefix caching
             - name: PYTORCH_CUDA_ALLOC_CONF
               value: expandable_segments:True
-            # 2026-07-23 GSP-crash mitigation (#46): force the Triton ATTENTION
-            # backend instead of FlashInfer. Community reports (bug thread 365739
-            # / open-gpu-kernel-modules) that moving off FlashInfer/CUTLASS
-            # attention reduces the Blackwell GSP FULLCHIP_RESET under sustained
-            # inference. MoE stays on the FlashInfer CUTLASS path (required for
-            # NVFP4-MoE on SM120 — do NOT change that). If vLLM rejects this value
-            # or Qwen won't boot / regresses, revert this env block (one commit).
-            - name: VLLM_ATTENTION_BACKEND
-              value: TRITON_ATTN
+            # 2026-07-23: Tried VLLM_ATTENTION_BACKEND=TRITON_ATTN as a GSP-crash
+            # (#46) mitigation — DID NOT ENGAGE. vLLM logged "Using FLASHINFER
+            # attention backend out of potential backends ['FLASHINFER',
+            # 'TRITON_ATTN']" and kept FlashInfer, because TRITON_ATTN does not
+            # support the fp8 KV cache (--kv-cache-dtype=fp8_e4m3) this model uses.
+            # Forcing Triton would require dropping fp8 KV (blows up KV memory at
+            # 262k ctx) — not worth it. Left off; the Triton lever is N/A here.
           resources:
             limits:
               nvidia.com/gpu: 1
