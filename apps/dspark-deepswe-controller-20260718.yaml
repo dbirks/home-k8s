@@ -419,7 +419,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "2"}  # 2026-07-23: controlled conc-2 re-test on a SETTLED cluster (load ~0.8, images cached, no competing surge — the two prior conc-2 failures were BOTH confounded by I/O storms: first-pass pulls, then a post-reboot restart surge). Guarded by a watchdog that auto-kills conc-2 if etcd health fails or load1 > 25 sustained. Revert to "1" if it destabilizes.
+            - {name: MAX_CONCURRENCY, value: "1"}  # 2026-07-23: DEFINITIVE — conc-2 is incompatible with this node. The clean-cluster re-test killed etcd (HEALTH:Fail) at loadavg only ~17 (2->4->9->12->17 in ~3 min). Root cause is DISK-I/O contention: the 2 workers' repo-build I/O starves etcd's fsync on the shared disk — NOT raw CPU — so even an idle cluster can't take it, and etcd dies too fast for an apiserver-based auto-revert to land. conc-1 is a HARD ceiling. DO NOT RAISE without moving etcd to a dedicated disk first.
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
