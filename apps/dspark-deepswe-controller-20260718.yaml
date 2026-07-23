@@ -419,7 +419,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "1"}  # 2026-07-23: conc-2 re-test FAILED — loadavg hit ~35 and STARVED etcd (HEALTH:Fail, apiserver timeouts), even with images cached (compounded by a post-reboot app-restart surge). conc-1 is the confirmed ceiling for this node. Do not raise.
+            - {name: MAX_CONCURRENCY, value: "2"}  # 2026-07-23: controlled conc-2 re-test on a SETTLED cluster (load ~0.8, images cached, no competing surge — the two prior conc-2 failures were BOTH confounded by I/O storms: first-pass pulls, then a post-reboot restart surge). Guarded by a watchdog that auto-kills conc-2 if etcd health fails or load1 > 25 sustained. Revert to "1" if it destabilizes.
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
