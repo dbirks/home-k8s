@@ -76,3 +76,12 @@ spec:
               - vllm.default.svc.cluster.local:80
             labels:
               instance: vllm
+      # DeepSWE generation controller progress metrics (see apps/dspark-deepswe-*)
+      - job_name: 'dspark-deepswe'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - dspark-deepswe-metrics.default.svc.cluster.local:9100
+            labels:
+              instance: dspark-deepswe

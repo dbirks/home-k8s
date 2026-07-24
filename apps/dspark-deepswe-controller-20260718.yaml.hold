@@ -163,6 +163,7 @@ data:
     from pathlib import Path
     from kubernetes import client, config as kconfig
     from kubernetes.client.rest import ApiException
+    from prometheus_client import start_http_server, Gauge, Counter
 
     NAMESPACE = os.environ.get("SWEBENCH_NAMESPACE", "dspark-swebench")
     OUTPUT_ROOT = Path(os.environ.get("OUTPUT_ROOT", "/output/deepswe"))
@@ -182,6 +183,17 @@ data:
     STEP_LIMIT = os.environ.get("STEP_LIMIT", "75")
     SAMPLE_TEMP = os.environ.get("SAMPLE_TEMP", "0.7")
     LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+    METRICS_PORT = int(os.environ.get("METRICS_PORT", "9100"))
+    MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
+
+    # Prometheus metrics (scraped by the 'dspark-deepswe' job -> Grafana progress dashboard)
+    M_TOTAL = Gauge("deepswe_tasks_total", "Total task-samples queued for the run")
+    M_DONE = Gauge("deepswe_tasks_done", "Task-samples with a terminal outcome (result or failed_max_retries)")
+    M_PENDING = Gauge("deepswe_tasks_pending", "Task-samples not yet done and not in flight")
+    M_INFLIGHT = Gauge("deepswe_tasks_in_flight", "Task-samples currently running")
+    M_SUCCEEDED = Counter("deepswe_tasks_succeeded_total", "Runs that harvested a trajectory result")
+    M_FAILED = Counter("deepswe_tasks_failed_total", "Runs that failed terminally (retries exhausted)")
+    M_RETRIED = Counter("deepswe_tasks_retried_total", "Transient failures re-queued for retry")
 
     LABEL_SELECTOR = "app.kubernetes.io/name=dspark-deepswe,dspark.io/phase=generation"
     RESULT_RE = re.compile(r"##DSPARK-RESULT-B64-BEGIN##\n(.*?)\n##DSPARK-RESULT-B64-END##", re.S)
@@ -302,6 +314,8 @@ data:
     def main():
         kconfig.load_incluster_config()
         v1 = client.CoreV1Api()
+        start_http_server(METRICS_PORT)
+        log(f"metrics server on :{METRICS_PORT}/metrics")
         for sub in ("results", "trajectories", "logs"):
             (OUTPUT_ROOT / sub).mkdir(parents=True, exist_ok=True)
 
@@ -321,7 +335,14 @@ data:
         pending = [(t, s) for (t, s) in queue if not result_path_for(f"{t['task_id']}.{s}").exists()]
         log(f"{len(queue)-len(pending)} already done (resumed); {len(pending)} pending")
 
+        M_TOTAL.set(len(queue))
+        attempts = {}   # name -> transient-failure count (retry cap)
         in_flight = {}
+        def set_progress():
+            # done = total - not-done - running; correct even across re-queues
+            M_DONE.set(len(queue) - len(pending) - len(in_flight))
+            M_PENDING.set(len(pending)); M_INFLIGHT.set(len(in_flight))
+        set_progress()
         def launch_next():
             if pending:
                 wait_for_vllm()   # gate: don't launch into a dead vLLM
@@ -331,10 +352,12 @@ data:
                 pod = build_pod(t, s)
                 try:
                     v1.create_namespaced_pod(namespace=NAMESPACE, body=pod)
-                    in_flight[name] = {"pod_name": pod.metadata.name, "started": time.time()}
+                    in_flight[name] = {"pod_name": pod.metadata.name, "started": time.time(), "task": t, "sample": s}
                     log(f"launched {name} ({len(in_flight)}/{MAX_CONCURRENCY} in flight, {len(pending)} pending)")
                 except ApiException as e:
-                    log(f"ERROR creating pod {name}: {e}"); write_result(name, "pod_create_error", api_status=e.status)
+                    # transient (apiserver busy under I/O storm) -> re-queue, don't mark done; stop this round
+                    log(f"ERROR creating pod {name}: {e}; re-queuing"); pending.append((t, s)); break
+            set_progress()
 
         launch_next()
         while in_flight:
@@ -349,14 +372,25 @@ data:
                     continue
                 phase = pod.status.phase; timed_out = elapsed > PER_RUN_TIMEOUT_SECONDS
                 if phase in ("Succeeded", "Failed") or timed_out:
-                    if timed_out and phase not in ("Succeeded", "Failed"):
-                        log(f"{name}: timeout {int(elapsed)}s (phase={phase})")
-                        harvest(v1, meta["pod_name"], name); write_result(name, "timeout", elapsed_seconds=int(elapsed))
+                    got = harvest(v1, meta["pod_name"], name)
+                    delete_pod(v1, meta["pod_name"]); del in_flight[name]
+                    if got:
+                        log(f"{name}: result harvested after {elapsed:.0f}s (phase={phase})")
+                        M_SUCCEEDED.inc()
                     else:
-                        log(f"{name}: {phase} after {elapsed:.0f}s")
-                        if not harvest(v1, meta["pod_name"], name):
-                            write_result(name, f"{phase.lower()}_no_result", elapsed_seconds=int(elapsed))
-                    delete_pod(v1, meta["pod_name"]); del in_flight[name]; launch_next()
+                        # No trajectory -> transient (GPU/vLLM died mid-run, timeout, empty).
+                        # RE-QUEUE up to MAX_RETRIES instead of permanently marking done, so
+                        # pushing the GPU never silently orphans a task (issue #57).
+                        reason = "timeout" if timed_out else f"{phase.lower()}_no_result"
+                        attempts[name] = attempts.get(name, 0) + 1
+                        if attempts[name] < MAX_RETRIES:
+                            log(f"{name}: {reason} (attempt {attempts[name]}/{MAX_RETRIES}) -- re-queuing")
+                            pending.append((meta["task"], meta["sample"])); M_RETRIED.inc()
+                        else:
+                            log(f"{name}: {reason} -- retries exhausted, marking failed")
+                            write_result(name, "failed_max_retries", last_reason=reason, attempts=attempts[name])
+                            M_FAILED.inc()
+                    set_progress(); launch_next()
 
         # summary
         by_status = {}
@@ -401,8 +435,10 @@ spec:
             - -c
             - |
               set -euo pipefail
-              pip install --quiet --no-input --root-user-action ignore "kubernetes>=30,<32"
+              pip install --quiet --no-input --root-user-action ignore "kubernetes>=30,<32" prometheus_client
               exec python3 /scripts/controller.py
+          ports:
+            - {containerPort: 9100, name: metrics}
           env:
             - {name: SWEBENCH_NAMESPACE, value: dspark-swebench}
             # CONTINUAL LOCAL RUN (NO DashScope) — local vLLM (Qwen3.6-27B-NVFP4, FREE),
@@ -439,3 +475,20 @@ spec:
           configMap: {name: dspark-deepswe-manifest}
         - name: controller-script
           configMap: {name: dspark-deepswe-controller-script, defaultMode: 0755}
+---
+# Metrics service: the Prometheus 'dspark-deepswe' job scrapes :9100/metrics here
+# -> Grafana progress dashboard. Selects the CONTROLLER pod only (component=
+# generation-controller), not the runner pods (which share app.kubernetes.io/name).
+apiVersion: v1
+kind: Service
+metadata:
+  name: dspark-deepswe-metrics
+  namespace: default
+  labels:
+    app.kubernetes.io/name: dspark-deepswe
+spec:
+  selector:
+    app.kubernetes.io/name: dspark-deepswe
+    app.kubernetes.io/component: generation-controller
+  ports:
+    - {name: metrics, port: 9100, targetPort: 9100}
