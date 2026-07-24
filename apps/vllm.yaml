@@ -70,15 +70,14 @@ spec:
       # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
-          # 2026-07-23: moved to latest STABLE v0.25.1 for the AWS-burst hammer
-          # test (issue #57). The old nightly pin existed only because v0.25.x
-          # had a Blackwell draft-attention CUDA bug (vllm#48167, fixed post-
-          # v0.25.1). That bug is in the SPEC-DECODE path ONLY, and spec-decode
-          # stays OFF here (it hurts high-concurrency batch throughput), so
-          # stable v0.25.1 is safe. FALLBACK if v0.25.1 lacks Qwen3.6 support or
-          # a flag: nightly-4080263bb2c5d10deac17aaeb88e0823bc35bca9 (2026-07-23,
-          # includes #48167 + latest model support).
-          image: vllm/vllm-openai:v0.25.1-cu129-ubuntu2404
+          # 2026-07-23: NIGHTLY (not stable) because we're ENABLING DSpark/DFlash
+          # spec-decode for the burst (issue #57), which needs vllm#48167 (the
+          # Blackwell draft-attention fix) — merged AFTER stable v0.25.1, so it's
+          # nightly-only. This 2026-07-23 nightly includes #48167, so draft
+          # acceptance is restored (the earlier "spec-decode = 8.4s timeouts"
+          # result was on the OLD nightly where the bug forced ~0% acceptance =
+          # pure overhead). Watch acceptance + throughput in the metrics.
+          image: vllm/vllm-openai:nightly-4080263bb2c5d10deac17aaeb88e0823bc35bca9
           command:
             - vllm
             - serve
@@ -88,17 +87,17 @@ spec:
             - "--served-model-name"
             - main
             - qwen27
-            # Right-sized from 256K: frees KV for more concurrency (zero
-            # crash-risk lever); 128K is ample for the agent's context.
-            - "--max-model-len=131072"
+            # Full Qwen3.6 context (256K) per user request. Large KV footprint,
+            # but vLLM allocates blocks dynamically + preempts under pressure
+            # (won't OOM at boot); watch kv_cache_usage_perc + preemptions.
+            - "--max-model-len=262144"
             - "--dtype=bfloat16"
-            # 2026-07-23: middle-ground retune for the high-concurrency burst
-            # (issue #57) — UP from proven-safe 0.60/16, but well below the
-            # 0.85/32 that triggered the #46 GSP crash. 0.70 + 24 seqs + the
-            # right-sized max-model-len gives more KV/concurrency without
-            # over-driving the card. CANARY: watch vllm:num_preemptions_total —
-            # if it climbs (KV oversubscribed) or the GSP crashes, back to 0.60/16.
-            - "--gpu-memory-utilization=0.70"
+            # 2026-07-23: AGGRESSIVE retune for the burst (issue #57) — user opted
+            # to push the GPU (DeepSWE retries any tasks that fail on a crash).
+            # 0.80 uses headroom freed by scaling granite-stt to 0; below the
+            # 0.85/32 combo that crashed (#46), but this IS a real push. CANARY:
+            # watch vllm:num_preemptions_total + the GSP; back off if it crashes often.
+            - "--gpu-memory-utilization=0.80"
             - "--max-num-seqs=24"
             - "--kv-cache-dtype=fp8_e4m3"
             # DeltaNet recurrent state cannot be FP8 — must be float16
@@ -117,16 +116,17 @@ spec:
             - "--tool-call-parser=qwen3_coder"
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
-            - "--max-num-batched-tokens=12288"
-            # dspark speculative decoding DISABLED 2026-07-18 for DeepSWE data-gen.
-            # At high concurrency the drafter's draft+verify overhead COMPETES with
-            # the batch and hurts throughput (SGLang research #51; confirmed live:
-            # 8.4s for a 5-token request at 100% GPU under 6 concurrent agents,
-            # causing worker litellm timeouts). Plain batched decode is faster for
-            # this workload. Re-add for interactive serving (the 1.28-1.36x
-            # single-stream win) once data-gen is done.
-            # - "--speculative-config"
-            # - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":3}'
+            - "--max-num-batched-tokens=16384"
+            # DSpark speculative decoding ENABLED 2026-07-23 (user request, issue
+            # #57). The prior "8.4s timeouts under 6 agents" result was on the OLD
+            # nightly where vllm#48167 forced ~0% draft acceptance (pure overhead);
+            # this nightly has the fix, so acceptance is restored and spec-decode
+            # should genuinely help (~1.3x single-stream). If it regresses under
+            # real burst load (rising TTFT/preemptions, falling tok/s), comment
+            # back out. Using the cached DSpark drafter; swap model= for a
+            # dedicated DFlash drafter if preferred.
+            - "--speculative-config"
+            - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":3}'
           ports:
             - containerPort: 8000
           env:

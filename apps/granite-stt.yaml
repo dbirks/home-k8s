@@ -69,11 +69,11 @@ metadata:
   name: granite-stt
   namespace: default
 spec:
-  # Brought up 2026-07-20 AFTER pre-pulling the v0.20.1 image + granite-speech
-  # model into the PVC (isolated, no I/O storm). gemma stays parked at 0 until
-  # granite is confirmed Running — do NOT cold-start both concurrently (that
-  # saturated HDD I/O and starved etcd earlier).
-  replicas: 1
+  # 2026-07-23: scaled to 0 for the vLLM high-concurrency burst (issue #57) —
+  # frees its ~0.10 GPU-mem slot so Qwen can take 0.80. Bring back to 1 when
+  # the burst is done and you want STT again.
+  # (Brought up 2026-07-20 after pre-pulling the v0.20.1 image + model.)
+  replicas: 0
   strategy:
     type: Recreate
   selector:
