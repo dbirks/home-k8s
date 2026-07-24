@@ -71,17 +71,17 @@ spec:
               set -e
               echo "[$(date -u +%FT%TZ)] Enabling persistence mode (-pm 1)..."
               nvidia-smi -pm 1
-              # 2026-07-24: raised 400->450W (user experiment, post-P510 + extra
-              # cooling). 450W historically crashed (#8/#9) pre-migration; retesting
-              # now that a #46 crash is cheap (retry net + remote IPMI reboot).
-              echo "[$(date -u +%FT%TZ)] Capping power to 450W (-pl 450)..."
-              nvidia-smi -pl 450
+              # 2026-07-24: back to 400W. 450W drove it to 96C with the fan pegged
+              # (too hot to sustain), and the DeepSWE-throughput reason is paused.
+              # Raise again deliberately if chasing max Laguna speed WITH cooling headroom.
+              echo "[$(date -u +%FT%TZ)] Capping power to 400W (-pl 400)..."
+              nvidia-smi -pl 400
               echo "[$(date -u +%FT%TZ)] Current state:"
               nvidia-smi --query-gpu=name,power.limit,power.max_limit,persistence_mode --format=csv
               echo "[$(date -u +%FT%TZ)] Re-asserting every hour..."
               while true; do
                 sleep 3600
-                nvidia-smi -pl 450 >/dev/null 2>&1 || echo "[$(date -u +%FT%TZ)] WARNING: re-assert power failed"
+                nvidia-smi -pl 400 >/dev/null 2>&1 || echo "[$(date -u +%FT%TZ)] WARNING: re-assert power failed"
               done
           resources:
             requests:

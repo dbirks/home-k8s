@@ -63,7 +63,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 0
+  replicas: 1   # 2026-07-24: brought UP — Qwen scaled to 0, GPU freed for Laguna S-2.1
   strategy:
     type: Recreate
   selector:
@@ -78,7 +78,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: laguna
-          image: vllm/vllm-openai:v0.24.0
+          image: vllm/vllm-openai:v0.25.1   # 2026-07-24: bumped from v0.24.0 — Laguna S-2.1 needs vLLM >=0.25 (poolside recipe); v0.25.1 stable + already pulled on-node
           args:
             # CANARY FIRST: to validate NVFP4-MoE on SM120, temporarily set this to
             # poolside/Laguna-XS-2.1-NVFP4 (and --gpu-memory-utilization=0.30),
@@ -87,6 +87,7 @@ spec:
             - "--served-model-name=laguna"
             - "--host=0.0.0.0"
             - "--port=8000"
+            - "--trust-remote-code"   # REQUIRED: Laguna ships custom modeling_laguna.py / configuration_laguna.py
             # ~0.85 leaves room for weights (~76-80GB) + FP8 KV on the 96GB card,
             # assuming Qwen is scaled to 0. Drop toward 0.80 if coexisting with
             # granite-stt (0.10); raise toward 0.90 if running fully alone.
