@@ -455,7 +455,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "8"}  # 2026-07-24: bumped 4->8 after conc-4 held 20 min clean (peak load 2.73, etcd fine) post-P510. Pushing throughput; GPU may become the bottleneck at 8 concurrent streams (and heavy GPU load is the #46 trigger — retry net covers crashes). Watching etcd/load/GPU; back off if it degrades.
+            - {name: MAX_CONCURRENCY, value: "12"}  # 2026-07-24: bumped 8->12 alongside a 400->450W power-cap raise. conc-8 held 20 min clean but was GPU-bound (power-pegged at 400W), so >8 mainly adds queuing UNLESS the +50W gives real headroom. Curiosity/crash-test run; retry net + remote-reboot cover a #46. Watching throughput/temp/crash.
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
