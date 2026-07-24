@@ -455,7 +455,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "4"}  # 2026-07-24: bumped 2->4 after conc-2 held clean for 10 min post-P510-migration (peak load 3.96, etcd never failed). etcd on the fast NVMe absorbs the worker I/O easily now. Watching conc-4; back off if etcd/load degrade.
+            - {name: MAX_CONCURRENCY, value: "8"}  # 2026-07-24: bumped 4->8 after conc-4 held 20 min clean (peak load 2.73, etcd fine) post-P510. Pushing throughput; GPU may become the bottleneck at 8 concurrent streams (and heavy GPU load is the #46 trigger — retry net covers crashes). Watching etcd/load/GPU; back off if it degrades.
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
