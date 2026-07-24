@@ -455,7 +455,7 @@ spec:
             - {name: PIN_NODE, value: talos-210-73x}
             - {name: N_SAMPLES, value: "20"}
             - {name: TASK_LIMIT, value: "0"}
-            - {name: MAX_CONCURRENCY, value: "2"}  # 2026-07-24: conc-2 RE-TEST after the P510 etcd-disk migration (#58). The prior conc-2 failures were etcd fsync starvation on the shared SATA SSD; etcd now lives on the fast NVMe (P510), so the 2 workers' build I/O should no longer starve it. Guarded + watched — revert to "1" only if etcd still struggles (it shouldn't now that the root cause is fixed).
+            - {name: MAX_CONCURRENCY, value: "4"}  # 2026-07-24: bumped 2->4 after conc-2 held clean for 10 min post-P510-migration (peak load 3.96, etcd never failed). etcd on the fast NVMe absorbs the worker I/O easily now. Watching conc-4; back off if etcd/load degrade.
             - {name: PER_RUN_TIMEOUT_SECONDS, value: "5400"}
             - {name: VLLM_API_BASE, value: http://vllm.default.svc.cluster.local/v1}
             - {name: MSWEA_MODEL_NAME, value: hosted_vllm/main}
