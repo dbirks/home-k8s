@@ -95,6 +95,12 @@ spec:
             # 256k context; 3:1 SWA + FP8 KV keeps this affordable. If it OOMs on
             # KV allocation, lower (e.g. 200000).
             - "--max-model-len=262144"
+            # 2026-07-24: --enforce-eager — the first S-2.1 boot HUNG for ~20min
+            # (weights loaded to GPU, then wedged GPU-idle in torch.compile/CUDA-
+            # graph capture — NVFP4-MoE-on-SM120 fragility). Eager skips that phase
+            # so it actually serves. Slower per-token; remove once graph capture is
+            # proven and when layering DFlash spec-decode (see research / #57).
+            - "--enforce-eager"
             # poolside-specific parsers (required for tool calls + reasoning)
             - "--tool-call-parser=poolside_v1"
             - "--reasoning-parser=poolside_v1"
