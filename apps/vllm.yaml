@@ -70,14 +70,16 @@ spec:
       # GPU time-slicing is stable. Config preserved in git history.
       containers:
         - name: vllm
-          # 2026-07-23: NIGHTLY (not stable) because we're ENABLING DSpark/DFlash
-          # spec-decode for the burst (issue #57), which needs vllm#48167 (the
-          # Blackwell draft-attention fix) — merged AFTER stable v0.25.1, so it's
-          # nightly-only. This 2026-07-23 nightly includes #48167, so draft
-          # acceptance is restored (the earlier "spec-decode = 8.4s timeouts"
-          # result was on the OLD nightly where the bug forced ~0% acceptance =
-          # pure overhead). Watch acceptance + throughput in the metrics.
-          image: vllm/vllm-openai:nightly-4080263bb2c5d10deac17aaeb88e0823bc35bca9
+          # 2026-07-23: REVERTED to the cached known-good nightly to STABILIZE.
+          # v0.25.1 stable errored on Qwen3.6, and the newer nightly-4080263
+          # (needed for #48167 / spec-decode) could NOT finish pulling — its
+          # ~20GB unpack storms the shared SSD etcd lives on, so it crawled 40+
+          # min while etcd flapped. This image is already on disk = instant boot.
+          # Spec-decode stays OFF (this old nightly has the #48167 bug -> ~0%
+          # draft acceptance). Re-attempt the new nightly + spec-decode AFTER the
+          # P510 etcd-on-its-own-disk migration (#58) stops pulls storming etcd.
+          # Aggressive burst flags (0.80 / 256K / 24 seqs) kept.
+          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
           command:
             - vllm
             - serve
@@ -117,16 +119,12 @@ spec:
             - "--reasoning-parser=qwen3"
             - "--performance-mode=throughput"
             - "--max-num-batched-tokens=16384"
-            # DSpark speculative decoding ENABLED 2026-07-23 (user request, issue
-            # #57). The prior "8.4s timeouts under 6 agents" result was on the OLD
-            # nightly where vllm#48167 forced ~0% draft acceptance (pure overhead);
-            # this nightly has the fix, so acceptance is restored and spec-decode
-            # should genuinely help (~1.3x single-stream). If it regresses under
-            # real burst load (rising TTFT/preemptions, falling tok/s), comment
-            # back out. Using the cached DSpark drafter; swap model= for a
-            # dedicated DFlash drafter if preferred.
-            - "--speculative-config"
-            - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":3}'
+            # DSpark spec-decode DEFERRED 2026-07-23: it needs the new nightly
+            # (#48167), which can't be pulled without storming etcd on the shared
+            # disk. Re-enable after the P510 etcd-disk migration (#58). This
+            # cached old nightly has the #48167 bug (~0% acceptance) -> stays OFF.
+            # - "--speculative-config"
+            # - '{"method":"dspark","model":"dbirks/Qwen3.6-27b-DSpark","num_speculative_tokens":3}'
           ports:
             - containerPort: 8000
           env:
