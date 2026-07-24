@@ -76,6 +76,15 @@ spec:
               - vllm.default.svc.cluster.local:80
             labels:
               instance: vllm
+      # Laguna S-2.1 vLLM metrics (spec-decode acceptance, throughput, queue)
+      - job_name: 'laguna'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - laguna.default.svc.cluster.local:80
+            labels:
+              instance: laguna
       # DeepSWE generation controller progress metrics (see apps/dspark-deepswe-*)
       - job_name: 'dspark-deepswe'
         scrape_interval: 15s
