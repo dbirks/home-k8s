@@ -173,6 +173,18 @@ spec:
             - {name: NVCC_THREADS, value: "1"}
             - {name: FLASHINFER_NVCC_THREADS, value: "1"}
             - {name: FLASHINFER_DISABLE_VERSION_CHECK, value: "1"}
+            # 2026-07-24: PERSIST JIT compile caches onto the NVMe model PVC (/data)
+            # so the expensive first-boot kernel compile (FlashInfer/Triton/inductor)
+            # happens ONCE and every boot after REUSES it — no recompile, no re-hang.
+            # HOME=/data is the catch-all (redirects every ~/.cache/* tool to the
+            # persistent volume even if we named a var wrong); explicit vars pin the
+            # known ones. Model + caches both live on the 120Gi NVMe PVC. NOTE: the
+            # FIRST boot must still complete the compile once to populate the cache.
+            - {name: HOME, value: /data}
+            - {name: VLLM_CACHE_ROOT, value: /data/.cache/vllm}
+            - {name: TRITON_CACHE_DIR, value: /data/.cache/triton}
+            - {name: TORCHINDUCTOR_CACHE_DIR, value: /data/.cache/torchinductor}
+            - {name: FLASHINFER_WORKSPACE_BASE, value: /data/.cache/flashinfer}
           resources:
             limits:
               nvidia.com/gpu: 1
