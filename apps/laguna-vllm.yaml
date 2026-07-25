@@ -112,7 +112,7 @@ spec:
             # ~0.85 leaves room for weights (~76-80GB) + FP8 KV on the 96GB card,
             # assuming Qwen is scaled to 0. Drop toward 0.80 if coexisting with
             # granite-stt (0.10); raise toward 0.90 if running fully alone.
-            - "--gpu-memory-utilization=0.85"
+            - "--gpu-memory-utilization=0.78"
             # 256k context; 3:1 SWA + FP8 KV keeps this affordable. If it OOMs on
             # KV allocation, lower (e.g. 200000).
             - "--max-model-len=262144"
@@ -122,15 +122,18 @@ spec:
             # so it actually serves. Slower per-token; remove once graph capture is
             # proven and when layering DFlash spec-decode (see research / #57).
             - "--enforce-eager"
-            # === DFlash speculative decoding (the big lever, ~2.5x on code) ===
-            # NOTE: research said --moe-backend triton, but v0.25.1 REJECTS it for
-            # NVFP4 MoE ("not supported; expected cutlass/flashinfer_*/marlin"). So
-            # we let vLLM AUTO-SELECT — it picks FLASHINFER_CUTLASS on SM120 (the
-            # confirmed-good path from the base boot, and NOT DeepGEMM, which is the
-            # backend DFlash actually dislikes). K=3 won on RTX PRO 6000 in
-            # independent benchmarks; sweep {3,5,7} later. DFlash CRASHES at default
-            # --max-num-seqs 256 -> pin low (4). ~1B BF16 drafter auto-downloads.
-            - "--speculative-config={\"model\":\"poolside/Laguna-S-2.1-DFlash-NVFP4\",\"num_speculative_tokens\":3,\"method\":\"dflash\"}"
+            # 2026-07-25 FIX for the SM120 NVFP4-MoE HANG (vLLM #33333/#38971,
+            # flashinfer #2577, cutlass #3096): the auto-selected FLASHINFER_CUTLASS
+            # MoE enumerates ~72 CUTLASS tactics that are ALL sm_100a-only -> they
+            # fail on sm_120 -> the warmup WEDGES (exactly our symptom). Force MARLIN
+            # (community-confirmed known-good + faster on RTX PRO 6000) and disable
+            # the FlashInfer autotune + cutedsl warmup that were the hang point.
+            - "--moe-backend=marlin"
+            - "--no-enable-flashinfer-autotune"
+            - "--no-enable-cutedsl-warmup"
+            # === DFlash spec-decode DISABLED for the base-serving test — confirm
+            # marlin unblocks the hang FIRST, then re-enable (DFlash+marlin untested).
+            # - "--speculative-config={\"model\":\"poolside/Laguna-S-2.1-DFlash-NVFP4\",\"num_speculative_tokens\":3,\"method\":\"dflash\"}"
             - "--max-num-seqs=4"
             - "--max-num-batched-tokens=8192"
             - "--enable-prefix-caching"
@@ -157,6 +160,9 @@ spec:
             - {name: VLLM_ATTENTION_BACKEND, value: FLASHINFER}
             - {name: FLASHINFER_CUDA_ARCH_LIST, value: 12.0f}
             - {name: FLASHINFER_FORCE_SM, value: 120f}
+            # 2026-07-25: per the exact-match RTX 6000 PRO recipe (MiaAI-Lab) — pin
+            # CuteDSL arch to sm_120 (sm_121a is DGX Spark) so nothing JITs wrong.
+            - {name: CUTE_DSL_ARCH, value: sm_120}
             - {name: FLASHINFER_DISABLE_VERSION_CHECK, value: "1"}
           resources:
             limits:
@@ -188,6 +194,8 @@ spec:
       volumes:
         - name: models
           persistentVolumeClaim:
+            # Still HDD for now — the NVMe copy job can't co-mount this RWO PVC while
+            # the Laguna pod holds it; do the NVMe migration later with Laguna at 0.
             claimName: laguna-models
         - name: shm
           emptyDir:
