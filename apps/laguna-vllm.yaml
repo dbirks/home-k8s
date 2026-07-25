@@ -102,12 +102,13 @@ spec:
             # proven and when layering DFlash spec-decode (see research / #57).
             - "--enforce-eager"
             # === DFlash speculative decoding (the big lever, ~2.5x on code) ===
-            # DFlash needs the Triton MoE backend (default DeepGEMM is incompatible
-            # with the draft path per poolside's vLLM recipe). K=3 won on RTX PRO
-            # 6000 (SM120, compute-bound) in independent benchmarks; sweep {3,5,7}
-            # later. DFlash CRASHES at the default --max-num-seqs 256 -> pin low (4).
-            # The ~1B BF16 drafter auto-downloads to /data (HF_TOKEN set) on start.
-            - "--moe-backend=triton"
+            # NOTE: research said --moe-backend triton, but v0.25.1 REJECTS it for
+            # NVFP4 MoE ("not supported; expected cutlass/flashinfer_*/marlin"). So
+            # we let vLLM AUTO-SELECT — it picks FLASHINFER_CUTLASS on SM120 (the
+            # confirmed-good path from the base boot, and NOT DeepGEMM, which is the
+            # backend DFlash actually dislikes). K=3 won on RTX PRO 6000 in
+            # independent benchmarks; sweep {3,5,7} later. DFlash CRASHES at default
+            # --max-num-seqs 256 -> pin low (4). ~1B BF16 drafter auto-downloads.
             - "--speculative-config={\"model\":\"poolside/Laguna-S-2.1-DFlash-NVFP4\",\"num_speculative_tokens\":3,\"method\":\"dflash\"}"
             - "--max-num-seqs=4"
             - "--max-num-batched-tokens=8192"
