@@ -154,7 +154,8 @@ spec:
       enableServiceLinks: false
       containers:
         - name: bench
-          image: vllm/vllm-openai:nightly-95ed0feaa5cd7fb16d72c53ce04950aaf07c4698
+          image: vllm/vllm-openai:nightly-4080263bb2c5d10deac17aaeb88e0823bc35bca9  # on-node (production dspark image w/ vllm#48167 fix); the old 95ed0f nightly is gone from docker hub
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/scripts/run.sh"]
           env:
             - name: HF_HOME
