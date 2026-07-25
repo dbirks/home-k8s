@@ -53,7 +53,8 @@ spec:
   # DeepSWE run paused at 90% (2030/2260); resume both when switching back.
   # 2026-07-25: back UP to 1 for the overnight DeepSWE resume (conc-6) — serves "main"
   # for the mini-swe-agent runners. Laguna is paused (replicas 0) so the GPU is free.
-  replicas: 1
+  # 2026-07-25 (later): DeepSWE done -> back to 0, GPU handed to the DSpark-full training Job.
+  replicas: 0
   strategy:
     type: Recreate
   selector:
