@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 1   # 2026-07-24: brought UP — Qwen scaled to 0, GPU freed for Laguna S-2.1
+  replicas: 0   # 2026-07-25: PAUSED for the NVMe copy (frees the HDD PVC). Resume after copy -> loads fast from NVMe.
   strategy:
     type: Recreate
   selector:
@@ -205,7 +205,7 @@ spec:
           persistentVolumeClaim:
             # Still HDD for now — the NVMe copy job can't co-mount this RWO PVC while
             # the Laguna pod holds it; do the NVMe migration later with Laguna at 0.
-            claimName: laguna-models
+            claimName: laguna-models-nvme
         - name: shm
           emptyDir:
             medium: Memory
