@@ -121,10 +121,15 @@ spec:
                 --extra-index-url https://flashinfer.ai/whl/nightly/cu130/
               pip install --upgrade "cuda-tile==1.5.0" "nccl4py==0.3.1"
               echo "[bootstrap] flashinfer-python now: $(pip show flashinfer-python 2>/dev/null | awk '/^Version/{print $2}')"
-              # NOTE: --moe-backend dropped (auto FLASHINFER_CUTLASS is now cubin-backed
-              # and blessed by the recipe). --enforce-eager kept for a safe first
-              # bring-up; remove later for speed once serving is proven. DFlash
-              # spec-decode still disabled — re-add once base serving is confirmed:
+              # 2026-07-25: --moe-backend=marlin. With the trio installed, attention +
+              # sampler JIT are fixed, so the ONLY remaining stall was the auto
+              # FLASHINFER_CUTLASS path's cutedsl_warmup (enable_cutedsl_warmup=True,
+              # NOT CLI-disableable in 0.25.1) — it wedged ~12min after FLASHINFER_CUTLASS
+              # selection (busy autotune burst, then flat-idle, "Model loading took" never
+              # printed). MARLIN is a vLLM-internal FP4 MoE kernel that uses NEITHER the
+              # FlashInfer MoE JIT NOR cutedsl, so it skips that warmup entirely. (Its
+              # earlier "stall" was pre-trio = the attention JIT wedge, now resolved.)
+              # --enforce-eager kept for safe bring-up. DFlash spec-decode still off:
               #   --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":7,"method":"dflash"}'
               exec vllm serve \
                 --model=poolside/Laguna-S-2.1-NVFP4 \
@@ -134,6 +139,7 @@ spec:
                 --gpu-memory-utilization=0.78 \
                 --max-model-len=262144 \
                 --enforce-eager \
+                --moe-backend=marlin \
                 --max-num-seqs=4 \
                 --max-num-batched-tokens=8192 \
                 --enable-prefix-caching \
