@@ -142,7 +142,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: dspark-benchmark-20260725-deepswe-full
+  name: dspark-benchmark-20260725-deepswe-full-lr5e5
   namespace: default
 spec:
   backoffLimit: 2
