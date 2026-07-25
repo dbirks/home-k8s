@@ -51,7 +51,9 @@ spec:
   # concurrency bumps below (max-num-seqs 32, gpu-mem 0.85, batched 16384).
   # 2026-07-24: scaled to 0 to free the whole GPU for Laguna S-2.1 (switching gears).
   # DeepSWE run paused at 90% (2030/2260); resume both when switching back.
-  replicas: 0
+  # 2026-07-25: back UP to 1 for the overnight DeepSWE resume (conc-6) — serves "main"
+  # for the mini-swe-agent runners. Laguna is paused (replicas 0) so the GPU is free.
+  replicas: 1
   strategy:
     type: Recreate
   selector:
