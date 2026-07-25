@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 1   # 2026-07-25: RESUMED from NVMe (fast ~90s load). Persisted JIT cache; wait out the compile phase.
+  replicas: 0   # 2026-07-25: PAUSED — model on NVMe was INCOMPLETE (10/15 safetensors missing; vLLM hung in snapshot_download). Completing the download first, then resume.
   strategy:
     type: Recreate
   selector:
