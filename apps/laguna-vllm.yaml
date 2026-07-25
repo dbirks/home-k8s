@@ -164,6 +164,14 @@ spec:
             # 2026-07-25: per the exact-match RTX 6000 PRO recipe (MiaAI-Lab) — pin
             # CuteDSL arch to sm_120 (sm_121a is DGX Spark) so nothing JITs wrong.
             - {name: CUTE_DSL_ARCH, value: sm_120}
+            # 2026-07-25: THROTTLE first-boot JIT compilation (FlashInfer/cutedsl)
+            # per the exact-match RTX 6000 PRO recipe (MiaAI-Lab). Without these the
+            # kernel JIT spawns too many parallel nvcc jobs and DEADLOCKS right after
+            # weight-load — our exact hang (weights on GPU, then wedged, GPU+CPU idle).
+            # Likely the REAL fix: marlin AND flashinfer_cutlass both hung the same way.
+            - {name: MAX_JOBS, value: "2"}
+            - {name: NVCC_THREADS, value: "1"}
+            - {name: FLASHINFER_NVCC_THREADS, value: "1"}
             - {name: FLASHINFER_DISABLE_VERSION_CHECK, value: "1"}
           resources:
             limits:
