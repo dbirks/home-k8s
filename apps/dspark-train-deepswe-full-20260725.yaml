@@ -228,7 +228,7 @@ data:
             --hidden-states-path "$HS_DIR" \
             -- \
             --gpu-memory-utilization 0.75 --port 8001 \
-            --max-model-len 16384 --dtype bfloat16 --trust-remote-code \
+            --max-model-len 20480 --dtype bfloat16 --trust-remote-code \
             --served-model-name main \
             --kv-cache-dtype fp8_e4m3 \
             --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
