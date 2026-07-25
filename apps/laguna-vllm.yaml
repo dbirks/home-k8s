@@ -129,8 +129,9 @@ spec:
             # (community-confirmed known-good + faster on RTX PRO 6000) and disable
             # the FlashInfer autotune + cutedsl warmup that were the hang point.
             - "--moe-backend=marlin"
-            - "--no-enable-flashinfer-autotune"
-            - "--no-enable-cutedsl-warmup"
+            # (dropped --no-enable-flashinfer-autotune / --no-enable-cutedsl-warmup:
+            #  NOT valid CLI flags in v0.25.1. Unneeded anyway — marlin bypasses the
+            #  FlashInfer CUTLASS autotune/cutedsl warmup path entirely.)
             # === DFlash spec-decode DISABLED for the base-serving test — confirm
             # marlin unblocks the hang FIRST, then re-enable (DFlash+marlin untested).
             # - "--speculative-config={\"model\":\"poolside/Laguna-S-2.1-DFlash-NVFP4\",\"num_speculative_tokens\":3,\"method\":\"dflash\"}"
