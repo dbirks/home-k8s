@@ -55,6 +55,22 @@ spec:
     requests:
       storage: 200Gi                 # room for S-2.1 (~72GB) + XS canary (~22GB) + hub metadata
 ---
+# 2026-07-24: NVMe copy of the Laguna model for FAST loads (HDD load ~15min ->
+# NVMe ~90s). A copy Job populates this from laguna-models, then the Deployment's
+# claimName switches here. local-path (default class) = the P510 NVMe (/var).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: laguna-models-nvme
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path      # default class = P510 NVMe (fast)
+  resources:
+    requests:
+      storage: 120Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -84,7 +100,12 @@ spec:
             # poolside/Laguna-XS-2.1-NVFP4 (and --gpu-memory-utilization=0.30),
             # confirm it serves + tool-calls, then switch back to S-2.1 below.
             - "--model=poolside/Laguna-S-2.1-NVFP4"
-            - "--served-model-name=laguna"
+            # Expose as BOTH "laguna" and "main" — downstream tools (Claude Code,
+            # OmniGent/Pi models.json, vllm.hoam.lan) target "main"; keep that alias
+            # working now that Qwen (which served "main") is scaled down.
+            - "--served-model-name"
+            - "laguna"
+            - "main"
             - "--host=0.0.0.0"
             - "--port=8000"
             - "--trust-remote-code"   # REQUIRED: Laguna ships custom modeling_laguna.py / configuration_laguna.py
