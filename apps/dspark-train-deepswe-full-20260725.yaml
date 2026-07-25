@@ -244,14 +244,21 @@ data:
             sleep 10
         done
         echo "[$(date)] vLLM healthy for Phase 1"
-        find "$HS_DIR" -maxdepth 1 -name "*.lock" -delete
-        find "$HS_DIR" -maxdepth 1 -name "cmpl-*.safetensors" -delete
+        find "$HS_DIR" -name "*.lock" -delete 2>/dev/null || true
+        find "$HS_DIR" -name "cmpl-*.safetensors" -delete 2>/dev/null || true
+        find "$HS_DIR" -name "*.incomplete" -delete 2>/dev/null || true
 
+        # 2026-07-25: --concurrency 1 (was 4). The hidden-states connector coordinates
+        # workers with a NON-BLOCKING exclusive flock; on the slow HDD PVC with the
+        # larger (1110-traj) dataset, 4 workers contend -> fcntl.flock LOCK_NB fails
+        # (BlockingIOError [Errno 11]) -> 10 consecutive errors -> abort. Single worker
+        # = zero inter-worker lock contention. Extraction is GPU-fast (~packed seqs),
+        # so the serialization cost is small; reliability wins for an unattended run.
         python3 "$SPEC_SCRIPTS/data_generation_offline.py" \
             --endpoint http://localhost:8001/v1 \
             --preprocessed-data "$PREP_DIR" \
             --output "$HS_DIR" \
-            --concurrency 4 --max-consecutive-errors 10 \
+            --concurrency 1 --max-consecutive-errors 10 \
             2>&1 | tee /output/logs/data_gen_deepswe_full.log
 
         kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null || true
