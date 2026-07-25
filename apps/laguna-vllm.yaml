@@ -95,55 +95,53 @@ spec:
       containers:
         - name: laguna
           image: vllm/vllm-openai:v0.25.1   # 2026-07-24: bumped from v0.24.0 — Laguna S-2.1 needs vLLM >=0.25 (poolside recipe); v0.25.1 stable + already pulled on-node
+          # 2026-07-25 THE FIX (research: MiaAI-Lab/Laguna-S-2.1-DGX-Spark-RTX-6000-PRO
+          # recipe; FlashInfer #2093/#3294, vLLM #41865/#44305). ROOT CAUSE of the
+          # boot wedge: the stock image ships flashinfer-python 0.6.13 ALONE, with NO
+          # matching sm_120 cubin/jit-cache — so on SM120 FlashInfer falls into
+          # on-serve JIT that DEADLOCKS (no cublasLt.h in image + JIT file-lock stall,
+          # GPU 0% / CPU idle / frozen log = our exact symptom). marlin did NOT help
+          # because the wedge is in FlashInfer attention/sampler JIT, not MoE compute.
+          # FIX: bootstrap-install the version-matched FlashInfer nightly TRIO
+          # (flashinfer-python + -cubin + -jit-cache, all 0.6.15.dev20260712, jit-cache
+          # from the cu130 sub-index) which SHIPS prebuilt sm_120 cubins -> no on-serve
+          # JIT -> no wedge. pip download cache persists on NVMe (HOME=/data) so
+          # reinstalls are fast. TODO: bake the trio into a custom image to skip this.
+          command: ["/bin/bash", "-c"]
           args:
-            # CANARY FIRST: to validate NVFP4-MoE on SM120, temporarily set this to
-            # poolside/Laguna-XS-2.1-NVFP4 (and --gpu-memory-utilization=0.30),
-            # confirm it serves + tool-calls, then switch back to S-2.1 below.
-            - "--model=poolside/Laguna-S-2.1-NVFP4"
-            # Expose as BOTH "laguna" and "main" — downstream tools (Claude Code,
-            # OmniGent/Pi models.json, vllm.hoam.lan) target "main"; keep that alias
-            # working now that Qwen (which served "main") is scaled down.
-            - "--served-model-name"
-            - "laguna"
-            - "main"
-            - "--host=0.0.0.0"
-            - "--port=8000"
-            - "--trust-remote-code"   # REQUIRED: Laguna ships custom modeling_laguna.py / configuration_laguna.py
-            # ~0.85 leaves room for weights (~76-80GB) + FP8 KV on the 96GB card,
-            # assuming Qwen is scaled to 0. Drop toward 0.80 if coexisting with
-            # granite-stt (0.10); raise toward 0.90 if running fully alone.
-            - "--gpu-memory-utilization=0.78"
-            # 256k context; 3:1 SWA + FP8 KV keeps this affordable. If it OOMs on
-            # KV allocation, lower (e.g. 200000).
-            - "--max-model-len=262144"
-            # 2026-07-24: --enforce-eager — the first S-2.1 boot HUNG for ~20min
-            # (weights loaded to GPU, then wedged GPU-idle in torch.compile/CUDA-
-            # graph capture — NVFP4-MoE-on-SM120 fragility). Eager skips that phase
-            # so it actually serves. Slower per-token; remove once graph capture is
-            # proven and when layering DFlash spec-decode (see research / #57).
-            - "--enforce-eager"
-            # 2026-07-25 FIX for the SM120 NVFP4-MoE HANG (vLLM #33333/#38971,
-            # flashinfer #2577, cutlass #3096): the auto-selected FLASHINFER_CUTLASS
-            # MoE enumerates ~72 CUTLASS tactics that are ALL sm_100a-only -> they
-            # fail on sm_120 -> the warmup WEDGES (exactly our symptom). Force MARLIN
-            # (community-confirmed known-good + faster on RTX PRO 6000) and disable
-            # the FlashInfer autotune + cutedsl warmup that were the hang point.
-            - "--moe-backend=marlin"
-            # (dropped --no-enable-flashinfer-autotune / --no-enable-cutedsl-warmup:
-            #  NOT valid CLI flags in v0.25.1. Unneeded anyway — marlin bypasses the
-            #  FlashInfer CUTLASS autotune/cutedsl warmup path entirely.)
-            # === DFlash spec-decode DISABLED for the base-serving test — confirm
-            # marlin unblocks the hang FIRST, then re-enable (DFlash+marlin untested).
-            # - "--speculative-config={\"model\":\"poolside/Laguna-S-2.1-DFlash-NVFP4\",\"num_speculative_tokens\":3,\"method\":\"dflash\"}"
-            - "--max-num-seqs=4"
-            - "--max-num-batched-tokens=8192"
-            - "--enable-prefix-caching"
-            - "--enable-chunked-prefill"
-            # poolside-specific parsers (required for tool calls + reasoning)
-            - "--tool-call-parser=poolside_v1"
-            - "--reasoning-parser=poolside_v1"
-            - "--enable-auto-tool-choice"
-            - "--default-chat-template-kwargs={\"enable_thinking\": true}"
+            - |
+              set -euo pipefail
+              FIV="0.6.15.dev20260712"
+              echo "[bootstrap] installing FlashInfer trio ${FIV} (prebuilt sm_120 cubins)..."
+              pip install --upgrade --no-deps \
+                "flashinfer-python==${FIV}" \
+                "flashinfer-cubin==${FIV}" \
+                "flashinfer-jit-cache==${FIV}+cu130" \
+                --extra-index-url https://flashinfer.ai/whl/nightly/ \
+                --extra-index-url https://flashinfer.ai/whl/nightly/cu130/
+              pip install --upgrade "cuda-tile==1.5.0" "nccl4py==0.3.1"
+              echo "[bootstrap] flashinfer-python now: $(pip show flashinfer-python 2>/dev/null | awk '/^Version/{print $2}')"
+              # NOTE: --moe-backend dropped (auto FLASHINFER_CUTLASS is now cubin-backed
+              # and blessed by the recipe). --enforce-eager kept for a safe first
+              # bring-up; remove later for speed once serving is proven. DFlash
+              # spec-decode still disabled — re-add once base serving is confirmed:
+              #   --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":7,"method":"dflash"}'
+              exec vllm serve \
+                --model=poolside/Laguna-S-2.1-NVFP4 \
+                --served-model-name laguna main \
+                --host=0.0.0.0 --port=8000 \
+                --trust-remote-code \
+                --gpu-memory-utilization=0.78 \
+                --max-model-len=262144 \
+                --enforce-eager \
+                --max-num-seqs=4 \
+                --max-num-batched-tokens=8192 \
+                --enable-prefix-caching \
+                --enable-chunked-prefill \
+                --tool-call-parser=poolside_v1 \
+                --reasoning-parser=poolside_v1 \
+                --enable-auto-tool-choice \
+                --default-chat-template-kwargs='{"enable_thinking": true}'
           ports:
             - containerPort: 8000
           env:
@@ -154,13 +152,21 @@ spec:
                 secretKeyRef:
                   name: hf-token
                   key: HF_TOKEN
-            # SM120-correct FlashInfer attention (research). Pinned so auto-select
-            # can't regress to the broken flashinfer_b12x path (garbage on SM120,
-            # vllm#47365). MoE backend is set to triton via --moe-backend (DFlash),
-            # so we do NOT set VLLM_USE_FLASHINFER_MOE_FP4 (would conflict).
+            # SM120-correct FlashInfer attention. With the cubin-backed trio (see the
+            # command bootstrap above) the prebuilt sm_120 kernels satisfy attention+MoE,
+            # so this no longer forces a doomed JIT.
             - {name: VLLM_ATTENTION_BACKEND, value: FLASHINFER}
             - {name: FLASHINFER_CUDA_ARCH_LIST, value: 12.0f}
-            - {name: FLASHINFER_FORCE_SM, value: 120f}
+            # 2026-07-25: kill the SECOND JIT wedge — the FlashInfer SAMPLER has its own
+            # JIT path that also deadlocks on sm_120f (vLLM #44305 / flashinfer #3493).
+            # Use vLLM's native sampler instead.
+            - {name: VLLM_USE_FLASHINFER_SAMPLER, value: "0"}
+            # Persist the FlashInfer RUNTIME cache on the NVMe PVC (HOME=/data already
+            # redirects ~/.cache/flashinfer here; pin it explicitly too).
+            - {name: FLASHINFER_CACHE_DIR, value: /data/.cache/flashinfer}
+            # REMOVED FLASHINFER_FORCE_SM=120f — research flags it HARMFUL here: it
+            # forces a JIT (which then wedges) instead of loading the prebuilt cubins.
+            # The trio's sm_120 cubins + FLASHINFER_DISABLE_VERSION_CHECK cover us.
             # 2026-07-25: per the exact-match RTX 6000 PRO recipe (MiaAI-Lab) — pin
             # CuteDSL arch to sm_120 (sm_121a is DGX Spark) so nothing JITs wrong.
             - {name: CUTE_DSL_ARCH, value: sm_120}
