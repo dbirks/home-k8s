@@ -140,6 +140,7 @@ spec:
                 --max-model-len=262144 \
                 --enforce-eager \
                 --moe-backend=marlin \
+                --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
                 --max-num-seqs=4 \
                 --max-num-batched-tokens=8192 \
                 --enable-prefix-caching \
@@ -197,6 +198,12 @@ spec:
             - {name: TRITON_CACHE_DIR, value: /data/.cache/triton}
             - {name: TORCHINDUCTOR_CACHE_DIR, value: /data/.cache/torchinductor}
             - {name: FLASHINFER_WORKSPACE_BASE, value: /data/.cache/flashinfer}
+          # 2026-07-25: SYS_PTRACE so `py-spy dump` can read the EngineCore Python
+          # frame if the boot wedges again (to distinguish the load-time warmup from
+          # the earlier weight-processing path). Harmless once serving.
+          securityContext:
+            capabilities:
+              add: ["SYS_PTRACE"]
           resources:
             limits:
               nvidia.com/gpu: 1
