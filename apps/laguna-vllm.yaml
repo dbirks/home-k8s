@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 0   # 2026-07-25: PAUSED — model on NVMe was INCOMPLETE (10/15 safetensors missing; vLLM hung in snapshot_download). Completing the download first, then resume.
+  replicas: 1   # 2026-07-25: RESUMED — model now COMPLETE (15/15 on NVMe). First real serve with the primed trio+marlin+kernel-config-warmups-off config.
   strategy:
     type: Recreate
   selector:
