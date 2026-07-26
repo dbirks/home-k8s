@@ -142,7 +142,7 @@ spec:
                 --max-model-len=131072 \
                 --moe-backend=marlin \
                 --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
-                --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":4,"method":"dflash"}' \
+                --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":9,"method":"dflash"}' \
                 --max-num-seqs=4 \
                 --max-num-batched-tokens=8192 \
                 --enable-prefix-caching \
