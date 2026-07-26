@@ -138,7 +138,6 @@ spec:
                 --trust-remote-code \
                 --gpu-memory-utilization=0.78 \
                 --max-model-len=131072 \
-                --enforce-eager \
                 --moe-backend=marlin \
                 --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
                 --max-num-seqs=4 \
