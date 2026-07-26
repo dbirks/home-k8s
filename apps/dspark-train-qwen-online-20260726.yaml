@@ -72,7 +72,7 @@ data:
     # ---------------- Phase 0: on-policy coding-weighted regen ----------------
     if [ ! -f "$DS/regen.done" ]; then
       echo "=== [$(date)] Phase 0: serve $MODEL (chat) for on-policy regen ==="
-      vllm serve "$MODEL" --host 127.0.0.1 --port 8001 --served-model-name main \
+      vllm serve "$MODEL" --host 127.0.0.1 --port 8001 \
         --gpu-memory-utilization 0.85 --max-model-len 8192 --dtype bfloat16 \
         --trust-remote-code --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
@@ -91,7 +91,7 @@ data:
         echo "=== [$(date)] regen $ds (limit $lim) ==="
         python3 "$SCRIPTS/response_regeneration/script.py" \
           --dataset "$ds" --limit "$lim" \
-          --endpoint http://127.0.0.1:8001/v1/chat/completions --model main \
+          --endpoint http://127.0.0.1:8001/v1/chat/completions --model "$MODEL" \
           --max-tokens 2048 --concurrency 32 \
           --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -4
       done
