@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 1   # 2026-07-25: RESUMED — model now COMPLETE (15/15 on NVMe). First real serve with the primed trio+marlin+kernel-config-warmups-off config.
+  replicas: 0   # 2026-07-26: DOWN for the GPU — Qwen3.6-27B DSpark online gate run (dspark-train-qwen-online-20260726). Restore to 1 to bring Laguna serving back (K=7 DFlash config intact). vllm.*/laguna.* ingresses point here.
   strategy:
     type: Recreate
   selector:

@@ -1,0 +1,244 @@
+# DSpark Qwen3.6-27B — ONLINE training, corrected recipe (2026-07-26)
+#
+# First run on the merged idiomatic fork (dbirks/speculators @ 188a7b3 =
+# upstream/main + the Qwen3.6 scalar-partial-rotary fix + coding regen presets).
+# See issues #60 (corrected recipe) / #62 (online+HF architecture).
+#
+# ONLINE (no TB hidden-state cache): a live vLLM serves the frozen verifier;
+# train.py streams hidden states per-batch from it and DELETES them
+# (--on-generate delete, /dev/shm scratch). Frozen verifier => deterministic
+# HS => per-epoch recompute is pure recompute, zero quality change.
+#
+# ZERO source patches (idiomatic): --draft-attn-impl eager handles SM120 (and
+# sidesteps flex_attention, so no torch-inductor patch); PR #848 detach is
+# upstream; verifier-load pulls only embed/lm_head (~3GB, no RAM spike).
+#
+# GATE run: ~6k coding-weighted on-policy samples, 4 epochs. Goal = does the
+# corrected recipe (fresh init, block 7, adamw, cosine+warmup, decay 4.0,
+# markov+confidence) break PAST the ~1.5 broken floor? Eval (temp 1.0) is a
+# follow-up job. The regen dataset lands on a SEPARATE PVC (dspark-dataset-hdd)
+# so it's preserved for later HF upload (token is read-only for now) and reused
+# even if the online-train phase needs a retry. Single-GPU coexistence
+# (verifier + trainer) is UNPROVEN here — the verifier gpu-mem is capped 0.45.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dspark-dataset-hdd
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: local-path-hdd
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-qwen-online-script
+  namespace: default
+data:
+  train.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+    export TOKENIZERS_PARALLELISM=false
+
+    echo "=== [$(date)] Qwen3.6-27B DSpark ONLINE gate run ==="
+
+    apt-get update -qq 2>&1 | tail -2
+    apt-get install -y git --no-install-recommends -qq
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"; hash -r
+
+    # merged fork = idiomatic upstream + Qwen3.6 RoPE fix + coding regen presets
+    git clone https://github.com/dbirks/speculators /tmp/spec
+    git -C /tmp/spec checkout 188a7b37919211749404d420271f3fdbc14924a6
+    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD)"
+    SCRIPTS=/tmp/spec/scripts
+    uv pip install /tmp/spec hf_transfer aiohttp datasets tqdm --system --quiet
+    # NO source patches (idiomatic): --draft-attn-impl eager (SM120, no flex_attn),
+    # #848 upstream, verifier-load = embed/lm_head only.
+
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    DS=/dataset/onpolicy-broad-v1        # SEPARATE pvc -> preserved for HF upload later
+    PREP=/output/data-qwen-online-v1
+    CKPT=/output/checkpoints-qwen-online-v1
+    mkdir -p "$DS" "$PREP" "$CKPT" /output/logs /dev/shm/hs
+
+    # ---------------- Phase 0: on-policy coding-weighted regen ----------------
+    if [ ! -f "$DS/regen.done" ]; then
+      echo "=== [$(date)] Phase 0: serve $MODEL (chat) for on-policy regen ==="
+      vllm serve "$MODEL" --host 127.0.0.1 --port 8001 --served-model-name main \
+        --gpu-memory-utilization 0.85 --max-model-len 8192 --dtype bfloat16 \
+        --trust-remote-code --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+        --enforce-eager --max-num-seqs 32 \
+        > /output/logs/regen_vllm.log 2>&1 &
+      VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
+      for i in $(seq 1 540); do
+        curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && break
+        kill -0 $VP 2>/dev/null || { echo "vLLM died (regen):"; cat /output/logs/regen_vllm.log; exit 1; }
+        sleep 10
+      done
+      echo "[$(date)] regen vLLM healthy"
+      # coding-weighted broad blend (~6k): code 42% / math 25% / chat+IF 33%
+      for spec in opc-python:1500 typescript-instruct:1000 gsm8k:1500 magpie:1000 ultrachat:1000; do
+        ds=${spec%%:*}; lim=${spec##*:}
+        echo "=== [$(date)] regen $ds (limit $lim) ==="
+        python3 "$SCRIPTS/response_regeneration/script.py" \
+          --dataset "$ds" --limit "$lim" \
+          --endpoint http://127.0.0.1:8001/v1/chat/completions --model main \
+          --max-tokens 2048 --concurrency 32 \
+          --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -4
+      done
+      kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
+      cat "$DS"/regen_*.jsonl > "$DS/all.jsonl"
+      echo "[$(date)] regen total rows: $(wc -l < "$DS/all.jsonl")"
+      touch "$DS/regen.done"
+    else
+      echo "[$(date)] Phase 0 skipped (regen.done exists)"
+    fi
+
+    # ---------------- Prep (CPU; passthrough pre-tokenized on-policy rows) ----------------
+    if [ ! -f "$PREP/token_freq.pt" ]; then
+      echo "=== [$(date)] prepare_data (passthrough) ==="
+      python3 "$SCRIPTS/prepare_data.py" --model "$MODEL" \
+        --data "$DS/all.jsonl" --output "$PREP" --seq-length 4096 \
+        2>&1 | tee /output/logs/prepare.log
+      n=$(ls "$PREP"/*.arrow 2>/dev/null | wc -l)
+      [ "$n" -eq 0 ] && { echo "FATAL: prep produced no arrow files"; tail -40 /output/logs/prepare.log; exit 1; }
+      echo "[$(date)] prep done: $n arrow files"
+    else
+      echo "[$(date)] prep skipped (token_freq.pt exists)"
+    fi
+
+    # ---------------- Online DSpark train (verifier served + HS streamed) ----------------
+    echo "=== [$(date)] launch verifier for ONLINE extraction (coexist, gpu-mem 0.45) ==="
+    python3 "$SCRIPTS/launch_vllm.py" "$MODEL" \
+      --target-layer-ids 1 16 31 46 61 --no-include-last-layer \
+      --hidden-states-path /dev/shm/hs \
+      -- \
+      --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.45 \
+      --max-model-len 4608 --dtype bfloat16 --trust-remote-code \
+      --kv-cache-dtype fp8_e4m3 --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+      --enforce-eager --max-num-seqs 4 \
+      > /output/logs/online_vllm.log 2>&1 &
+    VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
+    for i in $(seq 1 540); do
+      curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && break
+      kill -0 $VP 2>/dev/null || { echo "verifier vLLM died:"; cat /output/logs/online_vllm.log; exit 1; }
+      sleep 10
+    done
+    echo "[$(date)] verifier healthy; starting online DSpark training"
+
+    python3 "$SCRIPTS/train.py" \
+      --verifier-name-or-path "$MODEL" \
+      --speculator-type dspark \
+      --data-path "$PREP" \
+      --vllm-endpoint http://127.0.0.1:8001/v1 \
+      --save-path "$CKPT" \
+      --target-layer-ids 1 16 31 46 61 \
+      --num-layers 3 --block-size 7 --max-anchors 512 --total-seq-len 4096 \
+      --draft-attn-impl eager \
+      --markov-rank 256 --markov-head-type vanilla \
+      --enable-confidence-head --confidence-head-with-markov \
+      --loss-fn '{"ce": 0.1, "tv": 0.9}' --confidence-head-alpha 1.0 \
+      --optimizer adamw --weight-decay 0 --lr 6e-4 \
+      --scheduler-type cosine --scheduler-warmup-ratio 0.04 --scheduler-num-cosine-cycles 0.5 \
+      --dflash-decay-gamma 4.0 --per-position-loss-weight fixed-exp-decay \
+      --epochs 4 --checkpoint-freq 0.5 \
+      --on-missing generate --on-generate delete \
+      --num-workers 2 --prefetch-factor 1 \
+      2>&1 | tee /output/logs/train.log
+
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
+    echo "=== [$(date)] GATE training complete ==="
+    ls -lh "$CKPT"/ || true
+    echo "[$(date)] Dataset preserved at $DS (for HF upload). Eval (temp 1.0) is a follow-up job."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-qwen-online-20260726
+  namespace: default
+spec:
+  backoffLimit: 100
+  activeDeadlineSeconds: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: gpu-clock-lock
+          image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: utility
+          command: ["sh", "-c", "nvidia-smi -pm 1; nvidia-smi -pl 400"]
+      containers:
+        - name: trainer
+          image: vllm/vllm-openai:v0.25.1
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 32Gi
+            requests:
+              cpu: "4"
+              memory: 32Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: dataset
+              mountPath: /dataset
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: dspark-dataset-hdd
+        - name: scripts
+          configMap:
+            name: dspark-qwen-online-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 24Gi
