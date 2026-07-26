@@ -137,7 +137,7 @@ spec:
                 --host=0.0.0.0 --port=8000 \
                 --trust-remote-code \
                 --gpu-memory-utilization=0.78 \
-                --max-model-len=262144 \
+                --max-model-len=131072 \
                 --enforce-eager \
                 --moe-backend=marlin \
                 --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
