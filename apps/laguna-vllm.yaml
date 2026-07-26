@@ -136,7 +136,7 @@ spec:
                 --served-model-name laguna main \
                 --host=0.0.0.0 --port=8000 \
                 --trust-remote-code \
-                --gpu-memory-utilization=0.78 \
+                --gpu-memory-utilization=0.85 \
                 --max-model-len=131072 \
                 --moe-backend=marlin \
                 --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
