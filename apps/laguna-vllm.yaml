@@ -262,3 +262,25 @@ spec:
   ports:
     - port: 80
       targetPort: 8000
+---
+# Private (LAN) Ingress — external-dns creates laguna.hoam.lan -> 10.0.0.200
+# (MetalLB ingress-nginx). Same `private` class as vllm.hoam.lan. Tailscale
+# access is the separate apps/laguna-tailscale-ingress.yaml.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: laguna
+  namespace: default
+spec:
+  ingressClassName: private
+  rules:
+    - host: laguna.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: laguna
+                port:
+                  number: 80
