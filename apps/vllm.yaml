@@ -241,8 +241,10 @@ spec:
           - path: /
             pathType: Prefix
             backend:
+              # Repointed to Laguna 2026-07-26 (Qwen `vllm` deploy is replicas 0
+              # during training). Change back to `vllm` to serve Qwen3.6-27B again.
               service:
-                name: vllm
+                name: laguna
                 port:
                   number: 80
 ---

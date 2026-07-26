@@ -1,7 +1,12 @@
-# vLLM — Tailscale Ingress
+# vLLM (vllm/llm MagicDNS names) — Tailscale Ingress
+#
+# NOTE (2026-07-26): backends repointed to the `laguna` Service — vllm.*.ts.net
+# and llm.*.ts.net now serve Laguna-S-2.1 (Qwen `vllm` deploy is replicas 0
+# during training). Change `name: laguna` back to `vllm` to serve Qwen again.
+# Dedicated laguna.*.ts.net lives in apps/laguna-tailscale-ingress.yaml.
 #
 # Same pattern as apps/omnigent-tailscale-ingress.yaml: a second Ingress on
-# the same vllm Service, using the already-installed `tailscale` IngressClass
+# the same Service, using the already-installed `tailscale` IngressClass
 # (tailscale.com/ts-ingress). Tailscale provisions a dedicated tailnet node
 # for this Ingress with a real, auto-renewing Let's Encrypt certificate for
 # its MagicDNS name -- reachable only over the tailnet, never the public
@@ -29,7 +34,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: vllm
+                name: laguna
                 port:
                   number: 80
 ---
@@ -54,6 +59,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: vllm
+                name: laguna
                 port:
                   number: 80

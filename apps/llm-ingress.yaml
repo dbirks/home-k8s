@@ -3,9 +3,10 @@
 # Points to whichever inference backend is currently active.
 # To switch backends, change the service name below and commit:
 #   sglang  → SGLang (sglang.yaml, port 80)
-#   vllm    → vLLM   (vllm.yaml, port 80)
+#   vllm    → vLLM / Qwen3.6-27B (vllm.yaml, port 80)
+#   laguna  → Laguna-S-2.1 (laguna-vllm.yaml, port 80)
 #
-# Current: vllm
+# Current: laguna  (Qwen `vllm` deploy is scaled to replicas 0 during training)
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -25,6 +26,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: vllm
+                name: laguna
                 port:
                   number: 80
