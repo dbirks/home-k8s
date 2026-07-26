@@ -129,8 +129,10 @@ spec:
               # printed). MARLIN is a vLLM-internal FP4 MoE kernel that uses NEITHER the
               # FlashInfer MoE JIT NOR cutedsl, so it skips that warmup entirely. (Its
               # earlier "stall" was pre-trio = the attention JIT wedge, now resolved.)
-              # --enforce-eager kept for safe bring-up. DFlash spec-decode still off:
-              #   --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":7,"method":"dflash"}'
+              # 2026-07-25: DFlash spec-decode ON. Sweeping num_speculative_tokens
+              # K=3/5/7 (drafter poolside/Laguna-S-2.1-DFlash-NVFP4, ~2.1GB NVFP4,
+              # downloaded on the PVC). --max-num-seqs stays small (4): DFlash crashes
+              # at the default 256. Baseline (no spec-decode, cudagraphs) = 107.5 tok/s.
               exec vllm serve \
                 --model=poolside/Laguna-S-2.1-NVFP4 \
                 --served-model-name laguna main \
@@ -140,6 +142,7 @@ spec:
                 --max-model-len=131072 \
                 --moe-backend=marlin \
                 --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
+                --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":3,"method":"dflash"}' \
                 --max-num-seqs=4 \
                 --max-num-batched-tokens=8192 \
                 --enable-prefix-caching \
