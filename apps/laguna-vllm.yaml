@@ -129,10 +129,17 @@ spec:
               # printed). MARLIN is a vLLM-internal FP4 MoE kernel that uses NEITHER the
               # FlashInfer MoE JIT NOR cutedsl, so it skips that warmup entirely. (Its
               # earlier "stall" was pre-trio = the attention JIT wedge, now resolved.)
-              # 2026-07-25: DFlash spec-decode ON. Sweeping num_speculative_tokens
-              # K=3/5/7 (drafter poolside/Laguna-S-2.1-DFlash-NVFP4, ~2.1GB NVFP4,
-              # downloaded on the PVC). --max-num-seqs stays small (4): DFlash crashes
-              # at the default 256. Baseline (no spec-decode, cudagraphs) = 107.5 tok/s.
+              # 2026-07-25: DFlash spec-decode ON, K=7 (drafter
+              # poolside/Laguna-S-2.1-DFlash-NVFP4, ~2.1GB NVFP4, on the PVC).
+              # K chosen by a 5-run sweep (see #61): K=7/9/15 tied on median tok/s
+              # (~200-211, single-stream); accept_len rises 4.0->4.5->5.0 with K but
+              # tok/s saturates ~K=7-9 (accept_len tops out ~4.5, so verify positions
+              # 10-15 are wasted compute on this compute-rich Blackwell). K=7 is also
+              # poolside's *recommended* serving value (their "15" is the block_size-1
+              # ceiling used in benchmark tables, not the optimum). --max-num-seqs stays
+              # small (4): DFlash crashes at the default 256. vs 107.5 tok/s no-spec
+              # cudagraph baseline -> ~2x. Backlog (#61): NVFP4/quantized KV for 256K,
+              # vLLM 0.26.0, confidence-scheduled verification, custom image, ingress.
               exec vllm serve \
                 --model=poolside/Laguna-S-2.1-NVFP4 \
                 --served-model-name laguna main \
