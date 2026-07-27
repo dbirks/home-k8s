@@ -105,9 +105,15 @@ data:
 
     # ---------------- Prep (CPU; passthrough pre-tokenized on-policy rows) ----------------
     if [ ! -f "$PREP/token_freq.pt" ]; then
+      # HF load_dataset("json") infers a schema and chokes on the regen rows'
+      # heterogeneous `metadata` struct (usage/error/generations_completed vary
+      # row-to-row -> pyarrow cast TypeError). Passthrough only needs input_ids +
+      # loss_mask (preprocessing.py:44-45), so project the dataset down to those.
+      echo "=== [$(date)] clean all.jsonl -> {input_ids, loss_mask} only ==="
+      python3 -c "import json; src,dst='$DS/all.jsonl','$DS/all_clean.jsonl'; rows=(json.loads(l) for l in open(src) if l.strip()); good=[{'input_ids':d['input_ids'],'loss_mask':d['loss_mask']} for d in rows if 'input_ids' in d and 'loss_mask' in d]; f=open(dst,'w'); [f.write(json.dumps(r)+'\n') for r in good]; f.close(); print('cleaned rows:',len(good))"
       echo "=== [$(date)] prepare_data (passthrough) ==="
       python3 "$SCRIPTS/prepare_data.py" --model "$MODEL" \
-        --data "$DS/all.jsonl" --output "$PREP" --seq-length 4096 \
+        --data "$DS/all_clean.jsonl" --output "$PREP" --seq-length 4096 \
         2>&1 | tee /output/logs/prepare.log
       n=$(ls "$PREP"/*.arrow 2>/dev/null | wc -l)
       [ "$n" -eq 0 ] && { echo "FATAL: prep produced no arrow files"; tail -40 /output/logs/prepare.log; exit 1; }
