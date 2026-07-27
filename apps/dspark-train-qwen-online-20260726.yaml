@@ -131,7 +131,7 @@ data:
     unset PYTORCH_CUDA_ALLOC_CONF
     echo "=== [$(date)] launch verifier for ONLINE extraction (coexist, gpu-mem 0.45) ==="
     python3 "$SCRIPTS/launch_vllm.py" "$MODEL" \
-      --target-layer-ids 1 16 31 46 61 --no-include-last-layer \
+      --target-layer-ids 1 16 31 46 61 \
       --hidden-states-path /dev/shm/hs \
       -- \
       --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.45 \
