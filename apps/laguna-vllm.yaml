@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 1   # 2026-07-27: RESTORED — DSpark online gate run complete (validated; accept_len 1.14->1.52, data-limited). K=7 DFlash config intact. vllm.*/laguna.* ingresses point here.
+  replicas: 0   # 2026-07-27: DOWN by request (morning; user brings it back this evening EST). K=7 DFlash config intact. Restore to 1 to serve. vllm.*/laguna.* ingresses point here.
   strategy:
     type: Recreate
   selector:
