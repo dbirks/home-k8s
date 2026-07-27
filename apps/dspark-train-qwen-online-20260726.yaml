@@ -123,6 +123,12 @@ data:
     fi
 
     # ---------------- Online DSpark train (verifier served + HS streamed) ----------------
+    # The hidden-states KV connector (ExampleHiddenStatesConnector) is INCOMPATIBLE
+    # with PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (CUDA VMM can remap KV
+    # pages, invalidating pinned KV memory) -> VllmConfig ValidationError. Unset it
+    # for the verifier serve; re-enable for the trainer process below. (The Phase-0
+    # plain regen serve has no connector, so it was unaffected.)
+    unset PYTORCH_CUDA_ALLOC_CONF
     echo "=== [$(date)] launch verifier for ONLINE extraction (coexist, gpu-mem 0.45) ==="
     python3 "$SCRIPTS/launch_vllm.py" "$MODEL" \
       --target-layer-ids 1 16 31 46 61 --no-include-last-layer \
@@ -141,6 +147,9 @@ data:
     done
     echo "[$(date)] verifier healthy; starting online DSpark training"
 
+    # re-enable expandable_segments for the TRAINER process (helps fragmentation);
+    # only the verifier serve (KV connector) needed it unset.
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     python3 "$SCRIPTS/train.py" \
       --verifier-name-or-path "$MODEL" \
       --speculator-type dspark \
