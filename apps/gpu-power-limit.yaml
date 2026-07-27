@@ -1,0 +1,68 @@
+# Persistent GPU power-limit enforcer (2026-07-27)
+#
+# The RTX PRO 6000 Blackwell WS defaults/max = 600W but kept getting reset to
+# 400W (a manual `nvidia-smi -pl` does NOT stick — reverts within ~1 min, and
+# resets on reboot). This DaemonSet CONTINUOUSLY re-applies -pl 600 (every 60s)
+# so it holds against whatever re-asserts 400W and survives reboots — GitOps-
+# managed, the persistent fix for "it doesn't stick".
+#
+# NOTE: it requests NO nvidia.com/gpu (just driver access via NVIDIA_VISIBLE_
+# DEVICES + privileged), so it co-exists with the GPU workload and never
+# contends for the device allocation. Privileged triggers a PodSecurity "warn"
+# in the default ns (same as the training initContainers) but is admitted.
+#
+# Perf caveat (see #61 / GPU notes): for LLM DECODE this workload is
+# memory-bandwidth-bound, so 600W vs 400W gave ~no throughput gain (clocks rose
+# 2020->2520 MHz but tok/s ~flat) + more heat. Kept at 600W for headroom on
+# future compute-bound work; pair with active cooling (a fan dropped temp ~10C).
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-power-limit
+  namespace: default
+  labels:
+    app: gpu-power-limit
+spec:
+  selector:
+    matchLabels:
+      app: gpu-power-limit
+  template:
+    metadata:
+      labels:
+        app: gpu-power-limit
+    spec:
+      runtimeClassName: nvidia
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists   # single-node control-plane; tolerate all taints
+      containers:
+        - name: setpl
+          image: nvcr.io/nvidia/cuda:13.0.1-base-ubi9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: utility
+            - name: TARGET_WATTS
+              value: "600"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[gpu-power-limit] enforcing ${TARGET_WATTS}W every 60s"
+              nvidia-smi -pm 1 || true
+              while true; do
+                nvidia-smi -pl "${TARGET_WATTS}" >/dev/null 2>&1 || true
+                sleep 60
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
