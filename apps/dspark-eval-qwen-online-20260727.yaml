@@ -42,7 +42,7 @@ data:
         --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 \
         --mamba-ssm-cache-dtype float16 \
-        --enable-prefix-caching \
+        --no-enable-prefix-caching \
         --trust-remote-code \
         --enforce-eager \
         --speculative-config "{\"method\":\"dspark\",\"model\":\"$CKPT\",\"num_speculative_tokens\":7}" \
