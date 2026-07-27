@@ -1,0 +1,189 @@
+# Apples-to-apples reference eval: z-lab/Qwen3.6-27B-DFlash (2026-07-27)
+#
+# Serves OUR target (unsloth/Qwen3.6-27B-NVFP4) + z-lab's PROPERLY-TRAINED,
+# block-16 DFlash drafter for the SAME target (vocab 248320 matches), on the
+# SAME image/harness/config as our own eval (nightly-4080263b has the full
+# DFlash-hybrid-SWA stack: #47914 SWA, #45319 Qwen3Next, #48524 fc-size,
+# #48167 Blackwell). --no-enable-prefix-caching (GDN bug), temp 1.0.
+#   z-lab ~7-9 here => our setup CAN reach it; our 1.45 is purely our training.
+#   z-lab also low here => the issue is our SETUP (quant/harness), not training.
+# z-lab drafter downloads from HF (2B). Laguna at replicas 0 so this owns the GPU.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-eval-zlab-dflash-20260727-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    export HF_HOME=/data
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    DRAFT=z-lab/Qwen3.6-27B-DFlash
+    K=15   # z-lab README value (block_size 16 -> 15 draft + 1 bonus)
+
+    echo "=== [$(date)] serve unsloth/Qwen3.6-27B-NVFP4 + $DRAFT (dflash, k=$K) ==="
+    vllm serve unsloth/Qwen3.6-27B-NVFP4 \
+        --host 0.0.0.0 --port 8000 \
+        --served-model-name main qwen27 \
+        --max-model-len 16384 \
+        --dtype bfloat16 \
+        --gpu-memory-utilization 0.82 \
+        --max-num-seqs 16 \
+        --max-num-batched-tokens 32768 \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 \
+        --mamba-ssm-cache-dtype float16 \
+        --no-enable-prefix-caching \
+        --trust-remote-code \
+        --enforce-eager \
+        --speculative-config "{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":$K}" \
+        > /output/logs/eval_vllm_zlab_dflash.log 2>&1 &
+    VLLM_PID=$!
+    trap "kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null" EXIT
+
+    echo "=== waiting for /health (up to 30 min; z-lab drafter downloads on first run) ==="
+    for i in $(seq 1 180); do
+        curl -sf http://localhost:8000/health >/dev/null 2>&1 && { echo "[$(date)] healthy after $((i*10))s"; break; }
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "ERROR: vLLM died. Tail of log:"; tail -80 /output/logs/eval_vllm_zlab_dflash.log; exit 1
+        fi
+        [ "$i" -eq 180 ] && { echo "ERROR: timeout"; tail -50 /output/logs/eval_vllm_zlab_dflash.log; exit 1; }
+        sleep 10
+    done
+
+    cat > /tmp/bench.py << 'PYEOF'
+    import concurrent.futures, json, re, time, urllib.request
+    CODING = [
+        "Write a Python function that merges two sorted linked lists.",
+        "Implement a binary search tree with insert, delete, and in-order traversal in Python.",
+        "Write a TypeScript function that debounces another function.",
+        "Fix this Python code: def fib(n): return fib(n-1)+fib(n-2) -- it's missing a base case.",
+        "Write a Rust function that reverses a string in place.",
+        "Implement quicksort in Python with an explanation of its time complexity.",
+        "Write a SQL query to find the second-highest salary in an employees table.",
+        "Write a Python decorator that retries a function up to 3 times on exception.",
+        "Implement an LRU cache in Python using OrderedDict.",
+        "Write a bash script that finds all files larger than 100MB in a directory tree.",
+        "Refactor a function with nested if-statements into a lookup table in Python.",
+        "Write a Python context manager that times the code block inside it.",
+        "Implement a simple in-memory key-value store class with get/set/delete in Python.",
+        "Write a function to detect a cycle in a directed graph using DFS.",
+        "Add type hints and a docstring to a Python function that parses a CSV line.",
+    ]
+    GENERAL = [
+        "What are the main differences between TCP and UDP?",
+        "Explain how a Kubernetes Deployment differs from a StatefulSet.",
+        "What's the difference between supervised and unsupervised learning?",
+        "Explain the CAP theorem in distributed systems.",
+        "What are the tradeoffs between microservices and a monolith?",
+        "Explain how DNS resolution works step by step.",
+        "Summarize the plot of Romeo and Juliet in three sentences.",
+        "What's the difference between a mutex and a semaphore?",
+        "Explain how garbage collection works in a language like Python or Java.",
+        "What is the difference between HTTP/1.1 and HTTP/2?",
+    ]
+    def send_one(p):
+        body=json.dumps({"model":"main","messages":[{"role":"user","content":p}],"max_tokens":300,"temperature":1.0}).encode()
+        req=urllib.request.Request("http://localhost:8000/v1/chat/completions",data=body,headers={"Content-Type":"application/json"},method="POST")
+        try:
+            with urllib.request.urlopen(req,timeout=180) as r: r.read(); return True
+        except Exception as e:
+            print("req failed:",e); return False
+    def counters():
+        with urllib.request.urlopen("http://localhost:8000/metrics",timeout=30) as r:
+            lines=[l for l in r.read().decode().splitlines() if "spec_decode" in l and not l.startswith("#")]
+        def mv(sub):
+            t=0.0;f=False
+            for l in lines:
+                if sub in l:
+                    m=re.search(r"\s+([0-9.eE+-]+)\s*$",l)
+                    if m: t+=float(m.group(1));f=True
+            return t if f else 0.0
+        return mv("num_accepted_tokens_total"),mv("num_drafts_total")
+    def run_set(n,ps,ba,bd):
+        print(f"=== {len(ps)} {n} @ temp 1.0 ===")
+        t0=time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex: ok=sum(list(ex.map(send_one,ps)))
+        time.sleep(3);a,d=counters();da,dd=a-ba,d-bd
+        al=1+(da/dd) if dd>0 else float('nan')
+        print(f"{n}: {ok}/{len(ps)} ok {time.time()-t0:.1f}s | drafts={dd:.0f} accepted={da:.0f} | REAL accept_len={al:.4f}")
+        return a,d,al
+    a0,d0=counters()
+    a1,d1,alc=run_set("CODING",CODING,a0,d0)
+    a2,d2,alg=run_set("GENERAL",GENERAL,a1,d1)
+    alall=1+((a2-a0)/(d2-d0)) if (d2-d0)>0 else float('nan')
+    print("\n=== z-lab/Qwen3.6-27B-DFlash on OUR target/harness (temp 1.0, k=15) ===")
+    print(f"CODING   accept_len = {alc:.4f}")
+    print(f"GENERAL  accept_len = {alg:.4f}")
+    print(f"COMBINED accept_len = {alall:.4f}")
+    print("compare: OUR DSpark = 1.45 coding (k=7). z-lab card claims ~7-9 (their bench, block16).")
+    PYEOF
+    python3 /tmp/bench.py 2>&1 | tee /output/logs/eval_results_zlab_dflash.txt
+    echo "=== [$(date)] z-lab DFlash eval complete ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-eval-zlab-dflash-20260727
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:v0.26.0  # 2026-07-27 stable; full DFlash-hybrid-SWA stack + bundled FlashInfer 0.6.14. Fallback if SM120 issues: nightly-4080263bb2c5d10deac17aaeb88e0823bc35bca9 (proven, 2026-07-23)
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: latency
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: 12.0f
+            - name: FLASHINFER_FORCE_SM
+              value: 120f
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "2"
+              memory: 16Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-eval-zlab-dflash-20260727-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
