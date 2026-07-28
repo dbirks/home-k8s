@@ -94,7 +94,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: laguna
-          image: vllm/vllm-openai:v0.26.0   # 2026-07-28: bumped v0.25.1 -> v0.26.0 (latest stable, #61 backlog item; same image validated on SM120 for the Qwen/DFlash stack). FALLBACK if boot wedges or --kernel-config schema changed: revert to v0.25.1 (known-good).
+          image: vllm/vllm-openai:v0.25.1   # 2026-07-28: REVERTED from v0.26.0 — it boot-crashed on SM120 with cutlass/cutedsl "NVVM backend compilation failed" in _compile_splitk (KV-cache init). The --kernel-config enable_cutedsl_warmup:false workaround did NOT take on 0.26.0 (schema changed), so cutedsl JIT ran + failed. v0.25.1 is known-good. Retry 0.26.0 needs the new cutedsl-disable mechanism (see #61; log saved).
           # 2026-07-25 THE FIX (research: MiaAI-Lab/Laguna-S-2.1-DGX-Spark-RTX-6000-PRO
           # recipe; FlashInfer #2093/#3294, vLLM #41865/#44305). ROOT CAUSE of the
           # boot wedge: the stock image ships flashinfer-python 0.6.13 ALONE, with NO
