@@ -66,9 +66,11 @@ data:
     echo "[$(date)] serve healthy — starting coding-weighted regen (~30k)"
 
     # coding-weighted ~30k: code 43% / math 20% / chat+IF 37%
-    # opc kept at its 4k-cap set (>=8000 rows -> --resume skips it); typescript
-    # onward run at 8192 (typescript's 4k partial was reset on the PVC).
-    for spec in opc-python:8000 typescript-instruct:5000 gsm8k:6000 magpie:5000 ultrachat:6000; do
+    # opc REMOVED from the loop: it's kept as-is (~9k rows on the PVC, incl the
+    # 8500 4k-cap set). NOTE: --limit is ADDITIVE with --resume (generates N MORE,
+    # not a cap), so leaving opc here made it re-generate 8000 more rows instead of
+    # skipping. typescript onward run fresh at 8192; opc still in the final all.jsonl.
+    for spec in typescript-instruct:5000 gsm8k:6000 magpie:5000 ultrachat:6000; do
         ds=${spec%%:*}; lim=${spec##*:}
         echo "=== [$(date)] regen $ds (limit $lim) ==="
         python3 "$SCRIPTS/response_regeneration/script.py" \
