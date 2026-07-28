@@ -2,13 +2,18 @@
 #
 # Enabler for the "beat 4.29" DSpark run: regenerate a LARGER coding-weighted
 # on-policy dataset with Qwen3.6-27B, accelerated by z-lab's DFlash drafter
-# (~2x decode) + high concurrency + complete thinking traces (--max-tokens 4096).
+# (~2x decode) + high concurrency + COMPLETE thinking traces (--max-tokens 8192).
 # Spec-decode is LOSSLESS -> identical on-policy Qwen outputs, just faster.
 # Output -> dspark-dataset-hdd:/dataset/onpolicy-broad-v2 (preserved; --resume).
 # Coding-weighted ~30k to start (staged toward 100k). Laguna at replicas 0.
-# NOTE: --enforce-eager kept (proven with DFlash in the z-lab eval); dropping it
-# (cudagraphs on the hybrid) is a separate optimization to test — DFlash alone is
-# the safe 2x win here.
+#
+# 2026-07-28: bumped --max-tokens 4096 -> 8192 (46% of reqs were truncating at
+# 4096 = poor coding-trace data). 8192 fits max-model-len 12288; NOT 16384 (past
+# ~8k is mostly repetition/rambling = junk for drafter training). Longer seqs ->
+# more KV, so max-num-seqs 24->20 + gpu-mem 0.85->0.88 to keep preemptions at 0.
+# The 5,347 opc rows already written at the 4k cap are archived (.4kcap.bak) and
+# opc is regenerated cleanly at 8192 (guard below, idempotent via .opc_8k_reset).
+# NOTE: no --enforce-eager (cudagraphs captured fine with DFlash; ~10-15% faster).
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -39,10 +44,10 @@ data:
 
     echo "=== [$(date)] serve $MODEL + $DRAFT (DFlash spec-decode, ~2x) for regen ==="
     vllm serve "$MODEL" --host 127.0.0.1 --port 8001 \
-        --gpu-memory-utilization 0.85 --max-model-len 12288 --dtype bfloat16 \
+        --gpu-memory-utilization 0.88 --max-model-len 12288 --dtype bfloat16 \
         --trust-remote-code --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
-        --no-enable-prefix-caching --max-num-seqs 24 \
+        --no-enable-prefix-caching --max-num-seqs 20 \
         --max-num-batched-tokens 32768 \
         --speculative-config "{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":15}" \
         > /output/logs/regen_dflash_vllm.log 2>&1 &
@@ -55,6 +60,14 @@ data:
     done
     echo "[$(date)] serve healthy — starting coding-weighted regen (~30k)"
 
+    # One-time: archive opc rows written at the old 4k cap so opc regenerates
+    # cleanly at 8192 (idempotent — marker prevents re-archiving on restart).
+    if [ -f "$DS/regen_opc-python.jsonl" ] && [ ! -f "$DS/.opc_8k_reset" ]; then
+        echo "[$(date)] archiving 4k-cap opc rows ($(wc -l < "$DS/regen_opc-python.jsonl") rows) -> regen_opc-python.4kcap.bak"
+        mv "$DS/regen_opc-python.jsonl" "$DS/regen_opc-python.4kcap.bak"
+        touch "$DS/.opc_8k_reset"
+    fi
+
     # coding-weighted ~30k: code 43% / math 20% / chat+IF 37%
     for spec in opc-python:8000 typescript-instruct:5000 gsm8k:6000 magpie:5000 ultrachat:6000; do
         ds=${spec%%:*}; lim=${spec##*:}
@@ -62,7 +75,7 @@ data:
         python3 "$SCRIPTS/response_regeneration/script.py" \
             --dataset "$ds" --limit "$lim" \
             --endpoint http://127.0.0.1:8001/v1/chat/completions --model "$MODEL" \
-            --max-tokens 4096 --concurrency 24 \
+            --max-tokens 8192 --concurrency 20 \
             --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -4
     done
     kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
