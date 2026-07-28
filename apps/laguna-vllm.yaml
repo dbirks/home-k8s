@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 1   # 2026-07-28: UP by request — Qwen regen parked (.yaml.hold), Laguna serving for coding-agent work. K=7 DFlash. vllm.*/laguna.* ingresses point here.
+  replicas: 0   # 2026-07-28: DOWN by request — coding-agent session done, GPU handed back to the Qwen DFlash regen (longer 8192 output). K=7 DFlash config intact; restore to 1 to serve.
   strategy:
     type: Recreate
   selector:
