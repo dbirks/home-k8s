@@ -47,10 +47,10 @@ data:
 
     echo "=== [$(date)] serve $MODEL + $DRAFT (DFlash spec-decode, ~2x) for regen ==="
     vllm serve "$MODEL" --host 127.0.0.1 --port 8001 \
-        --gpu-memory-utilization 0.90 --max-model-len 12288 --dtype bfloat16 \
+        --gpu-memory-utilization 0.92 --max-model-len 12288 --dtype bfloat16 \
         --trust-remote-code --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
-        --no-enable-prefix-caching --max-num-seqs 32 \
+        --no-enable-prefix-caching --max-num-seqs 40 \
         --max-num-batched-tokens 32768 \
         --speculative-config "{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":15}" \
         > /output/logs/regen_dflash_vllm.log 2>&1 &
@@ -72,7 +72,7 @@ data:
         python3 "$SCRIPTS/response_regeneration/script.py" \
             --dataset "$ds" --limit "$lim" \
             --endpoint http://127.0.0.1:8001/v1/chat/completions --model "$MODEL" \
-            --max-tokens 8192 --concurrency 32 \
+            --max-tokens 8192 --concurrency 40 \
             --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -4
     done
     kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
