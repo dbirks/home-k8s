@@ -10,7 +10,9 @@
 # 2026-07-28: bumped --max-tokens 4096 -> 8192 (46% of reqs were truncating at
 # 4096 = poor coding-trace data). 8192 fits max-model-len 12288; NOT 16384 (past
 # ~8k is mostly repetition/rambling = junk for drafter training). Longer seqs ->
-# more KV, so max-num-seqs 24->20 + gpu-mem 0.85->0.88 to keep preemptions at 0.
+# SWEEP (2026-07-28, GPU dedicated to Qwen, Laguna down): 20 seqs=KV59%/~1050tok/s;
+# 32 seqs/gpu-mem0.90=KV91%/0-preempt/~1220tok/s (+16%, the knee); 40 seqs/0.92 OOM'd
+# on cudagraph capture. LOCKED at max-num-seqs 32 / gpu-mem 0.90 (max stable).
 # DATA DECISION (user): KEEP the 8,000 opc rows already done at the 4k cap (valid,
 # just some truncated) — 8192 applies from typescript onward. opc file on the PVC
 # is the 8500-row 4k set; typescript's 4k partial is reset so it regen's at 8192.
@@ -47,10 +49,10 @@ data:
 
     echo "=== [$(date)] serve $MODEL + $DRAFT (DFlash spec-decode, ~2x) for regen ==="
     vllm serve "$MODEL" --host 127.0.0.1 --port 8001 \
-        --gpu-memory-utilization 0.92 --max-model-len 12288 --dtype bfloat16 \
+        --gpu-memory-utilization 0.90 --max-model-len 12288 --dtype bfloat16 \
         --trust-remote-code --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
-        --no-enable-prefix-caching --max-num-seqs 40 \
+        --no-enable-prefix-caching --max-num-seqs 32 \
         --max-num-batched-tokens 32768 \
         --speculative-config "{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":15}" \
         > /output/logs/regen_dflash_vllm.log 2>&1 &
@@ -72,7 +74,7 @@ data:
         python3 "$SCRIPTS/response_regeneration/script.py" \
             --dataset "$ds" --limit "$lim" \
             --endpoint http://127.0.0.1:8001/v1/chat/completions --model "$MODEL" \
-            --max-tokens 8192 --concurrency 40 \
+            --max-tokens 8192 --concurrency 32 \
             --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -4
     done
     kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
