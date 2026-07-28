@@ -11,8 +11,11 @@
 # 4096 = poor coding-trace data). 8192 fits max-model-len 12288; NOT 16384 (past
 # ~8k is mostly repetition/rambling = junk for drafter training). Longer seqs ->
 # more KV, so max-num-seqs 24->20 + gpu-mem 0.85->0.88 to keep preemptions at 0.
-# The 5,347 opc rows already written at the 4k cap are archived (.4kcap.bak) and
-# opc is regenerated cleanly at 8192 (guard below, idempotent via .opc_8k_reset).
+# DATA DECISION (user): KEEP the 8,000 opc rows already done at the 4k cap (valid,
+# just some truncated) — 8192 applies from typescript onward. opc file on the PVC
+# is the 8500-row 4k set; typescript's 4k partial is reset so it regen's at 8192.
+# PARKED as .yaml.hold 2026-07-28 (Laguna up for coding-agent work); un-hold +
+# `flux reconcile` to resume — opc >=8000 so --resume skips it, rest run at 8192.
 # NOTE: no --enforce-eager (cudagraphs captured fine with DFlash; ~10-15% faster).
 ---
 apiVersion: v1
@@ -60,15 +63,9 @@ data:
     done
     echo "[$(date)] serve healthy — starting coding-weighted regen (~30k)"
 
-    # One-time: archive opc rows written at the old 4k cap so opc regenerates
-    # cleanly at 8192 (idempotent — marker prevents re-archiving on restart).
-    if [ -f "$DS/regen_opc-python.jsonl" ] && [ ! -f "$DS/.opc_8k_reset" ]; then
-        echo "[$(date)] archiving 4k-cap opc rows ($(wc -l < "$DS/regen_opc-python.jsonl") rows) -> regen_opc-python.4kcap.bak"
-        mv "$DS/regen_opc-python.jsonl" "$DS/regen_opc-python.4kcap.bak"
-        touch "$DS/.opc_8k_reset"
-    fi
-
     # coding-weighted ~30k: code 43% / math 20% / chat+IF 37%
+    # opc kept at its 4k-cap set (>=8000 rows -> --resume skips it); typescript
+    # onward run at 8192 (typescript's 4k partial was reset on the PVC).
     for spec in opc-python:8000 typescript-instruct:5000 gsm8k:6000 magpie:5000 ultrachat:6000; do
         ds=${spec%%:*}; lim=${spec##*:}
         echo "=== [$(date)] regen $ds (limit $lim) ==="

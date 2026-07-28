@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 0   # 2026-07-27: DOWN by request (morning; user brings it back this evening EST). K=7 DFlash config intact. Restore to 1 to serve. vllm.*/laguna.* ingresses point here.
+  replicas: 1   # 2026-07-28: UP by request — Qwen regen parked (.yaml.hold), Laguna serving for coding-agent work. K=7 DFlash. vllm.*/laguna.* ingresses point here.
   strategy:
     type: Recreate
   selector:
@@ -94,7 +94,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: laguna
-          image: vllm/vllm-openai:v0.25.1   # 2026-07-24: bumped from v0.24.0 — Laguna S-2.1 needs vLLM >=0.25 (poolside recipe); v0.25.1 stable + already pulled on-node
+          image: vllm/vllm-openai:v0.26.0   # 2026-07-28: bumped v0.25.1 -> v0.26.0 (latest stable, #61 backlog item; same image validated on SM120 for the Qwen/DFlash stack). FALLBACK if boot wedges or --kernel-config schema changed: revert to v0.25.1 (known-good).
           # 2026-07-25 THE FIX (research: MiaAI-Lab/Laguna-S-2.1-DGX-Spark-RTX-6000-PRO
           # recipe; FlashInfer #2093/#3294, vLLM #41865/#44305). ROOT CAUSE of the
           # boot wedge: the stock image ships flashinfer-python 0.6.13 ALONE, with NO
