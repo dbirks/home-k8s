@@ -90,7 +90,7 @@ data:
       --target-layer-ids 1 16 31 46 61 \
       --hidden-states-path /dev/shm/hs \
       -- \
-      --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.30 \
+      --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.22 \
       --max-model-len 4608 --dtype bfloat16 --trust-remote-code \
       --kv-cache-dtype fp8_e4m3 --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
       --enforce-eager --max-num-seqs 4 \
@@ -111,7 +111,7 @@ data:
       --vllm-endpoint http://127.0.0.1:8001/v1 \
       --save-path "$CKPT" \
       --target-layer-ids 1 16 31 46 61 \
-      --num-layers 3 --block-size 16 --max-anchors 512 --total-seq-len 4096 \
+      --num-layers 3 --block-size 16 --max-anchors 320 --total-seq-len 4096 \
       --draft-attn-impl eager \
       --markov-rank 256 --markov-head-type vanilla \
       --enable-confidence-head --confidence-head-with-markov \
