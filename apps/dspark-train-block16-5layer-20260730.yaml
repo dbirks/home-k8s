@@ -93,7 +93,7 @@ data:
       --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.30 \
       --max-model-len 4608 --dtype bfloat16 --trust-remote-code \
       --kv-cache-dtype fp8_e4m3 --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
-      --enforce-eager --max-num-seqs 4 \
+      --enforce-eager --max-num-seqs 2 \
       > /output/logs/online_vllm_block16_5layer.log 2>&1 &
     VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
     for i in $(seq 1 540); do
@@ -111,7 +111,7 @@ data:
       --vllm-endpoint http://127.0.0.1:8001/v1 \
       --save-path "$CKPT" \
       --target-layer-ids 1 16 31 46 61 \
-      --num-layers 5 --block-size 16 --max-anchors 128 --total-seq-len 4096 \
+      --num-layers 5 --block-size 16 --max-anchors 96 --total-seq-len 4096 \
       --draft-attn-impl eager \
       --markov-rank 256 --markov-head-type vanilla \
       --enable-confidence-head --confidence-head-with-markov \
