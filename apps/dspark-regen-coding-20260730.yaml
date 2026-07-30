@@ -1,0 +1,156 @@
+# DFlash-accelerated on-policy regen — scale the DSpark training dataset (2026-07-27)
+#
+# Enabler for the "beat 4.29" DSpark run: regenerate a LARGER coding-weighted
+# on-policy dataset with Qwen3.6-27B, accelerated by z-lab's DFlash drafter
+# (~2x decode) + high concurrency + COMPLETE thinking traces (--max-tokens 8192).
+# Spec-decode is LOSSLESS -> identical on-policy Qwen outputs, just faster.
+# Output -> dspark-dataset-hdd:/dataset/onpolicy-coding-v1 (preserved; --resume).
+# Coding-weighted ~30k to start (staged toward 100k). Laguna at replicas 0.
+#
+# 2026-07-28: bumped --max-tokens 4096 -> 8192 (46% of reqs were truncating at
+# 4096 = poor coding-trace data). 8192 fits max-model-len 12288; NOT 16384 (past
+# ~8k is mostly repetition/rambling = junk for drafter training). Longer seqs ->
+# SWEEP (2026-07-28, GPU dedicated to Qwen, Laguna down): 20 seqs=KV59%/~1050tok/s;
+# 32 seqs/gpu-mem0.90=KV91%/0-preempt/~1220tok/s (+16%, the knee); 40 seqs/0.92 OOM'd
+# on cudagraph capture. LOCKED at max-num-seqs 32 / gpu-mem 0.90 (max stable).
+# DATA DECISION (user): KEEP the 8,000 opc rows already done at the 4k cap (valid,
+# just some truncated) — 8192 applies from typescript onward. opc file on the PVC
+# is the 8500-row 4k set; typescript's 4k partial is reset so it regen's at 8192.
+# PARKED as .yaml.hold 2026-07-28 (Laguna up for coding-agent work); un-hold +
+# `flux reconcile` to resume — opc >=8000 so --resume skips it, rest run at 8192.
+# NOTE: no --enforce-eager (cudagraphs captured fine with DFlash; ~10-15% faster).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-regen-coding-20260730-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    export HF_HOME=/data
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+    export TOKENIZERS_PARALLELISM=false
+
+    apt-get update -qq 2>&1 | tail -1
+    apt-get install -y git --no-install-recommends -qq
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"; hash -r
+    git clone https://github.com/dbirks/speculators /tmp/spec
+    git -C /tmp/spec checkout 188a7b37919211749404d420271f3fdbc14924a6
+    SCRIPTS=/tmp/spec/scripts
+    uv pip install /tmp/spec aiohttp datasets tqdm --system --quiet
+
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    DRAFT=z-lab/Qwen3.6-27B-DFlash
+    DS=/dataset/onpolicy-coding-v1
+    mkdir -p "$DS" /output/logs
+
+    echo "=== [$(date)] serve $MODEL + $DRAFT (DFlash spec-decode, ~2x) for regen ==="
+    vllm serve "$MODEL" --host 127.0.0.1 --port 8001 \
+        --gpu-memory-utilization 0.90 --max-model-len 12288 --dtype bfloat16 \
+        --trust-remote-code --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+        --no-enable-prefix-caching --max-num-seqs 32 \
+        --max-num-batched-tokens 32768 \
+        --speculative-config "{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":15}" \
+        > /output/logs/regen_coding_vllm.log 2>&1 &
+    VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
+    for i in $(seq 1 240); do
+        curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && { echo "[$(date)] healthy after $((i*10))s"; break; }
+        kill -0 $VP 2>/dev/null || { echo "vLLM died:"; tail -60 /output/logs/regen_coding_vllm.log; exit 1; }
+        [ "$i" -eq 240 ] && { echo "timeout"; tail -40 /output/logs/regen_coding_vllm.log; exit 1; }
+        sleep 10
+    done
+    echo "[$(date)] serve healthy — starting coding-weighted regen (~30k)"
+
+    # coding-weighted ~30k: code 43% / math 20% / chat+IF 37%
+    # opc REMOVED from the loop: it's kept as-is (~9k rows on the PVC, incl the
+    # 8500 4k-cap set). NOTE: --limit is ADDITIVE with --resume (generates N MORE,
+    # not a cap), so leaving opc here made it re-generate 8000 more rows instead of
+    # skipping. typescript onward run fresh at 8192; opc still in the final all.jsonl.
+    for spec in opc-python:20000 typescript-instruct:20000; do
+        ds=${spec%%:*}; lim=${spec##*:}
+        echo "=== [$(date)] regen $ds (limit $lim) ==="
+        python3 "$SCRIPTS/response_regeneration/script.py" \
+            --dataset "$ds" --limit "$lim" \
+            --endpoint http://127.0.0.1:8001/v1/chat/completions --model "$MODEL" \
+            --max-tokens 8192 --concurrency 32 \
+            --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -4
+    done
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
+    cat "$DS"/regen_*.jsonl > "$DS/all.jsonl"
+    echo "[$(date)] regen v2 total rows: $(wc -l < "$DS/all.jsonl")"
+    touch "$DS/regen.done"
+    echo "=== [$(date)] DFlash-accelerated regen complete ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-regen-coding-20260730
+  namespace: default
+spec:
+  backoffLimit: 50
+  activeDeadlineSeconds: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: regen
+          image: vllm/vllm-openai:v0.26.0  # validated on SM120 (z-lab eval); DFlash serving. Fallback: nightly-4080263bb2c5d10deac17aaeb88e0823bc35bca9
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: latency
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: 12.0f
+            - name: FLASHINFER_FORCE_SM
+              value: 120f
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "4"
+              memory: 24Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: dataset
+              mountPath: /dataset
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: dspark-dataset-hdd
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-regen-coding-20260730-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
