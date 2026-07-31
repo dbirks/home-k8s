@@ -26,7 +26,7 @@ data:
 
     # ---------------- tunables ----------------
     OSIEOSIE_CAP = 20000     # agentic tail size (of ~196k)
-    CODING_UPWEIGHT = 2      # replicate our on-policy coding regen N times
+    CODING_UPWEIGHT = 1      # coding regen already ~23% of sup tokens; no upweight
     DROP_CJK_FRAC = 0.30     # drop Avesed rows whose answer is >30% CJK
     MAXLEN = 12288           # hard cap (trainer packs at 4096; keep some slack)
     SEED = 1337
@@ -56,19 +56,19 @@ data:
         except Exception:
             return row
 
-    def _load(path):
-        rows = []
-        for line in open(path):
-            line = line.strip()
-            if not line: continue
-            try:
-                r = json.loads(line)
-            except Exception:
-                continue
-            if "input_ids" not in r or "loss_mask" not in r: continue
-            if len(r["input_ids"]) > MAXLEN: continue
-            rows.append({"input_ids": r["input_ids"], "loss_mask": r["loss_mask"]})
-        return rows
+    def _iter_rows(path):
+        """Stream {input_ids, loss_mask} dicts from a jsonl file (memory-bounded)."""
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line: continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if "input_ids" not in r or "loss_mask" not in r: continue
+                if len(r["input_ids"]) > MAXLEN: continue
+                yield {"input_ids": r["input_ids"], "loss_mask": r["loss_mask"]}
 
     def main():
         ap = argparse.ArgumentParser()
@@ -79,67 +79,84 @@ data:
         a = ap.parse_args()
         rng = random.Random(SEED)
         C = a.combined
-        comp = {}          # name -> kept count
-        suptok = {}        # name -> supervised tokens
+        comp = {}; suptok = {}; seen = set()
         pool = Pool(a.procs, _init, (a.model,))
         out_path = os.path.join(C, "all.jsonl")
-        seen = set()
-        kept_total = 0
-        with open(out_path, "w") as out:
-            def emit(name, rows, reps=1):
-                nonlocal kept_total
-                k = 0; stk = 0
-                for _ in range(reps):
-                    for r in rows:
-                        h = hashlib.sha1((",".join(map(str, r["input_ids"]))).encode()).hexdigest()
-                        # allow intended duplicates from upweighting (reps>1) but
-                        # dedup within a single pass
-                        if reps == 1 and h in seen: continue
-                        seen.add(h)
-                        out.write(json.dumps(r) + "\n")
-                        k += 1; stk += sum(r["loss_mask"]); kept_total += 1
-                comp[name] = comp.get(name, 0) + k
-                suptok[name] = suptok.get(name, 0) + stk
-                print(f"  emit {name}: +{k} rows ({stk/1e6:.1f}M sup tok)", flush=True)
+        tmp_path = out_path + ".tmp"
+        offsets = []   # (byte_offset, length) — cheap index for the shuffle pass
 
-            # --- Avesed base + pb: CJK/refusal filter ---
+        def _dedup_new(r):
+            h = hashlib.sha1((",".join(map(str, r["input_ids"]))).encode()).hexdigest()
+            if h in seen: return False
+            seen.add(h); return True
+
+        # ---- Pass 1: stream every source -> tmp (no full-file loads) ----
+        with open(tmp_path, "wb") as out:
+            pos = 0
+            def write_row(r, name):
+                nonlocal pos
+                b = (json.dumps({"input_ids": r["input_ids"],
+                                 "loss_mask": r["loss_mask"]}) + "\n").encode()
+                offsets.append((pos, len(b))); pos += len(b); out.write(b)
+                comp[name] = comp.get(name, 0) + 1
+                suptok[name] = suptok.get(name, 0) + sum(r["loss_mask"])
+
+            # Avesed: CJK/refusal filter, streamed through the pool
             for name in ("avesed_general", "avesed_pb"):
                 f = os.path.join(C, f"tok_{name}.jsonl")
                 if not os.path.exists(f): continue
-                rows = _load(f)
-                filt = [r for r in pool.imap_unordered(_cjk_keep, rows, chunksize=64) if r]
-                print(f"  {name}: {len(rows)} -> {len(filt)} after CJK<= {DROP_CJK_FRAC}", flush=True)
-                emit(name, filt)
+                k = 0
+                for r in pool.imap_unordered(_cjk_keep, _iter_rows(f), chunksize=128):
+                    if r is None: continue
+                    if not _dedup_new(r): continue
+                    write_row(r, name); k += 1
+                print(f"  {name}: kept {k} after CJK<= {DROP_CJK_FRAC}", flush=True)
 
-            # --- coding sources: keep all ---
+            # coding sources: keep all
             for name in ("satgeze", "ctest", "sleepyeldrazi"):
                 f = os.path.join(C, f"tok_{name}.jsonl")
-                if os.path.exists(f): emit(name, _load(f))
+                if not os.path.exists(f): continue
+                for r in _iter_rows(f):
+                    if _dedup_new(r): write_row(r, name)
+                print(f"  {name}: {comp.get(name,0)} rows", flush=True)
 
-            # --- osieosie agentic: downsample ---
+            # osieosie agentic: reservoir-sample to OSIEOSIE_CAP (bounded memory)
             f = os.path.join(C, "tok_osieosie.jsonl")
             if os.path.exists(f):
-                rows = _load(f); rng.shuffle(rows)
-                emit("osieosie", rows[:OSIEOSIE_CAP])
+                reservoir = []; i = 0
+                for r in _iter_rows(f):
+                    if len(reservoir) < OSIEOSIE_CAP:
+                        reservoir.append(r)
+                    else:
+                        j = rng.randint(0, i)
+                        if j < OSIEOSIE_CAP: reservoir[j] = r
+                    i += 1
+                for r in reservoir:
+                    if _dedup_new(r): write_row(r, "osieosie")
+                print(f"  osieosie: {comp.get('osieosie',0)} of {i} (reservoir)", flush=True)
 
-            # --- our on-policy coding regen: upweight ---
-            coding = []
-            for f in sorted(glob.glob(a.coding_glob)):
-                coding += _load(f)
-            if coding:
-                emit("coding_regen", coding, reps=CODING_UPWEIGHT)
-
+            # our on-policy coding regen: CODING_UPWEIGHT copies
+            for rep in range(CODING_UPWEIGHT):
+                for f in sorted(glob.glob(a.coding_glob)):
+                    for r in _iter_rows(f):
+                        # upweight = intended dups; only dedup within the first copy
+                        if rep == 0 and not _dedup_new(r): continue
+                        write_row(r, "coding_regen")
+            print(f"  coding_regen: {comp.get('coding_regen',0)} rows "
+                  f"(x{CODING_UPWEIGHT})", flush=True)
         pool.close()
-        # global shuffle so sources interleave
-        print("  shuffling...", flush=True)
-        lines = open(out_path).readlines()
-        rng.shuffle(lines)
-        with open(out_path, "w") as out:
-            out.writelines(lines)
+
+        # ---- Pass 2: offset-shuffle tmp -> all.jsonl (only offsets in RAM) ----
+        print("  shuffling via offset index...", flush=True)
+        rng.shuffle(offsets)
+        with open(tmp_path, "rb") as src, open(out_path, "w") as out:
+            for off, ln in offsets:
+                src.seek(off); out.write(src.read(ln).decode())
+        os.remove(tmp_path)
         open(os.path.join(C, "regen.done"), "w").close()
 
         print("\n=== FINAL CORPUS COMPOSITION ===", flush=True)
-        tot = sum(comp.values()); tots = sum(suptok.values())
+        tot = sum(comp.values()); tots = sum(suptok.values()) or 1
         for name in comp:
             print(f"  {name:16s} {comp[name]:>7d} rows ({100*comp[name]/tot:4.1f}%) | "
                   f"{suptok[name]/1e6:6.1f}M sup tok ({100*suptok[name]/tots:4.1f}%)")
@@ -189,7 +206,7 @@ spec:
               memory: 6Gi
             limits:
               cpu: "16"
-              memory: 16Gi
+              memory: 24Gi
           volumeMounts:
             - name: dataset
               mountPath: /dataset

@@ -1,0 +1,253 @@
+# DSpark Qwen3.6-27B — ONLINE block-16 BIG-CORPUS run on speculators v0.7.0.
+# The data-scaling experiment: same proven recipe that gave 1.66, but on the
+# ~546k-row / 327.8M-sup-token combined corpus (vs 32k before) AND ported to
+# v0.7.0's TrainConfig (user chose to run on v0.7.0's rewritten trainer).
+#
+# v0.7.0 diffs handled: trainer is now config-schema driven (run.yaml below);
+# NEW defaults overridden to match the proven recipe -> optimizer muon->adamw,
+# scheduler linear->cosine, loss kl_div->{ce,tv}, attn flex->eager (SM120),
+# total_seq_len 8192->4096. Serve (launch_vllm) + prep (prepare_data) CLIs are
+# unchanged from the old fork. speculators pinned to branch v0.7.0-qwen3.6.
+#
+# THREE GATES before the multi-day run (train.sh runs them in order, exits on
+# any failure): (1) --dry-run builds the DSpark model + saves a checkpoint;
+# (2) --max-steps 30 smoke validates verifier->hidden-states->trainer end-to-end;
+# (3) full run. WATCH the smoke accept_len/loss before it flows into the full run.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-train-v070-bigcorpus-script
+  namespace: default
+data:
+  run.yaml: |
+    # ---- Proven block-16 DSpark recipe mapped to v0.7.0 TrainConfig ----
+    speculator_type: dspark
+    seed: 42
+
+    verifier:
+      verifier_name_or_path: unsloth/Qwen3.6-27B-NVFP4
+      trust_remote_code: true
+
+    draft:
+      num_layers: 3
+      target_layer_ids: [1, 16, 31, 46, 61]
+      draft_attn_impl: eager          # SM120: no flex-attention source patches
+
+    data:
+      data_path: /output/data-qwen-v070-bigcorpus
+      total_seq_len: 4096
+      max_anchors: 192
+      num_workers: 2
+      prefetch_factor: 1
+      hidden_states_backend: file
+      hidden_states_path: /dev/shm/hs
+
+    generation:                       # online: pull hidden states from the verifier
+      vllm_endpoint: http://127.0.0.1:8001/v1
+      on_missing: generate
+      on_generate: delete
+
+    loss:
+      loss_fn: '{"ce": 0.1, "tv": 0.9}'
+
+    optimizer:
+      optimizer: adamw                # v0.7.0 defaults to muon; recipe uses adamw
+      lr: 0.0006
+      weight_decay: 0
+
+    scheduler:
+      scheduler_type: cosine          # v0.7.0 defaults to linear
+      scheduler_warmup_ratio: 0.04
+      scheduler_num_cosine_cycles: 0.5
+
+    trainer:
+      epochs: 2                       # ~546k rows; save_best + 0.5 ckpt to stop early
+      checkpoint_freq: 0.5
+      save_best: true
+      save_path: /output/checkpoints-qwen-v070-bigcorpus
+      log_freq: 10
+
+    dflash:
+      block_size: 16
+      dflash_decay_gamma: 4.0
+      per_position_loss_weight: fixed-exp-decay
+
+    dspark:
+      markov_rank: 256
+      markov_head_type: vanilla
+      enable_confidence_head: true
+      confidence_head_with_markov: true
+      confidence_head_alpha: 1.0
+  train.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+    export TOKENIZERS_PARALLELISM=false
+
+    echo "=== [$(date)] Qwen3.6-27B DSpark block-16 BIG-CORPUS run (v0.7.0) ==="
+    apt-get update -qq 2>&1 | tail -1
+    apt-get install -y git --no-install-recommends -qq
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"; hash -r
+
+    git clone --quiet https://github.com/dbirks/speculators /tmp/spec
+    git -C /tmp/spec checkout --quiet v0.7.0-qwen3.6
+    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (branch v0.7.0-qwen3.6)"
+    SCRIPTS=/tmp/spec/scripts
+    uv pip install /tmp/spec hf_transfer aiohttp datasets tqdm --system --quiet
+
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    DS=/dataset/combined-v1
+    PREP=/output/data-qwen-v070-bigcorpus
+    CKPT=/output/checkpoints-qwen-v070-bigcorpus
+    CFG=/scripts/run.yaml
+    mkdir -p "$PREP" "$CKPT" /output/logs /dev/shm/hs
+
+    if [ ! -f "$DS/regen.done" ] || [ ! -f "$DS/all.jsonl" ]; then
+      echo "FATAL: $DS/{regen.done,all.jsonl} missing — corpus not assembled."; exit 1
+    fi
+    echo "[$(date)] corpus: $(wc -l < "$DS/all.jsonl") rows"
+
+    # ---- Prep (passthrough; assembler already wrote {input_ids,loss_mask}) ----
+    if [ ! -f "$PREP/token_freq.pt" ] && ! ls "$PREP"/*.arrow >/dev/null 2>&1; then
+      echo "=== [$(date)] prepare_data (seq-len 4096) ==="
+      python3 "$SCRIPTS/prepare_data.py" --model "$MODEL" \
+        --data "$DS/all.jsonl" --output "$PREP" --seq-length 4096 \
+        2>&1 | tee /output/logs/prepare_v070.log
+      ls "$PREP"/*.arrow >/dev/null 2>&1 || { echo "FATAL: prep produced no arrow"; exit 1; }
+    else
+      echo "[$(date)] prep exists — skipping"
+    fi
+
+    # ================= GATE 1: dry-run (build DSpark model + save + exit) =======
+    echo "=== [$(date)] GATE 1 dry-run: validate config + build model ==="
+    python3 "$SCRIPTS/train.py" --config "$CFG" --dry-run \
+      --save-path /output/dryrun-v070 2>&1 | tee /output/logs/dryrun_v070.log
+    if ! ls /output/dryrun-v070/* >/dev/null 2>&1; then
+      echo "FATAL: dry-run produced no checkpoint — config/model build failed."; exit 1
+    fi
+    echo "[$(date)] GATE 1 PASSED (model builds, config valid)"
+
+    # ---- launch verifier for online hidden-state extraction (coexist 0.30) ----
+    unset PYTORCH_CUDA_ALLOC_CONF
+    echo "=== [$(date)] launch verifier (gpu-mem 0.30, coexist with trainer) ==="
+    python3 "$SCRIPTS/launch_vllm.py" "$MODEL" \
+      --target-layer-ids 1 16 31 46 61 \
+      --hidden-states-path /dev/shm/hs \
+      -- \
+      --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.30 \
+      --max-model-len 4608 --dtype bfloat16 --trust-remote-code \
+      --kv-cache-dtype fp8_e4m3 --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+      --enforce-eager --max-num-seqs 4 \
+      > /output/logs/verifier_v070.log 2>&1 &
+    VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
+    for i in $(seq 1 540); do
+      curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && break
+      kill -0 $VP 2>/dev/null || { echo "verifier died:"; cat /output/logs/verifier_v070.log; exit 1; }
+      sleep 10
+    done
+    echo "[$(date)] verifier healthy"
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    # ================= GATE 2: 30-step smoke (end-to-end) =======================
+    echo "=== [$(date)] GATE 2 smoke: 30 steps end-to-end (verifier->HS->trainer) ==="
+    python3 "$SCRIPTS/train.py" --config "$CFG" --max-steps 30 \
+      --save-path /output/smoke-v070 --no-resume-from-checkpoint \
+      2>&1 | tee /output/logs/smoke_v070.log
+    if ! grep -qiE "accept|loss" /output/logs/smoke_v070.log; then
+      echo "FATAL: smoke produced no training metrics — pipeline broken."; exit 1
+    fi
+    echo "[$(date)] GATE 2 PASSED (metrics above). Waiting for manual GO to start FULL run."
+    echo "[$(date)] >>> Inspect smoke accept_len/loss, then: touch /output/PROCEED_FULL_v070"
+    GO=/output/PROCEED_FULL_v070; rm -f "$GO"
+    for i in $(seq 1 180); do          # wait up to 90 min for the GO (verifier stays up)
+      [ -f "$GO" ] && { echo "[$(date)] GO received"; break; }
+      kill -0 $VP 2>/dev/null || { echo "verifier died while waiting"; exit 1; }
+      sleep 30
+    done
+    if [ ! -f "$GO" ]; then echo "[$(date)] no GO within window — exiting before full run."; exit 0; fi
+    rm -f "$GO"
+
+    # ================= GATE 3: full run =========================================
+    echo "=== [$(date)] GATE 3 FULL block-16 big-corpus run ==="
+    python3 "$SCRIPTS/train.py" --config "$CFG" \
+      2>&1 | tee /output/logs/train_v070_bigcorpus.log
+
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
+    echo "=== [$(date)] FULL run complete ==="
+    ls -lh "$CKPT"/ || true
+    echo "[$(date)] Next: real-vLLM eval (temp 1.0, k=15) of $CKPT/checkpoint_best vs 4.29."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-v070-bigcorpus-20260731
+  namespace: default
+spec:
+  backoffLimit: 100
+  activeDeadlineSeconds: 345600   # 96h (546k rows x 2 epochs online is long)
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: trainer
+          image: vllm/vllm-openai:v0.25.1   # proven SM120 (v0.26 crashes cutedsl)
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 32Gi
+            requests:
+              cpu: "4"
+              memory: 32Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: dataset
+              mountPath: /dataset
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: dspark-dataset-hdd
+        - name: scripts
+          configMap:
+            name: dspark-train-v070-bigcorpus-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 24Gi
