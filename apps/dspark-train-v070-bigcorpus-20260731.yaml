@@ -113,9 +113,11 @@ data:
 
     # ---- Prep (passthrough; assembler already wrote {input_ids,loss_mask}) ----
     if [ ! -f "$PREP/token_freq.pt" ] && ! ls "$PREP"/*.arrow >/dev/null 2>&1; then
-      echo "=== [$(date)] prepare_data (seq-len 4096) ==="
+      echo "=== [$(date)] prepare_data (seq-len 4096, 2 workers — 546k rows OOMs at 8) ==="
+      rm -rf "${PREP:?}"/* 2>/dev/null || true
       python3 "$SCRIPTS/prepare_data.py" --model "$MODEL" \
         --data "$DS/all.jsonl" --output "$PREP" --seq-length 4096 \
+        --num-preprocessing-workers 2 --overwrite \
         2>&1 | tee /output/logs/prepare_v070.log
       ls "$PREP"/*.arrow >/dev/null 2>&1 || { echo "FATAL: prep produced no arrow"; exit 1; }
     else
