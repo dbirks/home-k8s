@@ -75,7 +75,9 @@ data:
     dflash:
       block_size: 16
       dflash_decay_gamma: 4.0
-      per_position_loss_weight: dpace  # v0.7.0 D-PACE: ~5% higher mean accepted length
+      per_position_loss_weight: fixed-exp-decay  # proven recipe. NOTE: v0.7.0 D-PACE
+      # (+~5% accept_len) requires loss_fn=ce (pure), incompatible with our {ce,tv}
+      # composite -> deferred to a follow-up A/B, not bundled into the data run.
 
     dspark:
       markov_rank: 256
@@ -136,10 +138,12 @@ data:
 
     # ================= GATE 1: dry-run (build DSpark model + save + exit) =======
     echo "=== [$(date)] GATE 1 dry-run: validate config + build model ==="
+    rm -rf /output/dryrun-v070 2>/dev/null; mkdir -p /output/dryrun-v070
     python3 "$SCRIPTS/train.py" --config "$CFG" --dry-run \
       --save-path /output/dryrun-v070 2>&1 | tee /output/logs/dryrun_v070.log
-    if ! ls /output/dryrun-v070/* >/dev/null 2>&1; then
-      echo "FATAL: dry-run produced no checkpoint — config/model build failed."; exit 1
+    rc=${PIPESTATUS[0]}   # train.py's real exit code, not tee's
+    if [ "$rc" -ne 0 ] || ! ls /output/dryrun-v070/*.json >/dev/null 2>&1; then
+      echo "FATAL: dry-run failed (rc=$rc) — config/model build error above."; exit 1
     fi
     echo "[$(date)] GATE 1 PASSED (model builds, config valid)"
 
@@ -171,11 +175,13 @@ data:
     # (unlike the prior run that hung on a 54k-sample online validation). Reports
     # profile/fetch_frac so we can see if the prefetch+verifier tuning helped.
     echo "=== [$(date)] GATE 2 smoke: 20 steps end-to-end (verifier->HS->trainer) ==="
+    rm -rf /output/smoke-v070 2>/dev/null
     python3 "$SCRIPTS/train.py" --config "$CFG" --max-steps 20 \
       --save-path /output/smoke-v070 --no-resume-from-checkpoint \
       2>&1 | tee /output/logs/smoke_v070.log
-    if ! grep -qiE "accept|loss|global_step" /output/logs/smoke_v070.log; then
-      echo "FATAL: smoke produced no training metrics — pipeline broken."; exit 1
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" -ne 0 ] || ! grep -qaE "global_step=[0-9]" /output/logs/smoke_v070.log; then
+      echo "FATAL: smoke failed (rc=$rc) — no real training steps. Pipeline broken."; exit 1
     fi
     echo "[$(date)] GATE 2 PASSED. fetch_frac / tokens_per_s above show the pace."
     echo "[$(date)] auto-proceeding to FULL run in 45s — kill the job now if pace/loss looks wrong."
