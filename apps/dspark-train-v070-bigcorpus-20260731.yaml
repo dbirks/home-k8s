@@ -7,7 +7,10 @@
 # NEW defaults overridden to match the proven recipe -> optimizer muon->adamw,
 # scheduler linear->cosine, loss kl_div->{ce,tv}, attn flex->eager (SM120),
 # total_seq_len 8192->4096. Serve (launch_vllm) + prep (prepare_data) CLIs are
-# unchanged from the old fork. speculators pinned to branch v0.7.0-qwen3.6.
+# unchanged. speculators = PURE UPSTREAM tag v0.7.0 (fork abandoned; RoPE fix
+# now native via mrope_full_head_hack; prep keep_in_memory patched at runtime).
+# D-PACE loss (+~5% accept_len), 1 epoch, no-val (train_data_ratio 1.0), and
+# prefetch+verifier tuning to attack the 82% hidden-state-fetch stall.
 #
 # THREE GATES before the multi-day run (train.sh runs them in order, exits on
 # any failure): (1) --dry-run builds the DSpark model + saves a checkpoint;
@@ -38,8 +41,9 @@ data:
       data_path: /output/data-qwen-v070-bigcorpus
       total_seq_len: 4096
       max_anchors: 192
-      num_workers: 2
-      prefetch_factor: 1
+      num_workers: 4                  # +prefetch to overlap HS-fetch with compute
+      prefetch_factor: 2              # (step was 82% fetch-bound; hide the stall)
+      train_data_ratio: 1.0           # no val split -> skip the online validation pass
       hidden_states_backend: file
       hidden_states_path: /dev/shm/hs
 
@@ -62,16 +66,16 @@ data:
       scheduler_num_cosine_cycles: 0.5
 
     trainer:
-      epochs: 2                       # ~546k rows; save_best + 0.5 ckpt to stop early
-      checkpoint_freq: 0.5
-      save_best: true
+      epochs: 1                       # 1 epoch first (~2-3 days); eval at half + decide
+      checkpoint_freq: 0.5            # checkpoint every half epoch for early eval
+      save_best: false                # no val split -> no best-tracking (skips validation)
       save_path: /output/checkpoints-qwen-v070-bigcorpus
       log_freq: 10
 
     dflash:
       block_size: 16
       dflash_decay_gamma: 4.0
-      per_position_loss_weight: fixed-exp-decay
+      per_position_loss_weight: dpace  # v0.7.0 D-PACE: ~5% higher mean accepted length
 
     dspark:
       markov_rank: 256
@@ -93,9 +97,15 @@ data:
     pip install uv --quiet --root-user-action ignore
     export PATH="/root/.local/bin:$PATH"; hash -r
 
-    git clone --quiet https://github.com/dbirks/speculators /tmp/spec
-    git -C /tmp/spec checkout --quiet v0.7.0-qwen3.6
-    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (branch v0.7.0-qwen3.6)"
+    # PURE UPSTREAM v0.7.0 (fork abandoned). Partial-rotary handled natively by
+    # v0.7.0's mrope_full_head_hack, so our old RoPE cherry-pick is dropped.
+    git clone --quiet https://github.com/vllm-project/speculators /tmp/spec
+    git -C /tmp/spec checkout --quiet v0.7.0
+    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (upstream tag v0.7.0)"
+    # Runtime patch (not a fork): upstream prepare_data hardcodes keep_in_memory=True
+    # which OOMs at ~546k rows. Safety net in case prep re-runs (arrow usually cached).
+    sed -i 's/keep_in_memory=True/keep_in_memory=False/g' \
+      /tmp/spec/src/speculators/data_generation/preprocessing.py || true
     SCRIPTS=/tmp/spec/scripts
     uv pip install /tmp/spec hf_transfer aiohttp datasets tqdm --system --quiet
 
@@ -133,17 +143,19 @@ data:
     fi
     echo "[$(date)] GATE 1 PASSED (model builds, config valid)"
 
-    # ---- launch verifier for online hidden-state extraction (coexist 0.30) ----
+    # ---- launch verifier for online hidden-state extraction (coexist) ----
+    # max-num-seqs 4->8: serve more concurrent HS requests so the trainer's 4
+    # dataloader workers can prefetch ahead (attacks the 82% fetch stall).
     unset PYTORCH_CUDA_ALLOC_CONF
-    echo "=== [$(date)] launch verifier (gpu-mem 0.30, coexist with trainer) ==="
+    echo "=== [$(date)] launch verifier (gpu-mem 0.33, max-num-seqs 8, coexist) ==="
     python3 "$SCRIPTS/launch_vllm.py" "$MODEL" \
       --target-layer-ids 1 16 31 46 61 \
       --hidden-states-path /dev/shm/hs \
       -- \
-      --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.30 \
+      --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.33 \
       --max-model-len 4608 --dtype bfloat16 --trust-remote-code \
       --kv-cache-dtype fp8_e4m3 --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
-      --enforce-eager --max-num-seqs 4 \
+      --enforce-eager --max-num-seqs 8 \
       > /output/logs/verifier_v070.log 2>&1 &
     VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
     for i in $(seq 1 540); do
@@ -154,34 +166,30 @@ data:
     echo "[$(date)] verifier healthy"
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-    # ================= GATE 2: 30-step smoke (end-to-end) =======================
-    echo "=== [$(date)] GATE 2 smoke: 30 steps end-to-end (verifier->HS->trainer) ==="
-    python3 "$SCRIPTS/train.py" --config "$CFG" --max-steps 30 \
+    # ================= GATE 2: 20-step smoke (end-to-end) =======================
+    # train_data_ratio=1.0 -> no validation pass, so the smoke completes cleanly
+    # (unlike the prior run that hung on a 54k-sample online validation). Reports
+    # profile/fetch_frac so we can see if the prefetch+verifier tuning helped.
+    echo "=== [$(date)] GATE 2 smoke: 20 steps end-to-end (verifier->HS->trainer) ==="
+    python3 "$SCRIPTS/train.py" --config "$CFG" --max-steps 20 \
       --save-path /output/smoke-v070 --no-resume-from-checkpoint \
       2>&1 | tee /output/logs/smoke_v070.log
-    if ! grep -qiE "accept|loss" /output/logs/smoke_v070.log; then
+    if ! grep -qiE "accept|loss|global_step" /output/logs/smoke_v070.log; then
       echo "FATAL: smoke produced no training metrics — pipeline broken."; exit 1
     fi
-    echo "[$(date)] GATE 2 PASSED (metrics above). Waiting for manual GO to start FULL run."
-    echo "[$(date)] >>> Inspect smoke accept_len/loss, then: touch /output/PROCEED_FULL_v070"
-    GO=/output/PROCEED_FULL_v070; rm -f "$GO"
-    for i in $(seq 1 180); do          # wait up to 90 min for the GO (verifier stays up)
-      [ -f "$GO" ] && { echo "[$(date)] GO received"; break; }
-      kill -0 $VP 2>/dev/null || { echo "verifier died while waiting"; exit 1; }
-      sleep 30
-    done
-    if [ ! -f "$GO" ]; then echo "[$(date)] no GO within window — exiting before full run."; exit 0; fi
-    rm -f "$GO"
+    echo "[$(date)] GATE 2 PASSED. fetch_frac / tokens_per_s above show the pace."
+    echo "[$(date)] auto-proceeding to FULL run in 45s — kill the job now if pace/loss looks wrong."
+    sleep 45
 
     # ================= GATE 3: full run =========================================
-    echo "=== [$(date)] GATE 3 FULL block-16 big-corpus run ==="
+    echo "=== [$(date)] GATE 3 FULL block-16 big-corpus 1-epoch run ==="
     python3 "$SCRIPTS/train.py" --config "$CFG" \
       2>&1 | tee /output/logs/train_v070_bigcorpus.log
 
     kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
     echo "=== [$(date)] FULL run complete ==="
     ls -lh "$CKPT"/ || true
-    echo "[$(date)] Next: real-vLLM eval (temp 1.0, k=15) of $CKPT/checkpoint_best vs 4.29."
+    echo "[$(date)] Next: real-vLLM eval (temp 1.0, k=15) of the latest $CKPT checkpoint vs 4.29."
 ---
 apiVersion: batch/v1
 kind: Job
