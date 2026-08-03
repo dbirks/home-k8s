@@ -14,10 +14,11 @@ data:
     export HF_HOME=/data; export HF_HUB_ENABLE_HF_TRANSFER=1
     apt-get update -qq 2>&1 | tail -1; apt-get install -y git --no-install-recommends -qq
     pip install uv --quiet --root-user-action ignore; export PATH="/root/.local/bin:$PATH"; hash -r
-    git clone --quiet https://github.com/vllm-project/speculators /tmp/spec
+    git clone --quiet https://github.com/vllm-project/speculators /tmp/spec || { echo "FATAL: clone failed"; exit 1; }
     git -C /tmp/spec checkout --quiet v0.7.0
     echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (upstream v0.7.0)"
-    uv pip install /tmp/spec --system --quiet
+    [ -f /tmp/spec/pyproject.toml ] || { echo "FATAL: /tmp/spec not populated"; exit 1; }
+    uv pip install /tmp/spec --system --quiet || { echo "FATAL: speculators install failed"; exit 1; }
 
     SRC=/output/checkpoints-qwen-v070-bigcorpus/0
     OUT=/output/checkpoints-qwen-v070-bigcorpus-converted
@@ -66,7 +67,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: convert
-          image: python:3.11-slim
+          image: vllm/vllm-openai:v0.25.1   # has git+ca-certs+torch (slim lacked ca-certs -> clone failed)
           command: ["/bin/bash", "/scripts/convert.sh"]
           env:
             - name: HF_HOME
