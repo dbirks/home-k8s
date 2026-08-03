@@ -32,7 +32,8 @@ data:
     src="$SRC"; out="$OUT"; verifier="$MODEL"
     print("source speculators_model_type:", json.load(open(src+"/config.json")).get("speculators_model_type"))
     try:
-        convert_model(model=src, verifier=verifier, algorithm="dflash", output_path=out)
+        convert_model(model=src, verifier=verifier, algorithm="dflash", output_path=out,
+                      aux_hidden_state_layer_ids=[1, 16, 31, 46, 61])
         print("CONVERT_OK")
     except Exception as e:
         print("CONVERT_FAILED:", repr(e)); traceback.print_exc()
