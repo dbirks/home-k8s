@@ -131,10 +131,10 @@ spec:
             limits:
               nvidia.com/gpu: 1
               cpu: "4"
-              memory: 40Gi
+              memory: 32Gi
             requests:
               cpu: "4"
-              memory: 40Gi
+              memory: 32Gi
           volumeMounts:
             - name: models
               mountPath: /data
