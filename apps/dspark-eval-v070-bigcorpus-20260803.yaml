@@ -49,7 +49,7 @@ data:
       --gpu-memory-utilization 0.90 --max-model-len 8192 --dtype bfloat16 \
       --trust-remote-code --kv-cache-dtype fp8_e4m3 \
       --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
-      --no-enable-prefix-caching --max-num-seqs 1 \
+      --no-enable-prefix-caching --max-num-seqs 1 --enforce-eager \
       --speculative-config "{\"method\":\"dspark\",\"model\":\"$CKPT\",\"num_speculative_tokens\":15}" \
       > "$LOG" 2>&1 &
     VP=$!; trap 'kill $VP 2>/dev/null' EXIT
@@ -131,10 +131,10 @@ spec:
             limits:
               nvidia.com/gpu: 1
               cpu: "4"
-              memory: 24Gi
+              memory: 40Gi
             requests:
               cpu: "4"
-              memory: 24Gi
+              memory: 40Gi
           volumeMounts:
             - name: models
               mountPath: /data
