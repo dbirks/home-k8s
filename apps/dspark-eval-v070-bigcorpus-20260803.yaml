@@ -1,0 +1,155 @@
+# Real-vLLM acceptance eval of the trained DSpark drafter (big-corpus 1-epoch run).
+# Serves target Qwen3.6-27B + our checkpoint via spec-decode, runs held-out coding
+# (heavy) + general prompts at temp 0, and reads vLLM's real "acceptance length"
+# from the serve log. Answers: did 9x the data beat the 1.66 baseline?
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-eval-v070-bigcorpus-script
+  namespace: default
+data:
+  prompts.jsonl: |
+    {"cat":"coding","p":"Write a Python function that merges two sorted linked lists into one sorted list. Include the ListNode class."}
+    {"cat":"coding","p":"Fix this bug: `def avg(xs): return sum(xs)/len(xs)` crashes on empty input. Make it return 0.0 for empty."}
+    {"cat":"coding","p":"Implement an LRU cache in Python with get and put in O(1) using OrderedDict."}
+    {"cat":"coding","p":"Write a TypeScript function `debounce<T>(fn: T, ms: number)` that returns a debounced version preserving argument types."}
+    {"cat":"coding","p":"Refactor this into async/await: fetch('/api').then(r => r.json()).then(d => console.log(d)).catch(e => console.error(e))"}
+    {"cat":"coding","p":"Write a Python decorator `@retry(times=3, delay=1)` that retries a function on exception with a delay."}
+    {"cat":"coding","p":"Given a binary tree, write a function to return its level-order traversal as a list of lists (Python)."}
+    {"cat":"coding","p":"Write a SQL query to find the second-highest salary from an Employee(id, salary) table, handling ties."}
+    {"cat":"coding","p":"Implement quicksort in Rust for a Vec<i32>, sorting in place."}
+    {"cat":"coding","p":"Write a Python context manager `timer()` that prints elapsed wall-clock time on exit."}
+    {"cat":"coding","p":"Convert this callback code to a Promise: function load(cb){ setTimeout(()=>cb(null,42),100) }"}
+    {"cat":"coding","p":"Write a Go function that reads a file line by line and returns the count of non-empty lines."}
+    {"cat":"coding","p":"Implement binary search on a sorted list in Python; return the index or -1. Include edge cases."}
+    {"cat":"coding","p":"Write a React hook `useLocalStorage(key, initial)` that syncs state to localStorage (TypeScript)."}
+    {"cat":"coding","p":"Fix the off-by-one: `for i in range(1, len(a)): a[i] = a[i-1]` should shift right by one, preserving a[0]."}
+    {"cat":"coding","p":"Write a Python function to detect a cycle in a directed graph (adjacency list) using DFS."}
+    {"cat":"coding","p":"Write a bash script that finds all .log files older than 7 days under /var/log and prints their total size."}
+    {"cat":"coding","p":"Implement a rate limiter class in Python (token bucket) with an allow() method."}
+    {"cat":"coding","p":"Write a TypeScript type `DeepReadonly<T>` that recursively makes all properties readonly."}
+    {"cat":"coding","p":"Parse a CSV string into a list of dicts in Python without the csv module, handling quoted commas."}
+    {"cat":"general","p":"Explain the difference between TCP and UDP in a few sentences."}
+    {"cat":"general","p":"Summarize how HTTPS establishes a secure connection."}
+    {"cat":"general","p":"What are the tradeoffs between SQL and NoSQL databases?"}
+    {"cat":"general","p":"Explain what a race condition is and give a simple example."}
+    {"cat":"general","p":"Describe how a hash map achieves average O(1) lookups."}
+  eval.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data; export HF_HUB_ENABLE_HF_TRANSFER=1
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    CKPT=/output/checkpoints-qwen-v070-bigcorpus/0
+    LOG=/output/logs/eval_v070_serve.log
+    mkdir -p /output/logs
+    echo "=== [$(date)] serve target + TRAINED dspark drafter (spec-decode k=15) ==="
+    [ -f "$CKPT/config.json" ] || { echo "FATAL: checkpoint missing at $CKPT"; exit 1; }
+    # dspark is-a dflash; vLLM serves it via the dflash spec-decode path.
+    vllm serve "$MODEL" --host 127.0.0.1 --port 8001 \
+      --gpu-memory-utilization 0.90 --max-model-len 8192 --dtype bfloat16 \
+      --trust-remote-code --kv-cache-dtype fp8_e4m3 \
+      --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+      --no-enable-prefix-caching --max-num-seqs 1 \
+      --speculative-config "{\"method\":\"dflash\",\"model\":\"$CKPT\",\"num_speculative_tokens\":15}" \
+      > "$LOG" 2>&1 &
+    VP=$!; trap 'kill $VP 2>/dev/null' EXIT
+    for i in $(seq 1 300); do
+      curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && { echo "healthy after $((i*10))s"; break; }
+      kill -0 $VP 2>/dev/null || { echo "vLLM died loading the drafter:"; tail -50 "$LOG"; exit 1; }
+      [ "$i" -eq 300 ] && { echo "serve timeout"; tail -40 "$LOG"; exit 1; }
+      sleep 10
+    done
+    echo "=== [$(date)] running prompts (temp 0, greedy) — coding then general ==="
+    python3 - <<'PY' 2>&1 | tee /output/logs/eval_v070_result.log
+    import json, urllib.request, time
+    URL="http://127.0.0.1:8001/v1/chat/completions"; MODEL="unsloth/Qwen3.6-27B-NVFP4"
+    def metrics():
+        try:
+            m=urllib.request.urlopen("http://127.0.0.1:8001/metrics",timeout=10).read().decode()
+        except Exception: return (0,0,0)
+        d=a=e=0
+        for line in m.splitlines():
+            if line.startswith("vllm:spec_decode_num_draft_tokens_total"): d=float(line.split()[-1])
+            elif line.startswith("vllm:spec_decode_num_accepted_tokens_total"): a=float(line.split()[-1])
+            elif line.startswith("vllm:spec_decode_num_emitted_tokens_total"): e=float(line.split()[-1])
+        return (d,a,e)
+    def run(cat, prompts):
+        d0,a0,e0=metrics()
+        for p in prompts:
+            body=json.dumps({"model":MODEL,"messages":[{"role":"user","content":p}],
+                             "max_tokens":400,"temperature":0}).encode()
+            req=urllib.request.Request(URL,data=body,headers={"Content-Type":"application/json"})
+            try: urllib.request.urlopen(req,timeout=300).read()
+            except Exception as ex: print("  req err:",ex)
+        d1,a1,e1=metrics()
+        dd,da=d1-d0,a1-a0
+        k=15
+        # accepted per proposal round; accept_len = 1 (always-accepted) + accepted/rounds
+        rounds=dd/k if k else 0
+        acc_len = 1 + (da/rounds) if rounds else float('nan')
+        acc_rate = (da/dd) if dd else float('nan')
+        print(f"  [{cat}] draft={int(dd)} accepted={int(da)} accept_rate={acc_rate:.3f} accept_len={acc_len:.3f}")
+        return acc_len
+    prompts=[json.loads(l) for l in open("/scripts/prompts.jsonl") if l.strip()]
+    coding=[x["p"] for x in prompts if x["cat"]=="coding"]
+    general=[x["p"] for x in prompts if x["cat"]=="general"]
+    print("=== REAL vLLM ACCEPT_LEN (temp 0) — trained big-corpus dspark vs 1.66 baseline ===")
+    cl=run("coding", coding)
+    gl=run("general", general)
+    print(f"=== SUMMARY: coding={cl:.3f}  general={gl:.3f}  (baseline was 1.66) ===")
+    PY
+    echo "=== [$(date)] eval done. Also grep serve log for vLLM's own acceptance length: ==="
+    grep -aiE "acceptance length|acceptance rate|Draft acceptance" "$LOG" | tail -5
+    kill $VP 2>/dev/null || true; trap - EXIT
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-eval-v070-bigcorpus-20260803
+  namespace: default
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:v0.25.1
+          command: ["/bin/bash", "/scripts/eval.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 24Gi
+            requests:
+              cpu: "4"
+              memory: 24Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-eval-v070-bigcorpus-script
+            defaultMode: 0755
