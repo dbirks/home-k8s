@@ -1,0 +1,96 @@
+# CPU-only: convert the trained DSpark checkpoint into a vLLM-servable format via
+# speculators' DFlash converter (produces hf_config.dflash_config.mask_token_id
+# that vLLM's parallel-drafting proposer needs). See home-k8s issue #72.
+# GPU stays on the running generation job.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-convert-20260803-script
+  namespace: default
+data:
+  convert.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data; export HF_HUB_ENABLE_HF_TRANSFER=1
+    apt-get update -qq 2>&1 | tail -1; apt-get install -y git --no-install-recommends -qq
+    pip install uv --quiet --root-user-action ignore; export PATH="/root/.local/bin:$PATH"; hash -r
+    git clone --quiet https://github.com/vllm-project/speculators /tmp/spec
+    git -C /tmp/spec checkout --quiet v0.7.0
+    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (upstream v0.7.0)"
+    uv pip install /tmp/spec --system --quiet
+
+    SRC=/output/checkpoints-qwen-v070-bigcorpus/0
+    OUT=/output/checkpoints-qwen-v070-bigcorpus-converted
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    rm -rf "$OUT" 2>/dev/null; mkdir -p "$OUT"
+    echo "=== [$(date)] converting DSpark checkpoint (as dflash-family) for vLLM ==="
+    python3 - <<PY 2>&1 | tee /output/logs/convert_v070.log
+    import json, traceback
+    from speculators.convert.entrypoints import convert_model
+    src="$SRC"; out="$OUT"; verifier="$MODEL"
+    print("source speculators_model_type:", json.load(open(src+"/config.json")).get("speculators_model_type"))
+    try:
+        convert_model(model=src, verifier=verifier, algorithm="dflash", output_path=out)
+        print("CONVERT_OK")
+    except Exception as e:
+        print("CONVERT_FAILED:", repr(e)); traceback.print_exc()
+    # inspect the converted config for the fields that matter
+    import os
+    cfgp=os.path.join(out,"config.json")
+    if os.path.exists(cfgp):
+        c=json.load(open(cfgp))
+        df=c.get("dflash_config") or {}
+        print("=== converted config check ===")
+        print("  has dflash_config.mask_token_id:", "mask_token_id" in df, "->", df.get("mask_token_id"))
+        print("  speculators_model_type:", c.get("speculators_model_type"))
+        print("  DSPARK heads preserved? markov_rank:", c.get("markov_rank"),
+              "enable_confidence_head:", c.get("enable_confidence_head"),
+              "(also check transformer_layer_config)")
+        print("  top-level keys:", sorted(c.keys()))
+    else:
+        print("NO converted config.json produced")
+    PY
+    echo "=== [$(date)] convert step done. Output: $OUT ==="
+    ls -la "$OUT" 2>/dev/null
+    sleep 1800
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-convert-20260803
+  namespace: default
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: convert
+          image: python:3.11-slim
+          command: ["/bin/bash", "/scripts/convert.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+          resources:
+            requests: { cpu: "2", memory: 6Gi }
+            limits: { cpu: "8", memory: 20Gi }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: output, mountPath: /output }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: vllm-models }
+        - name: output
+          persistentVolumeClaim: { claimName: dspark-output-hdd-v2 }
+        - name: scripts
+          configMap: { name: dspark-convert-20260803-script, defaultMode: 0755 }
