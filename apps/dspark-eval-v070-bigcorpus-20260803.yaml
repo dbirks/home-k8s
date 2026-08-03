@@ -50,7 +50,7 @@ data:
       --trust-remote-code --kv-cache-dtype fp8_e4m3 \
       --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
       --no-enable-prefix-caching --max-num-seqs 1 \
-      --speculative-config "{\"method\":\"dflash\",\"model\":\"$CKPT\",\"num_speculative_tokens\":15}" \
+      --speculative-config "{\"method\":\"dspark\",\"model\":\"$CKPT\",\"num_speculative_tokens\":15}" \
       > "$LOG" 2>&1 &
     VP=$!; trap 'kill $VP 2>/dev/null' EXIT
     for i in $(seq 1 300); do
