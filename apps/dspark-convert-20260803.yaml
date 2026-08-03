@@ -12,7 +12,8 @@ data:
     #!/bin/bash
     set -uo pipefail
     export HF_HOME=/data; export HF_HUB_ENABLE_HF_TRANSFER=1
-    apt-get update -qq 2>&1 | tail -1; apt-get install -y git --no-install-recommends -qq
+    command -v git >/dev/null 2>&1 || { apt-get update -qq 2>&1 | tail -1; apt-get install -y git --no-install-recommends -qq; }
+    command -v git >/dev/null 2>&1 || { echo "FATAL: git unavailable"; exit 1; }
     pip install uv --quiet --root-user-action ignore; export PATH="/root/.local/bin:$PATH"; hash -r
     git clone --quiet https://github.com/vllm-project/speculators /tmp/spec || { echo "FATAL: clone failed"; exit 1; }
     git -C /tmp/spec checkout --quiet v0.7.0
@@ -77,10 +78,6 @@ spec:
                 secretKeyRef:
                   name: hf-token
                   key: HF_TOKEN
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities: { drop: ["ALL"] }
-            seccompProfile: { type: RuntimeDefault }
           resources:
             requests: { cpu: "2", memory: 6Gi }
             limits: { cpu: "8", memory: 20Gi }
