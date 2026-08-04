@@ -1,0 +1,166 @@
+# ComfyUI + MiniMax-H3 (video+audio gen) on the RTX PRO 6000 (SM120, 96 GB).
+# Prebuilt ai-dock image (no custom build); H3 support is in ComfyUI core (AUTO_UPDATE
+# pulls a recent enough ComfyUI). Models live on a PVC and are wired in via an absolute
+# extra_model_paths.yaml, so we don't depend on ai-dock's internal directory layout.
+# H3 "takes over" the GPU (coding regen is parked). See home-k8s issue for notes.
+#
+# ⚠️ mem limit 30Gi (well under the 46Gi node) — OOM-containment lesson from DeepSeek.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: comfyui-models, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path          # NVMe — model load speed
+  resources: { requests: { storage: 90Gi } }   # ~41Gi now + room for Ref2VA / bf16 upgrades
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: comfyui-output, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path-hdd      # generated video is bulky + cold
+  resources: { requests: { storage: 100Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: comfyui-data, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: { requests: { storage: 10Gi } }   # ComfyUI /workspace: settings, workflows, node state
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: comfyui-h3-sync-20260804, namespace: default }
+data:
+  sync.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+    pip install -q "huggingface_hub[cli,hf_transfer]" 2>&1 | tail -1
+    REPO=Comfy-Org/MiniMax-H3
+    FILES="diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors
+    text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+    vae/minimax_h3_video_vae_fp16.safetensors
+    vae/minimax_h3_audio_vae_fp32.safetensors"
+    for f in $FILES; do
+      if [ -s "/models/$f" ]; then echo "[have] $f"; continue; fi
+      echo "[get] $f"
+      n=0; until hf download "$REPO" "$f" --local-dir /models; do
+        n=$((n+1)); echo "  retry $f ($n)"; sleep 15; [ $n -ge 40 ] && exit 1
+      done
+    done
+    # absolute model-path config that ComfyUI reads via --extra-model-paths-config
+    cat > /models/extra_model_paths.yaml <<'EOF'
+    comfyui:
+        base_path: /models/
+        diffusion_models: diffusion_models/
+        text_encoders: text_encoders/
+        vae: vae/
+    EOF
+    echo "=== H3 model sync complete ==="; ls -laR /models/diffusion_models /models/text_encoders /models/vae 2>/dev/null
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: comfyui-h3-model-sync-20260804, namespace: default }
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: sync
+          image: python:3.12-slim
+          command: ["/bin/bash", "/scripts/sync.sh"]
+          env:
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "2", memory: 2Gi }
+            limits: { cpu: "6", memory: 6Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: comfyui-models }
+        - name: scripts
+          configMap: { name: comfyui-h3-sync-20260804, defaultMode: 0755 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: comfyui-h3, namespace: default }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: comfyui-h3 } }
+  template:
+    metadata: { labels: { app: comfyui-h3 } }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-models     # don't boot ComfyUI until the diffusion model is on the PVC
+          image: busybox:1.37
+          command: ["sh","-ec","until [ -s /models/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors ] && [ -s /models/extra_model_paths.yaml ]; do echo waiting-for-model-sync; sleep 15; done; echo models-ready"]
+          volumeMounts: [{ name: models, mountPath: /models }]
+      containers:
+        - name: comfyui
+          image: ghcr.io/ai-dock/comfyui:latest-cuda
+          env:
+            - { name: AUTO_UPDATE, value: "true" }          # pull a ComfyUI recent enough for H3
+            - { name: COMFYUI_PORT_HOST, value: "8188" }
+            - { name: COMFYUI_ARGS, value: "--listen 0.0.0.0 --extra-model-paths-config /models/extra_model_paths.yaml --output-directory /output" }
+            - { name: WEB_ENABLE_AUTH, value: "false" }      # private ingress only; no portal auth
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
+          ports: [{ name: http, containerPort: 8188 }]
+          resources:
+            requests: { nvidia.com/gpu: 1, cpu: "4", memory: 16Gi }
+            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 30Gi }   # keep well under 46Gi node
+          readinessProbe:
+            httpGet: { path: /, port: 8188 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 60      # AUTO_UPDATE + first boot can be slow
+          volumeMounts:
+            - { name: models, mountPath: /models }
+            - { name: output, mountPath: /output }
+            - { name: data, mountPath: /workspace }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: comfyui-models }
+        - name: output
+          persistentVolumeClaim: { claimName: comfyui-output }
+        - name: data
+          persistentVolumeClaim: { claimName: comfyui-data }
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 8Gi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: comfyui-h3, namespace: default }
+spec:
+  selector: { app: comfyui-h3 }
+  ports: [{ name: http, port: 80, targetPort: 8188 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: comfyui-h3
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "14400"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "14400"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2g"
+spec:
+  ingressClassName: private
+  rules:
+    - host: comfy.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: comfyui-h3, port: { number: 80 } } }
