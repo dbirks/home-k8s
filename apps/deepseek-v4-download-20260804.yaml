@@ -1,0 +1,49 @@
+# DeepSeek-V4-Flash-0731 download (156GB) — LATEST revision per user (not the frozen pin).
+# Model -> HDD PVC; W2 caches later -> NVMe. K8s-native (Talos has no docker host).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: deepseek-v4-model, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path-hdd
+  resources: { requests: { storage: 220Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: deepseek-v4-cache, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path      # NVMe
+  resources: { requests: { storage: 340Gi } }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: deepseek-v4-download-20260804, namespace: default }
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: dl
+          image: python:3.11-slim
+          command: ["/bin/bash","-c"]
+          args:
+            - |
+              set -uo pipefail
+              pip install --quiet --no-cache-dir huggingface_hub hf_transfer || exit 1
+              export HF_HUB_ENABLE_HF_TRANSFER=1
+              echo "[$(date)] downloading DeepSeek-V4-Flash-0731 (latest main) -> /model"
+              hf download deepseek-ai/DeepSeek-V4-Flash-0731 --local-dir /model 2>&1 | tail -40
+              echo "[$(date)] done. inventory:"; du -sh /model; ls -la /model | head -30
+              sleep 600
+          env:
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "4", memory: 6Gi }
+            limits: { cpu: "8", memory: 12Gi }
+          volumeMounts: [{ name: model, mountPath: /model }]
+      volumes:
+        - name: model
+          persistentVolumeClaim: { claimName: deepseek-v4-model }
