@@ -1,0 +1,127 @@
+# CPU-only: harvest a CODING-heavy slice from HF for the 3-layer drafter corpus.
+# Streams Huang2020 perfectblend (1.88M general regen) and keeps only CODING,
+# non-CJK conversations; also pulls osieosie agentic variants. GPU stays on regen.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-coding-harvest-20260804-script
+  namespace: default
+data:
+  harvest.py: |
+    #!/usr/bin/env python3
+    """Stream-filter Huang2020 perfectblend for coding convs; pull osieosie variants."""
+    import json, os, re
+    OUT = "/dataset/hf-coding-new"; os.makedirs(OUT, exist_ok=True)
+
+    CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]")
+    FENCE = re.compile(r"```")
+    CODE_HINT = re.compile(r"\b(def |class |import |function |const |let |var |public |private |#include|return |for\s*\(|while\s*\(|=>|console\.log|print\(|SELECT |CREATE TABLE|npm |pip install|git |docker |kubectl )")
+
+    def texts(row):
+        conv = row.get("conversations") or row.get("messages") or []
+        out = []
+        for m in conv:
+            if isinstance(m, dict):
+                c = m.get("content") or m.get("value") or ""
+                if isinstance(c, list):
+                    c = "".join(p.get("text","") if isinstance(p,dict) else str(p) for p in c)
+                out.append((m.get("role") or m.get("from") or "", c or ""))
+        return out
+
+    def is_coding(row):
+        tx = texts(row)
+        allc = " ".join(c for _, c in tx)
+        if not allc.strip(): return False
+        # CJK filter (bitter lesson: coding drafter)
+        cjk = len(CJK.findall(allc)); alnum = sum(ch.isalnum() for ch in allc)
+        if alnum and cjk / alnum > 0.15: return False
+        # coding signal: a code fence anywhere, or dense code hints in an assistant turn
+        if FENCE.search(allc): return True
+        for role, c in tx:
+            if role in ("assistant","gpt") and len(CODE_HINT.findall(c)) >= 3:
+                return True
+        return False
+
+    def harvest_huang():
+        from datasets import load_dataset
+        kept = seen = 0
+        f = open(os.path.join(OUT, "coding_perfectblend.jsonl"), "w")
+        for cfg in ("perfectblend_exploded",):
+            print(f"[huang] streaming {cfg} ...", flush=True)
+            ds = load_dataset("Huang2020/qwen3.6-27B-reasoning-regen", cfg,
+                              split="train", streaming=True)
+            for row in ds:
+                seen += 1
+                if is_coding(row):
+                    f.write(json.dumps({"conversations": row.get("conversations") or row.get("messages")}, ensure_ascii=False) + "\n")
+                    kept += 1
+                if seen % 100000 == 0:
+                    print(f"  seen={seen} kept_coding={kept} ({100*kept//max(1,seen)}%)", flush=True)
+        f.close()
+        print(f"[huang] DONE seen={seen} kept_coding={kept}", flush=True)
+
+    def harvest_osieosie():
+        from huggingface_hub import snapshot_download
+        for repo in ["osieosie/tmax-sft-skill-tax-20260324-1k-qwen3.6-27b",
+                     "hamishivi/tmax-sft-skill-tax-20260505-2.2k-combined-balanced-qwen3.6-27b-thinking-no-tool-call"]:
+            try:
+                d = snapshot_download(repo_id=repo, repo_type="dataset",
+                                      local_dir=os.path.join(OUT, repo.replace("/","_")))
+                print(f"[osieosie] downloaded {repo}", flush=True)
+            except Exception as e:
+                print(f"[osieosie] FAILED {repo}: {e}", flush=True)
+
+    if __name__ == "__main__":
+        harvest_osieosie()
+        harvest_huang()
+        print("=== harvest complete ===", flush=True)
+        for f in os.listdir(OUT):
+            p = os.path.join(OUT, f)
+            if f.endswith(".jsonl"):
+                print(f"  {f}: {sum(1 for _ in open(p))} rows", flush=True)
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data HF_HUB_ENABLE_HF_TRANSFER=1
+    command -v git >/dev/null || { apt-get update -qq 2>&1|tail -1; apt-get install -y git --no-install-recommends -qq; }
+    pip install --quiet --no-cache-dir datasets huggingface_hub hf_transfer 2>&1 | tail -1
+    echo "[$(date)] starting coding harvest"
+    python3 /scripts/harvest.py 2>&1 | tee /output/logs/coding_harvest.log
+    echo "[$(date)] done"; sleep 1800
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-coding-harvest-20260804
+  namespace: default
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: harvest
+          image: vllm/vllm-openai:v0.25.1
+          command: ["/bin/bash","/scripts/run.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "4", memory: 8Gi }
+            limits: { cpu: "12", memory: 24Gi }
+          volumeMounts:
+            - { name: dataset, mountPath: /dataset }
+            - { name: models, mountPath: /data }
+            - { name: output, mountPath: /output }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - name: dataset
+          persistentVolumeClaim: { claimName: dspark-dataset-hdd }
+        - name: models
+          persistentVolumeClaim: { claimName: vllm-models }
+        - name: output
+          persistentVolumeClaim: { claimName: dspark-output-hdd-v2 }
+        - name: scripts
+          configMap: { name: dspark-coding-harvest-20260804-script, defaultMode: 0755 }
