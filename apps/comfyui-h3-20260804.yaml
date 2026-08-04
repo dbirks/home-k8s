@@ -119,10 +119,11 @@ spec:
             - /models/extra_model_paths.yaml
             - --output-directory
             - /output
+            - --highvram                 # 102GB VRAM — keep models on GPU, minimize host-RAM churn
           ports: [{ name: http, containerPort: 8188 }]
           resources:
-            requests: { nvidia.com/gpu: 1, cpu: "4", memory: 16Gi }
-            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 30Gi }   # keep well under 46Gi node
+            requests: { nvidia.com/gpu: 1, cpu: "4", memory: 20Gi }
+            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 40Gi }   # 48Gi node: leaves ~8Gi headroom; cgroup still contains OOM to the pod
           readinessProbe:
             httpGet: { path: /, port: 8188 }
             initialDelaySeconds: 60
