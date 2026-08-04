@@ -65,6 +65,7 @@ apiVersion: batch/v1
 kind: Job
 metadata: { name: comfyui-h3-model-sync-20260804, namespace: default }
 spec:
+  suspend: true          # PAUSED to free home network; flip to false to resume (skips done files, resumes partial)
   backoffLimit: 3
   template:
     spec:
@@ -92,7 +93,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: comfyui-h3, namespace: default }
 spec:
-  replicas: 1
+  replicas: 0          # PARKED while download is paused (frees the GPU for the coding regen); set 1 to serve
   strategy: { type: Recreate }
   selector: { matchLabels: { app: comfyui-h3 } }
   template:
@@ -146,19 +147,21 @@ spec:
   selector: { app: comfyui-h3 }
   ports: [{ name: http, port: 80, targetPort: 8188 }]
 ---
+# Tailscale Ingress — reachable only over the tailnet as comfy.<tailnet>.ts.net
+# (auto-renewing Let's Encrypt cert, never public). Same pattern as
+# apps/vllm-tailscale-ingress.yaml. No hoam.lan / private ingress for ComfyUI.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: comfyui-h3
+  name: comfyui-h3-ts
   namespace: default
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "14400"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "14400"
-    nginx.ingress.kubernetes.io/proxy-body-size: "2g"
 spec:
-  ingressClassName: private
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - comfy
   rules:
-    - host: comfy.hoam.lan
+    - host: comfy
       http:
         paths:
           - path: /
