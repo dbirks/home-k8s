@@ -1,0 +1,101 @@
+# DeepSeek-V4-Flash-0731 serve — 524K resident-W2 QUALITY recipe (no spec-decode),
+# translated from the docker-host guide to K8s. See home-k8s issue #73.
+#
+# ⚠️ RAM RISK: node has ~46 GB allocatable; the guide wants 64 GB+ for the FIRST-BOOT
+#    W2 transform (128 GB preferred). First boot may host-OOM building the planes/packs
+#    cache. Mitigation if it does: NVMe swap on Talos (machineconfig) — see #73. After the
+#    first boot builds the cache, warm reboots read the cache and need far less RAM.
+# ⚠️ env-var / CLI names are from the guide's PINNED commit; we build from `main`. Verify
+#    against `docker run <image> --help` (i.e. pod logs) and adapt spelling only if rejected.
+#
+# Apply ONLY after: (1) model download complete (48/48 shards), (2) regen STOPPED (frees GPU+RAM).
+apiVersion: v1
+kind: Service
+metadata: { name: deepseek-v4, namespace: default }
+spec:
+  selector: { app: deepseek-v4 }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: deepseek-v4, namespace: default }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: deepseek-v4 } }
+  template:
+    metadata: { labels: { app: deepseek-v4 } }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      imagePullSecrets: [{ name: ghcr-pull }]
+      containers:
+        - name: vllm-moet
+          image: ghcr.io/dbirks/vllm-moet-sm120:v024
+          # image entrypoint is the vLLM OpenAI server; args below are the serve flags
+          args:
+            - --model
+            - /model
+            - --served-model-name
+            - deepseek-v4-flash-0731
+            - --trust-remote-code
+            - --tokenizer-mode
+            - deepseek_v4
+            - --reasoning-parser
+            - deepseek_v4
+            - --tool-call-parser
+            - deepseek_v4
+            - --enable-auto-tool-choice
+            - --kv-cache-dtype
+            - fp8_ds_mla
+            - --block-size
+            - "256"
+            - --max-model-len
+            - "524288"
+            - --gpu-memory-utilization
+            - "0.988"
+            - --max-num-batched-tokens
+            - "1024"
+            - --max-num-seqs
+            - "4"
+            - --enable-prefix-caching
+            - --no-scheduler-reserve-full-isl
+            - --compilation-config
+            - '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+          env:
+            - { name: VLLM_MOE_W2, value: "1" }
+            - { name: VLLM_MOE_W2_FORCE_RESIDENT, value: "1" }
+            - { name: VLLM_MOE_W2_PLANES_CACHE, value: /cache/planes-ds4-0731-tp1 }
+            - { name: VLLM_MOE_W2_STORE_DIR, value: /cache/packs-ds4-0731 }
+            - { name: VLLM_MOE_W2_DELTA_GB, value: "6" }
+            - { name: VLLM_MOE_W2_DELTA_POLICY, value: freq }
+            - { name: VLLM_MOE_W2_PREFILL_FP4, value: "1" }
+            - { name: VLLM_MOE_W2_GATE, value: "0" }
+            - { name: VLLM_MOE_W2_AFRAG, value: "1" }
+            - { name: VLLM_MOE_W2_FUSED_UNPERMUTE, value: "0" }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          ports: [{ containerPort: 8000 }]
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 44Gi }
+            requests: { nvidia.com/gpu: 1, cpu: "6", memory: 30Gi }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 300
+            periodSeconds: 15
+            failureThreshold: 120   # first boot (transform) can take many minutes
+          volumeMounts:
+            - { name: model, mountPath: /model, readOnly: true }
+            - { name: cache, mountPath: /cache }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - name: model
+          persistentVolumeClaim: { claimName: deepseek-v4-model }
+        - name: cache
+          persistentVolumeClaim: { claimName: deepseek-v4-cache }
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 32Gi }

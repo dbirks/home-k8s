@@ -1,0 +1,35 @@
+# Build vLLM-MoET SM120 image ON THE CLUSTER (dev box too small). Kaniko clones
+# the dbirks/vLLM-Moet fork (cubins+patch are real files, no LFS), builds
+# Dockerfile.sm120-v024, pushes to ghcr.io/dbirks/vllm-moet-sm120:v024.
+# Needs secret `ghcr-push` (docker config.json w/ a write:packages token).
+apiVersion: batch/v1
+kind: Job
+metadata: { name: deepseek-v4-moet-build-20260804, namespace: default }
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:latest
+          args:
+            - "--context=git://github.com/dbirks/vLLM-Moet.git#refs/heads/main"
+            - "--dockerfile=Dockerfile.sm120-v024"
+            - "--destination=ghcr.io/dbirks/vllm-moet-sm120:v024"
+            - "--compressed-caching=false"
+            - "--single-snapshot"
+            - "--verbosity=info"
+          volumeMounts:
+            - { name: dockercfg, mountPath: /kaniko/.docker }
+            - { name: work, mountPath: /workspace }
+          resources:
+            requests: { cpu: "8", memory: 12Gi, ephemeral-storage: 60Gi }
+            limits: { cpu: "16", memory: 24Gi, ephemeral-storage: 120Gi }
+      volumes:
+        - name: dockercfg
+          secret:
+            secretName: ghcr-push
+            items: [{ key: .dockerconfigjson, path: config.json }]
+        - name: work
+          emptyDir: { sizeLimit: 120Gi }
