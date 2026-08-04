@@ -101,6 +101,7 @@ spec:
     spec:
       runtimeClassName: nvidia
       enableServiceLinks: false
+      imagePullSecrets: [{ name: ghcr-pull }]
       initContainers:
         - name: wait-for-models     # don't boot ComfyUI until the diffusion model is on the PVC
           image: busybox:1.37
@@ -108,14 +109,16 @@ spec:
           volumeMounts: [{ name: models, mountPath: /models }]
       containers:
         - name: comfyui
-          image: ghcr.io/ai-dock/comfyui:latest-cuda
-          env:
-            - { name: AUTO_UPDATE, value: "true" }          # pull a ComfyUI recent enough for H3
-            - { name: COMFYUI_PORT_HOST, value: "8188" }
-            - { name: COMFYUI_ARGS, value: "--listen 0.0.0.0 --extra-model-paths-config /models/extra_model_paths.yaml --output-directory /output" }
-            - { name: WEB_ENABLE_AUTH, value: "false" }      # private ingress only; no portal auth
-            - name: HF_TOKEN
-              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
+          image: ghcr.io/dbirks/comfyui-h3:20260804   # our pinned build (CUDA 12.8 + torch cu128 + recent ComfyUI)
+          args:
+            - --listen
+            - 0.0.0.0
+            - --port
+            - "8188"
+            - --extra-model-paths-config
+            - /models/extra_model_paths.yaml
+            - --output-directory
+            - /output
           ports: [{ name: http, containerPort: 8188 }]
           resources:
             requests: { nvidia.com/gpu: 1, cpu: "4", memory: 16Gi }
@@ -128,7 +131,7 @@ spec:
           volumeMounts:
             - { name: models, mountPath: /models }
             - { name: output, mountPath: /output }
-            - { name: data, mountPath: /workspace }
+            - { name: data, mountPath: /opt/ComfyUI/user }
             - { name: shm, mountPath: /dev/shm }
       volumes:
         - name: models
