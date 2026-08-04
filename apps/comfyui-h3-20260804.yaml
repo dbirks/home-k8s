@@ -65,7 +65,7 @@ apiVersion: batch/v1
 kind: Job
 metadata: { name: comfyui-h3-model-sync-20260804, namespace: default }
 spec:
-  suspend: true          # PAUSED to free home network; flip to false to resume (skips done files, resumes partial)
+  suspend: false         # RESUMED — finishes the remaining ~23Gi, skips the ~18Gi already on the PVC
   backoffLimit: 3
   template:
     spec:
@@ -93,7 +93,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: comfyui-h3, namespace: default }
 spec:
-  replicas: 0          # PARKED while download is paused (frees the GPU for the coding regen); set 1 to serve
+  replicas: 1          # SERVING — H3 owns the GPU (coding regen re-parked)
   strategy: { type: Recreate }
   selector: { matchLabels: { app: comfyui-h3 } }
   template:
