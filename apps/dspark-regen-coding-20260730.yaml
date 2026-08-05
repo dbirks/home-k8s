@@ -48,7 +48,7 @@ data:
     mkdir -p "$DS" /output/logs
 
     echo "=== [$(date)] serve $MODEL + $DRAFT (DFlash spec-decode, ~2x) for regen ==="
-    vllm serve "$MODEL" --host 0.0.0.0 --port 8001 \
+    vllm serve "$MODEL" --served-model-name main "$MODEL" --host 0.0.0.0 --port 8001 \
         --gpu-memory-utilization 0.90 --max-model-len 12288 --dtype bfloat16 \
         --trust-remote-code --kv-cache-dtype fp8_e4m3 \
         --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
