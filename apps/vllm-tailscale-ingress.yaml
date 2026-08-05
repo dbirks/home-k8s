@@ -34,7 +34,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: laguna
+                name: qwen-regen
                 port:
                   number: 80
 ---
@@ -59,6 +59,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: laguna
+                name: qwen-regen
                 port:
                   number: 80
