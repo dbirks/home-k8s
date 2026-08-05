@@ -147,7 +147,6 @@ spec:
                 --trust-remote-code \
                 --gpu-memory-utilization=0.85 \
                 --max-model-len=131072 \
-                --moe-backend=marlin \
                 --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
                 --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":7,"method":"dflash"}' \
                 --max-num-seqs=4 \
