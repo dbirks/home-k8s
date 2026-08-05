@@ -93,7 +93,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: comfyui-h3, namespace: default }
 spec:
-  replicas: 0          # PARKED — GPU handed to Laguna; models/workflow persist on PVCs, scale to 1 to serve H3 again
+  replicas: 1          # SERVING H3 — GPU free (Laguna parked pending model swap, see #61)
   strategy: { type: Recreate }
   selector: { matchLabels: { app: comfyui-h3 } }
   template:
