@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 0   # 2026-07-28: DOWN by request — coding-agent session done, GPU handed back to the Qwen DFlash regen (longer 8192 output). K=7 DFlash config intact; restore to 1 to serve.
+  replicas: 1   # 2026-08-04: UP — serving Laguna-S-2.1 + DFlash for benchmarking. Retrying vLLM 0.26.0 (fallback 0.25.1).
   strategy:
     type: Recreate
   selector:
@@ -94,7 +94,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: laguna
-          image: vllm/vllm-openai:v0.25.1   # 2026-07-28: REVERTED from v0.26.0 — it boot-crashed on SM120 with cutlass/cutedsl "NVVM backend compilation failed" in _compile_splitk (KV-cache init). The --kernel-config enable_cutedsl_warmup:false workaround did NOT take on 0.26.0 (schema changed), so cutedsl JIT ran + failed. v0.25.1 is known-good. Retry 0.26.0 needs the new cutedsl-disable mechanism (see #61; log saved).
+          image: vllm/vllm-openai:v0.26.0   # 2026-08-04 RETRY 0.26.0 per #61: #48268 makes cutedsl-autotune-off the DEFAULT (so we DROP the old --kernel-config, whose schema changed and stopped disabling cutedsl on 0.26.0). If it boot-crashes on SM120 (cutedsl NVVM in _compile_splitk), FALL BACK to vllm/vllm-openai:v0.25.1 (known-good) + re-add --kernel-config.
           # 2026-07-25 THE FIX (research: MiaAI-Lab/Laguna-S-2.1-DGX-Spark-RTX-6000-PRO
           # recipe; FlashInfer #2093/#3294, vLLM #41865/#44305). ROOT CAUSE of the
           # boot wedge: the stock image ships flashinfer-python 0.6.13 ALONE, with NO
@@ -148,7 +148,6 @@ spec:
                 --gpu-memory-utilization=0.85 \
                 --max-model-len=131072 \
                 --moe-backend=marlin \
-                --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
                 --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":7,"method":"dflash"}' \
                 --max-num-seqs=4 \
                 --max-num-batched-tokens=8192 \
