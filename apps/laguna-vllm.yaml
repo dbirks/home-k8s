@@ -79,7 +79,7 @@ metadata:
 spec:
   # replicas: 0 — PARKED. Bring up deliberately, and only after scaling Qwen down
   # (see GPU MEMORY note above). Bring up ONE big model at a time.
-  replicas: 1   # 2026-08-04: UP — serving Laguna-S-2.1 + DFlash for benchmarking. Retrying vLLM 0.26.0 (fallback 0.25.1).
+  replicas: 0   # 2026-08-04 PARKED: vLLM 0.25.1 stopped auto-detecting Laguna NVFP4 MoE -> loads UNQUANTIZED (97GB, wedges). marlin (which forced the FP4 kernel) now rejected b/c MoE seen as unquantized. Needs focused debug (see #61), not flag-poking.
   strategy:
     type: Recreate
   selector:
