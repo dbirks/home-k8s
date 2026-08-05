@@ -70,7 +70,7 @@ data:
     # 8500 4k-cap set). NOTE: --limit is ADDITIVE with --resume (generates N MORE,
     # not a cap), so leaving opc here made it re-generate 8000 more rows instead of
     # skipping. typescript onward run fresh at 8192; opc still in the final all.jsonl.
-    for spec in opc-python:20000 typescript-instruct:20000; do
+    for spec in typescript-instruct:40000; do   # 2026-08-05: opc-python done (~54k); switch to TypeScript
         ds=${spec%%:*}; lim=${spec##*:}
         echo "=== [$(date)] regen $ds (limit $lim) ==="
         python3 "$SCRIPTS/response_regeneration/script.py" \
