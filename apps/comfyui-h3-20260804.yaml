@@ -93,7 +93,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: comfyui-h3, namespace: default }
 spec:
-  replicas: 1          # SERVING H3 — GPU free (Laguna parked pending model swap, see #61)
+  replicas: 0          # PAUSED for character-consistency (Ref2VA) research; scale to 1 to resume episode renders
   strategy: { type: Recreate }
   selector: { matchLabels: { app: comfyui-h3 } }
   template:
