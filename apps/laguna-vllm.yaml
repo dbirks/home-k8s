@@ -94,7 +94,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: laguna
-          image: vllm/vllm-openai:v0.26.0   # 2026-08-04 RETRY 0.26.0 per #61: #48268 makes cutedsl-autotune-off the DEFAULT (so we DROP the old --kernel-config, whose schema changed and stopped disabling cutedsl on 0.26.0). If it boot-crashes on SM120 (cutedsl NVVM in _compile_splitk), FALL BACK to vllm/vllm-openai:v0.25.1 (known-good) + re-add --kernel-config.
+          image: vllm/vllm-openai:v0.25.1   # 2026-08-04: FELL BACK from 0.26.0. Progress: the old cutedsl NVVM crash is GONE on 0.26.0 (#48268 default worked!). New blocker: `--moe-backend=marlin` is invalid in 0.26.0 (valid: triton/flashinfer_trtllm/flashinfer_cutlass/aiter) AND the MoE resolved to UnquantizedFusedMoEMethod (possible NVFP4-compressed-tensors change). Needs a focused 0.26.0 pass (#61). v0.25.1 known-good.
           # 2026-07-25 THE FIX (research: MiaAI-Lab/Laguna-S-2.1-DGX-Spark-RTX-6000-PRO
           # recipe; FlashInfer #2093/#3294, vLLM #41865/#44305). ROOT CAUSE of the
           # boot wedge: the stock image ships flashinfer-python 0.6.13 ALONE, with NO
@@ -148,6 +148,7 @@ spec:
                 --gpu-memory-utilization=0.85 \
                 --max-model-len=131072 \
                 --moe-backend=marlin \
+                --kernel-config '{"enable_cutedsl_warmup": false, "enable_flashinfer_autotune": false}' \
                 --speculative-config '{"model":"poolside/Laguna-S-2.1-DFlash-NVFP4","num_speculative_tokens":7,"method":"dflash"}' \
                 --max-num-seqs=4 \
                 --max-num-batched-tokens=8192 \
