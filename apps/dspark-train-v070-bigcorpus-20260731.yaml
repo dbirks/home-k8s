@@ -33,12 +33,12 @@ data:
       trust_remote_code: true
 
     draft:
-      num_layers: 3
+      num_layers: 5     # 2026-08-06: 3 -> 5 drafter layers (user: "5 is better"; matches z-lab/satgeze)
       target_layer_ids: [1, 16, 31, 46, 61]
       draft_attn_impl: eager          # SM120: no flex-attention source patches
 
     data:
-      data_path: /output/data-qwen-v070-bigcorpus
+      data_path: /output/data-qwen-scratch5-20260806
       total_seq_len: 4096
       max_anchors: 192
       num_workers: 4                  # +prefetch to overlap HS-fetch with compute
@@ -70,7 +70,7 @@ data:
       epochs: 1                       # 1 epoch first (~2-3 days); eval at half + decide
       checkpoint_freq: 0.5            # checkpoint every half epoch for early eval
       save_best: false                # no val split -> no best-tracking (skips validation)
-      save_path: /output/checkpoints-qwen-v070-bigcorpus
+      save_path: /output/checkpoints-qwen-scratch5-20260806
       log_freq: 10
 
     dflash:
@@ -114,8 +114,8 @@ data:
 
     MODEL=unsloth/Qwen3.6-27B-NVFP4
     DS=/dataset/combined-v1
-    PREP=/output/data-qwen-v070-bigcorpus
-    CKPT=/output/checkpoints-qwen-v070-bigcorpus
+    PREP=/output/data-qwen-scratch5-20260806
+    CKPT=/output/checkpoints-qwen-scratch5-20260806
     CFG=/scripts/run.yaml
     mkdir -p "$PREP" "$CKPT" /output/logs /dev/shm/hs
 
