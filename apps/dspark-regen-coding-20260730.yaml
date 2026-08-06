@@ -43,7 +43,7 @@ data:
     uv pip install /tmp/spec aiohttp datasets tqdm --system --quiet
 
     MODEL=unsloth/Qwen3.6-27B-NVFP4
-    DRAFT=z-lab/Qwen3.6-27B-DFlash
+    DRAFT=satgeze/Qwen3.6-27B-DSpark   # 2026-08-05: switched DFlash -> satgeze DSpark (accept~5.4, ~2.5x, vLLM>=0.25)
     DS=/dataset/onpolicy-coding-v1
     mkdir -p "$DS" /output/logs
 
@@ -54,7 +54,7 @@ data:
         --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
         --no-enable-prefix-caching --max-num-seqs 32 \
         --max-num-batched-tokens 32768 \
-        --speculative-config "{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":15}" \
+        --speculative-config "{\"method\":\"dspark\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":15}" \
         > /output/logs/regen_coding_vllm.log 2>&1 &
     VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
     for i in $(seq 1 240); do
