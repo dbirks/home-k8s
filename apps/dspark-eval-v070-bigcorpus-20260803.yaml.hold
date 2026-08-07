@@ -1,7 +1,9 @@
-# Real-vLLM acceptance eval of the trained DSpark drafter (big-corpus 1-epoch run).
-# Serves target Qwen3.6-27B + our checkpoint via spec-decode, runs held-out coding
-# (heavy) + general prompts at temp 0, and reads vLLM's real "acceptance length"
-# from the serve log. Answers: did 9x the data beat the 1.66 baseline?
+# Real-vLLM eval of the trained DSpark drafter (from-scratch 3-layer big-corpus run).
+# Serves target Qwen3.6-27B-NVFP4 + our checkpoint via spec-decode, runs held-out
+# coding (heavy) + general prompts at temp 0, and reports BOTH:
+#   (1) real acceptance length (vLLM spec_decode counters) vs the 1.66 baseline, and
+#   (2) end-to-end single-stream tok/s speedup = drafter ON vs OFF (the real payoff).
+# Sequential (max-num-seqs 1, enforce-eager) so tok/s reflects clean decode latency.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -39,72 +41,97 @@ data:
     set -uo pipefail
     export HF_HOME=/data; export HF_HUB_ENABLE_HF_TRANSFER=1
     MODEL=unsloth/Qwen3.6-27B-NVFP4
-    # Auto-select the newest real checkpoint from the from-scratch 3-layer run
-    # (dirs are epoch0_step<N>; the final = highest step). Falls back clearly if none.
+    # Auto-select the newest real checkpoint from the from-scratch 3-layer run.
     CKPTDIR=/output/checkpoints-qwen-scratch5-20260806
     CKPT=$(ls -1dt "$CKPTDIR"/epoch*_step*/ 2>/dev/null | head -1 | sed 's#/$##')
-    LOG=/output/logs/eval_v070_serve.log
     mkdir -p /output/logs
-    echo "=== [$(date)] serve target + TRAINED dspark drafter (spec-decode k=15) ==="
     echo "auto-selected checkpoint: ${CKPT:-<none found>}"
     [ -n "$CKPT" ] && [ -f "$CKPT/config.json" ] || { echo "FATAL: no usable checkpoint under $CKPTDIR"; ls -la "$CKPTDIR" 2>/dev/null; exit 1; }
-    # dspark is-a dflash; vLLM serves it via the dflash spec-decode path.
-    vllm serve "$MODEL" --host 127.0.0.1 --port 8001 \
-      --gpu-memory-utilization 0.90 --max-model-len 8192 --dtype bfloat16 \
-      --trust-remote-code --kv-cache-dtype fp8_e4m3 \
+
+    COMMON="--host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.90 --max-model-len 8192 \
+      --dtype bfloat16 --trust-remote-code --kv-cache-dtype fp8_e4m3 \
       --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
-      --no-enable-prefix-caching --max-num-seqs 1 --enforce-eager \
+      --no-enable-prefix-caching --max-num-seqs 1 --enforce-eager"
+
+    wait_health() { # $1=pid $2=log
+      for i in $(seq 1 300); do
+        curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && { echo "  healthy after $((i*10))s"; return 0; }
+        kill -0 "$1" 2>/dev/null || { echo "  vLLM died:"; tail -50 "$2"; return 1; }
+        sleep 10
+      done
+      echo "  serve timeout"; tail -40 "$2"; return 1
+    }
+
+    # ---------- PASS 1: drafter ON (spec-decode) ----------
+    echo "=== [$(date)] PASS 1 — serve WITH trained dspark drafter (k=15) ==="
+    vllm serve "$MODEL" $COMMON \
       --speculative-config "{\"method\":\"dspark\",\"model\":\"$CKPT\",\"num_speculative_tokens\":15}" \
-      > "$LOG" 2>&1 &
-    VP=$!; trap 'kill $VP 2>/dev/null' EXIT
-    for i in $(seq 1 300); do
-      curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && { echo "healthy after $((i*10))s"; break; }
-      kill -0 $VP 2>/dev/null || { echo "vLLM died loading the drafter:"; tail -50 "$LOG"; exit 1; }
-      [ "$i" -eq 300 ] && { echo "serve timeout"; tail -40 "$LOG"; exit 1; }
-      sleep 10
-    done
-    echo "=== [$(date)] running prompts (temp 0, greedy) — coding then general ==="
+      > /output/logs/eval_v070_serve_on.log 2>&1 &
+    VP=$!; wait_health $VP /output/logs/eval_v070_serve_on.log || { kill $VP 2>/dev/null; exit 1; }
+    MODE=on python3 /scripts/bench.py 2>&1 | tee /output/logs/eval_v070_on.log
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null; sleep 5
+
+    # ---------- PASS 2: drafter OFF (baseline decode) ----------
+    echo "=== [$(date)] PASS 2 — serve WITHOUT drafter (baseline tok/s) ==="
+    vllm serve "$MODEL" $COMMON \
+      > /output/logs/eval_v070_serve_off.log 2>&1 &
+    VP=$!; wait_health $VP /output/logs/eval_v070_serve_off.log || { kill $VP 2>/dev/null; exit 1; }
+    MODE=off python3 /scripts/bench.py 2>&1 | tee /output/logs/eval_v070_off.log
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null
+
+    # ---------- speedup summary ----------
+    echo "=== [$(date)] SPEEDUP SUMMARY (drafter ON vs OFF) ==="
     python3 - <<'PY' 2>&1 | tee /output/logs/eval_v070_result.log
-    import json, urllib.request, time
+    import json
+    def load(m):
+        try: return json.load(open(f"/output/logs/toks_{m}.json"))
+        except Exception: return None
+    on, off = load("on"), load("off")
+    print("=== FROM-SCRATCH 3-LAYER DSPARK — REAL vLLM RESULTS (temp 0, single-stream) ===")
+    if on:
+        print(f"accept_len  coding={on['al_code']:.3f}  general={on['al_gen']:.3f}   (baseline 1.66)")
+        print(f"tok/s ON    coding={on['tps_code']:.1f}  general={on['tps_gen']:.1f}")
+    if off:
+        print(f"tok/s OFF   coding={off['tps_code']:.1f}  general={off['tps_gen']:.1f}")
+    if on and off and off['tps_code'] and off['tps_gen']:
+        print(f"SPEEDUP     coding={on['tps_code']/off['tps_code']:.2f}x  general={on['tps_gen']/off['tps_gen']:.2f}x")
+    PY
+    echo "=== [$(date)] eval done ==="
+  bench.py: |
+    import json, os, time, urllib.request
     URL="http://127.0.0.1:8001/v1/chat/completions"; MODEL="unsloth/Qwen3.6-27B-NVFP4"
+    MODE=os.environ.get("MODE","on")
     def metrics():
-        try:
-            m=urllib.request.urlopen("http://127.0.0.1:8001/metrics",timeout=10).read().decode()
-        except Exception: return (0,0,0)
-        d=a=e=0
+        try: m=urllib.request.urlopen("http://127.0.0.1:8001/metrics",timeout=10).read().decode()
+        except Exception: return (0,0)
+        d=a=0
         for line in m.splitlines():
             if line.startswith("vllm:spec_decode_num_draft_tokens_total"): d=float(line.split()[-1])
             elif line.startswith("vllm:spec_decode_num_accepted_tokens_total"): a=float(line.split()[-1])
-            elif line.startswith("vllm:spec_decode_num_emitted_tokens_total"): e=float(line.split()[-1])
-        return (d,a,e)
+        return (d,a)
     def run(cat, prompts):
-        d0,a0,e0=metrics()
+        d0,a0=metrics(); toks=0; t0=time.time()
         for p in prompts:
             body=json.dumps({"model":MODEL,"messages":[{"role":"user","content":p}],
                              "max_tokens":400,"temperature":0}).encode()
             req=urllib.request.Request(URL,data=body,headers={"Content-Type":"application/json"})
-            try: urllib.request.urlopen(req,timeout=300).read()
-            except Exception as ex: print("  req err:",ex)
-        d1,a1,e1=metrics()
+            try:
+                r=json.loads(urllib.request.urlopen(req,timeout=300).read())
+                toks += r.get("usage",{}).get("completion_tokens",0)
+            except Exception as ex: print("  req err:",str(ex)[:160])
+        dt=time.time()-t0; d1,a1=metrics()
         dd,da=d1-d0,a1-a0
-        k=15
-        # accepted per proposal round; accept_len = 1 (always-accepted) + accepted/rounds
-        rounds=dd/k if k else 0
-        acc_len = 1 + (da/rounds) if rounds else float('nan')
-        acc_rate = (da/dd) if dd else float('nan')
-        print(f"  [{cat}] draft={int(dd)} accepted={int(da)} accept_rate={acc_rate:.3f} accept_len={acc_len:.3f}")
-        return acc_len
+        al = 1 + (da/(dd/15)) if dd else float('nan')   # k=15 draft tokens per round
+        tps = toks/dt if dt else 0.0
+        print(f"  [{cat}] mode={MODE} tokens={toks} time={dt:.1f}s tok/s={tps:.1f} accept_len={al:.3f}")
+        return tps, al
     prompts=[json.loads(l) for l in open("/scripts/prompts.jsonl") if l.strip()]
     coding=[x["p"] for x in prompts if x["cat"]=="coding"]
     general=[x["p"] for x in prompts if x["cat"]=="general"]
-    print("=== REAL vLLM ACCEPT_LEN (temp 0) — trained big-corpus dspark vs 1.66 baseline ===")
-    cl=run("coding", coding)
-    gl=run("general", general)
-    print(f"=== SUMMARY: coding={cl:.3f}  general={gl:.3f}  (baseline was 1.66) ===")
-    PY
-    echo "=== [$(date)] eval done. Also grep serve log for vLLM's own acceptance length: ==="
-    grep -aiE "acceptance length|acceptance rate|Draft acceptance" "$LOG" | tail -5
-    kill $VP 2>/dev/null || true; trap - EXIT
+    tps_code,al_code=run("coding",coding)
+    tps_gen,al_gen=run("general",general)
+    json.dump({"tps_code":tps_code,"tps_gen":tps_gen,"al_code":al_code,"al_gen":al_gen},
+              open(f"/output/logs/toks_{MODE}.json","w"))
 ---
 apiVersion: batch/v1
 kind: Job
