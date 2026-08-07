@@ -1,0 +1,98 @@
+# TensorBoard — one long-running server that shows EVERY training run in one UI.
+#
+# Model: a single shared `tb-logs` PVC mounted at /logs here AND in each training
+# job. TensorBoard walks /logs recursively — every subdir with tfevents becomes a
+# selectable "run", and nested dirs render as `project/run`. So new runs/projects
+# appear automatically (5s reload) with NO restart and NO --logdir_spec:
+#
+#   /logs/<project>/<run_name>/events.out.tfevents...   <- SummaryWriter writes here
+#   e.g. /logs/dspark-drafter/scratch3-20260806/
+#
+# A training job opts in by (a) mounting `tb-logs` at /logs and (b) setting the
+# speculators `logging:` block  ->  logger: tensorboard, log_dir: /logs/<project>,
+# run_name: <run>  (SummaryWriter(log_dir = log_dir/run_name)).
+#
+# RWO is fine: on our single node multiple pods share one local-path RWO PVC
+# (RWO is node-scoped). Do NOT switch this to ReadWriteOncePod — that blocks it.
+# No GPU / no nvidia runtimeClass — TensorBoard is CPU-only.
+#
+# Reachable only over the tailnet as tensorboard.<tailnet>.ts.net (auto Let's
+# Encrypt cert, never public) — same pattern as apps/vllm-tailscale-ingress.yaml.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: tb-logs, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]          # node-scoped; multiple same-node pods share it
+  storageClassName: local-path          # NVMe — event files are tiny + read often
+  resources: { requests: { storage: 20Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: tensorboard, namespace: default }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }          # RWO PVC — never two TB pods at once
+  selector: { matchLabels: { app: tensorboard } }
+  template:
+    metadata: { labels: { app: tensorboard } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: tensorboard
+          image: python:3.12-slim
+          # No maintained standalone TB image exists; pip-install at start is the
+          # documented best practice. exec so TB is PID 1 (clean SIGTERM handling).
+          command: ["/bin/sh","-ec"]
+          args:
+            - |
+              pip install --no-cache-dir -q tensorboard
+              exec tensorboard \
+                --logdir /logs \
+                --host 0.0.0.0 \
+                --port 6006 \
+                --reload_interval 5 \
+                --reload_multifile true
+          ports: [{ name: http, containerPort: 6006 }]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }     # scalars-only stays small; bump to 2Gi if we log histograms/images
+          readinessProbe:
+            httpGet: { path: /, port: 6006 }
+            initialDelaySeconds: 30                # allow the pip install to finish
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /, port: 6006 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          volumeMounts:
+            - { name: logs, mountPath: /logs }
+      volumes:
+        - name: logs
+          persistentVolumeClaim: { claimName: tb-logs }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: tensorboard, namespace: default }
+spec:
+  selector: { app: tensorboard }
+  ports: [{ name: http, port: 80, targetPort: 6006 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tensorboard-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - tensorboard
+  rules:
+    - host: tensorboard
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: tensorboard, port: { number: 80 } } }
