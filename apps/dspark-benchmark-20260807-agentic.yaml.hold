@@ -1,0 +1,201 @@
+# AGENTIC accept-length eval: our from-scratch 3-layer DSpark drafter on REAL
+# multi-turn DeepSWE trajectories (not toy single-turn prompts).
+#
+# The gap in every prior benchmark: they fire static one-shot CODING/GENERAL
+# prompts. This one REPLAYS the 1110 recorded mini-swe-agent trajectories already
+# on the PVC (/output/deepswe-full-data/deepswe-all.jsonl — system/user/assistant/
+# tool turns, long tool outputs + diffs + code). For each, we take a real prefix
+# ending just before an assistant turn and let the verifier greedily continue at
+# temp 0, reading spec_decode counters -> accept_len on genuine agentic context.
+# This is the "how does it behave on DeepSWE-type problems" number.
+#
+# Serve half is identical to dspark-benchmark-20260807-scratch3 (proven v0.25.1,
+# NVFP4 target + our dspark k=15, prefix-caching off). Auto-selects newest ckpt.
+# NOTE: tool-role turns are replayed as `user` observations for chat-template
+# robustness (mini-swe-agent models tool output as an observation anyway).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-benchmark-20260807-agentic-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    mkdir -p /output/logs
+
+    CKPTDIR=/output/checkpoints-qwen-scratch5-20260806
+    CKPT=$(ls -1dt "$CKPTDIR"/epoch*_step*/ 2>/dev/null | head -1 | sed 's#/$##')
+    echo "auto-selected checkpoint: ${CKPT:-<none found>}"
+    [ -n "$CKPT" ] && [ -f "$CKPT/config.json" ] || { echo "FATAL: no usable checkpoint under $CKPTDIR"; ls -la "$CKPTDIR" 2>/dev/null; exit 1; }
+
+    DATA=/output/deepswe-full-data/deepswe-all.jsonl
+    [ -s "$DATA" ] || { echo "FATAL: agentic trajectories not found at $DATA"; ls -la /output/deepswe-full-data 2>/dev/null; exit 1; }
+
+    echo "=== [$(date)] Starting vLLM (NVFP4 target + our dspark drafter, k=15) ==="
+    vllm serve unsloth/Qwen3.6-27B-NVFP4 \
+        --host 0.0.0.0 --port 8000 \
+        --served-model-name main qwen27 \
+        --max-model-len 16384 \
+        --dtype bfloat16 \
+        --gpu-memory-utilization 0.85 \
+        --max-num-seqs 16 \
+        --kv-cache-dtype fp8_e4m3 \
+        --mamba-cache-dtype float16 \
+        --mamba-ssm-cache-dtype float16 \
+        --no-enable-prefix-caching \
+        --trust-remote-code \
+        --enforce-eager \
+        --speculative-config "{\"method\":\"dspark\",\"model\":\"$CKPT\",\"num_speculative_tokens\":15}" \
+        > /output/logs/bench_agentic_serve.log 2>&1 &
+    VLLM_PID=$!
+    trap "kill $VLLM_PID 2>/dev/null; wait $VLLM_PID 2>/dev/null" EXIT
+
+    echo "=== Waiting for vLLM /health (up to 30 min) ==="
+    for i in $(seq 1 180); do
+        if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+            echo "[$(date)] vLLM healthy after $((i * 10))s"; break
+        fi
+        if ! kill -0 $VLLM_PID 2>/dev/null; then
+            echo "ERROR: vLLM died. Full log:"; cat /output/logs/bench_agentic_serve.log; exit 1
+        fi
+        [ "$i" -eq 180 ] && { echo "ERROR: vLLM timeout 30 min"; tail -60 /output/logs/bench_agentic_serve.log; exit 1; }
+        sleep 10
+    done
+
+    cat > /tmp/bench.py << 'PYEOF'
+    import concurrent.futures, json, re, time, urllib.request, random
+
+    DATA = "/output/deepswe-full-data/deepswe-all.jsonl"
+    CAP = 200            # number of real multi-turn prefixes to replay
+    MAX_PER_CONV = 3     # prefixes sampled per trajectory
+    CTX_CHAR_CAP = 48000 # ~fit the 16k context window (chars/4 ~ tokens)
+
+    convs = []
+    for line in open(DATA):
+        line = line.strip()
+        if not line: continue
+        try: convs.append(json.loads(line)["conversations"])
+        except Exception: pass
+    random.seed(0); random.shuffle(convs)
+    print(f"loaded {len(convs)} trajectories from {DATA}")
+
+    def norm(m):
+        # chat-template robustness: replay tool output as a user observation
+        role = m.get("role","user")
+        if role == "tool": role = "user"
+        return {"role": role, "content": m.get("content","")}
+
+    def build_prefixes():
+        out = []
+        for c in convs:
+            asst_idx = [i for i,m in enumerate(c) if m.get("role")=="assistant" and i >= 2]
+            for i in asst_idx[:MAX_PER_CONV]:
+                hist = [norm(m) for m in c[:i]]
+                if sum(len(m["content"]) for m in hist) > CTX_CHAR_CAP:
+                    continue
+                out.append(hist)
+                if len(out) >= CAP: return out
+        return out
+
+    def send_one(msgs):
+        body = json.dumps({"model":"main","messages":msgs,
+                           "max_tokens":256,"temperature":0.0}).encode()
+        req = urllib.request.Request("http://localhost:8000/v1/chat/completions",
+                                     data=body, headers={"Content-Type":"application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                resp.read(); return True
+        except Exception as e:
+            print("request failed:", str(e)[:200]); return False
+
+    def counters():
+        with urllib.request.urlopen("http://localhost:8000/metrics", timeout=30) as resp:
+            lines = [l for l in resp.read().decode().splitlines() if "spec_decode" in l and not l.startswith("#")]
+        def mv(sub):
+            tot=0.0; found=False
+            for l in lines:
+                if sub in l:
+                    m=re.search(r"\s+([0-9.eE+-]+)\s*$", l)
+                    if m: tot+=float(m.group(1)); found=True
+            return tot if found else 0.0
+        return mv("num_accepted_tokens_total"), mv("num_drafts_total")
+
+    tasks = build_prefixes()
+    print(f"replaying {len(tasks)} real multi-turn prefixes (concurrency 4)")
+    a0,d0 = counters()
+    t0=time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:  # long ctx -> keep low
+        ok = sum(list(ex.map(send_one, tasks)))
+    time.sleep(3)
+    a1,d1 = counters()
+    dd = d1-d0
+    al = 1 + (a1-a0)/dd if dd>0 else float('nan')
+    print(f"\n=== AGENTIC RESULT (from-scratch 3-layer, real DeepSWE trajectories) ===")
+    print(f"ok={ok}/{len(tasks)} in {time.time()-t0:.1f}s | drafts={dd:.0f} accepted={a1-a0:.0f}")
+    print(f"AGENTIC accept_len = {al:.4f}")
+    print("baselines: from-scratch-32k=1.66  satgeze-offtheshelf~5.4 (5-layer, different league)")
+    PYEOF
+
+    python3 /tmp/bench.py 2>&1 | tee /output/logs/bench_results_agentic.txt
+    echo "=== [$(date)] Agentic benchmark complete ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-benchmark-20260807-agentic
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: bench
+          image: vllm/vllm-openai:v0.25.1
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "2"
+              memory: 16Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-benchmark-20260807-agentic-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
