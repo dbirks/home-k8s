@@ -43,8 +43,11 @@ data:
     MODEL=unsloth/Qwen3.6-27B-NVFP4
     # Auto-select the newest real checkpoint from the from-scratch 3-layer run.
     CKPTDIR=/output/checkpoints-qwen-scratch5-20260806
-    CKPT=$(ls -1dt "$CKPTDIR"/epoch*_step*/ 2>/dev/null | head -1 | sed 's#/$##')
     mkdir -p /output/logs
+    CKPT=""
+    for c in "$CKPTDIR/checkpoint_best" "$CKPTDIR/0" "$CKPTDIR"/epoch*_end "$CKPTDIR"/epoch*_step*; do
+      [ -f "$c/config.json" ] && { CKPT=$(readlink -f "$c"); break; }
+    done
     echo "auto-selected checkpoint: ${CKPT:-<none found>}"
     [ -n "$CKPT" ] && [ -f "$CKPT/config.json" ] || { echo "FATAL: no usable checkpoint under $CKPTDIR"; ls -la "$CKPTDIR" 2>/dev/null; exit 1; }
 

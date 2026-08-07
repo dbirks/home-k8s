@@ -23,7 +23,10 @@ data:
     mkdir -p /output/logs
 
     CKPTDIR=/output/checkpoints-qwen-scratch5-20260806
-    CKPT=$(ls -1dt "$CKPTDIR"/epoch*_step*/ 2>/dev/null | head -1 | sed 's#/$##')
+    CKPT=""
+    for c in "$CKPTDIR/checkpoint_best" "$CKPTDIR/0" "$CKPTDIR"/epoch*_end "$CKPTDIR"/epoch*_step*; do
+      [ -f "$c/config.json" ] && { CKPT=$(readlink -f "$c"); break; }
+    done
     echo "auto-selected checkpoint: ${CKPT:-<none found>}"
     [ -n "$CKPT" ] && [ -f "$CKPT/config.json" ] || { echo "FATAL: no usable checkpoint under $CKPTDIR"; ls -la "$CKPTDIR" 2>/dev/null; exit 1; }
 
