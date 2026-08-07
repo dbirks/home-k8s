@@ -1,0 +1,23 @@
+apiVersion: v1
+data:
+    password: ENC[AES256_GCM,data:gAaZMfCYl8swMKfbyMhEhFfvvYO8aENEgRImFO8oHQQTm9L4PgSxGw==,iv:5WuT1ZccvZLUFdqDa24+NxODo7scQ+J21HTqaDtA0O0=,tag:w12n/VWH7uPmtptTWI8bRA==,type:str]
+    username: ENC[AES256_GCM,data:b6LniMnxuOVk0/0miCMVpR5QjYs=,iv:YZ5etPgO5o8JpWYGNXQ7gUuN788uCMOlf+BuDn3N2qo=,tag:e4qtZD4TfpZCUrAtoQ5sKg==,type:str]
+kind: Secret
+metadata:
+    name: forgejo-admin
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBuVmNRQm5NUm9ocDVha3FJ
+            ZlZ6QjlIL3pCeEZOOWJ4aGRNK2ZKRG96eVg0Cml2Nk5mSk9ibkpGaE9UV0hSTHBV
+            TWV0bHZBL25iSGZDdUNUamJtRHpobnMKLS0tIDgvc3lROS8xUUpsRnBOTDJwcEJo
+            U2lySlh6cGRwQkFJVEg1WTMxLzdDV1EKKgkakEBCxGOg4x2nPabNSLJ3kIbVcYqa
+            wygX/96rZehZqSxQhndSuC19Y6RKHjVTXiLcZRPRec3YXHuldHV+fA==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-08-07T17:46:06Z"
+    mac: ENC[AES256_GCM,data:cUaBcgV79KPTcOuxq3SBPt2IaBUjhdLSZvy3yhInW85Mkqz3aNuzNjS6f+nmmiDyeOn0CHtc/+Eiy2XZr5RU8/IXJQTSsoypL3XWcGKe4sGG5prx48Lt6d9jN1p8b7vjCxBqMqcrjQY354g7jfKmNkujbdk1p/h1Df9NN5vGR6Y=,iv:xXAJE2zxVEOEHoVpbGfNxf7N2fd0RGxetGFxN4tQRoE=,tag:weCgcAqNEi1qreMGbG/DrA==,type:str]
+    version: 3.13.0

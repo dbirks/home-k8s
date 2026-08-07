@@ -1,0 +1,81 @@
+# Forgejo — self-hosted Git forge (Gitea fork).
+#
+# Official chart is OCI-only (oci://code.forgejo.org/forgejo-helm/forgejo), so this
+# uses an OCIRepository source + HelmRelease chartRef (helm-controller v1.6.2 supports
+# it; cross-namespace refs are enabled on this cluster). API v1 per Flux v2.8+ rule.
+#
+# Lean single-node config: chart v17 has NO bundled HA Postgres/Redis — empty
+# database config = built-in SQLite on the PVC, replicaCount 1, no cache cluster.
+# Admin creds come from the SOPS-encrypted `forgejo-admin` Secret (apps/forgejo-admin.enc.yaml).
+# Git over HTTP(S) works via the ingress; SSH stays ClusterIP for now (expose via
+# MetalLB later if wanted). Reachable at forgejo.hoam.lan (private ingress).
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: forgejo
+  namespace: flux-system
+spec:
+  interval: 12h
+  url: oci://code.forgejo.org/forgejo-helm/forgejo
+  ref:
+    # Chart version = OCI tag. Latest: https://code.forgejo.org/forgejo-helm/forgejo-helm
+    tag: "17.1.4"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: forgejo
+  namespace: default
+spec:
+  interval: 30m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  chartRef:
+    kind: OCIRepository
+    name: forgejo
+    namespace: flux-system
+  # Default values:
+  # https://code.forgejo.org/forgejo-helm/forgejo-helm/src/branch/main/values.yaml
+  values:
+    replicaCount: 1
+    strategy:
+      type: Recreate          # RWO PVC — never two pods at once
+
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: local-path   # NVMe
+
+    service:
+      ssh:
+        type: ClusterIP          # HTTP(S) git via ingress; SSH in-cluster only for now
+
+    ingress:
+      enabled: true
+      className: private
+      hosts:
+        - host: forgejo.hoam.lan
+          paths:
+            - path: /
+              pathType: Prefix
+
+    gitea:
+      admin:
+        existingSecret: forgejo-admin   # keys: username, password (SOPS-encrypted)
+        email: admin@hoam.lan
+        passwordMode: keepUpdated
+      config:
+        server:
+          DOMAIN: forgejo.hoam.lan
+          ROOT_URL: http://forgejo.hoam.lan/
+        service:
+          DISABLE_REGISTRATION: true    # private instance — admin creates users
+
+    # Skip the chart's connection-test pod
+    test:
+      enabled: false
