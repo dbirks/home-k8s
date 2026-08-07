@@ -7,8 +7,11 @@
 # Lean single-node config: chart v17 has NO bundled HA Postgres/Redis — empty
 # database config = built-in SQLite on the PVC, replicaCount 1, no cache cluster.
 # Admin creds come from the SOPS-encrypted `forgejo-admin` Secret (apps/forgejo-admin.enc.yaml).
-# Git over HTTP(S) works via the ingress; SSH stays ClusterIP for now (expose via
-# MetalLB later if wanted). Reachable at forgejo.hoam.lan (private ingress).
+#
+# TAILSCALE-ONLY: no hoam.lan / private ingress. Reachable only over the tailnet as
+# forgejo.beluga-wyvern.ts.net (auto Let's Encrypt HTTPS, never public) via the
+# tailscale Ingress below — same pattern as apps/vllm-tailscale-ingress.yaml. Git
+# over HTTPS works through it; SSH stays ClusterIP for now (expose via MetalLB later).
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
@@ -56,13 +59,7 @@ spec:
         type: ClusterIP          # HTTP(S) git via ingress; SSH in-cluster only for now
 
     ingress:
-      enabled: true
-      className: private
-      hosts:
-        - host: forgejo.hoam.lan
-          paths:
-            - path: /
-              pathType: Prefix
+      enabled: false          # Tailscale-only — see the tailscale Ingress at the bottom
 
     gitea:
       admin:
@@ -71,11 +68,36 @@ spec:
         passwordMode: keepUpdated
       config:
         server:
-          DOMAIN: forgejo.hoam.lan
-          ROOT_URL: http://forgejo.hoam.lan/
+          DOMAIN: forgejo.beluga-wyvern.ts.net
+          ROOT_URL: https://forgejo.beluga-wyvern.ts.net/
         service:
           DISABLE_REGISTRATION: true    # private instance — admin creates users
 
     # Skip the chart's connection-test pod
     test:
       enabled: false
+---
+# Tailscale Ingress — reachable only over the tailnet as forgejo.<tailnet>.ts.net
+# (auto-renewing Let's Encrypt cert, never public). Backend is the chart's
+# forgejo-http Service on port 3000.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: forgejo-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - forgejo
+  rules:
+    - host: forgejo
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: forgejo-http
+                port:
+                  number: 3000
