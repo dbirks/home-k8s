@@ -39,11 +39,15 @@ data:
     set -uo pipefail
     export HF_HOME=/data; export HF_HUB_ENABLE_HF_TRANSFER=1
     MODEL=unsloth/Qwen3.6-27B-NVFP4
-    CKPT=/output/checkpoints-qwen-v070-bigcorpus/0
+    # Auto-select the newest real checkpoint from the from-scratch 3-layer run
+    # (dirs are epoch0_step<N>; the final = highest step). Falls back clearly if none.
+    CKPTDIR=/output/checkpoints-qwen-scratch5-20260806
+    CKPT=$(ls -1dt "$CKPTDIR"/epoch*_step*/ 2>/dev/null | head -1 | sed 's#/$##')
     LOG=/output/logs/eval_v070_serve.log
     mkdir -p /output/logs
     echo "=== [$(date)] serve target + TRAINED dspark drafter (spec-decode k=15) ==="
-    [ -f "$CKPT/config.json" ] || { echo "FATAL: checkpoint missing at $CKPT"; exit 1; }
+    echo "auto-selected checkpoint: ${CKPT:-<none found>}"
+    [ -n "$CKPT" ] && [ -f "$CKPT/config.json" ] || { echo "FATAL: no usable checkpoint under $CKPTDIR"; ls -la "$CKPTDIR" 2>/dev/null; exit 1; }
     # dspark is-a dflash; vLLM serves it via the dflash spec-decode path.
     vllm serve "$MODEL" --host 127.0.0.1 --port 8001 \
       --gpu-memory-utilization 0.90 --max-model-len 8192 --dtype bfloat16 \
