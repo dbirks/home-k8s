@@ -20,7 +20,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: deepseek-v4, namespace: default }
 spec:
-  replicas: 1
+  replicas: 0   # PARKED: blocked on RAM/NVMe-swap — first-boot W2 transform OOMs the 46Gi node
   strategy: { type: Recreate }
   selector: { matchLabels: { app: deepseek-v4 } }
   template:
@@ -81,7 +81,7 @@ spec:
             - { name: HF_HUB_OFFLINE, value: "1" }
           ports: [{ containerPort: 8000 }]
           resources:
-            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 44Gi }
+            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 30Gi }   # was 44Gi on a 46Gi node → hung the node; keep well under node RAM
             requests: { nvidia.com/gpu: 1, cpu: "6", memory: 30Gi }
           readinessProbe:
             httpGet: { path: /health, port: 8000 }
