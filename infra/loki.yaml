@@ -95,6 +95,14 @@ spec:
     backend:
       replicas: 0
 
+    # Disable the rules-sync sidecar (kiwigrid/k8s-sidecar) — we don't use Loki's
+    # ruler, and the cached image layer on this amd64 node is the wrong arch
+    # ("exec format error" -> 2500+ CrashLoopBackOff restarts). Removing it makes
+    # the loki-0 pod go 1/1 Ready.
+    sidecar:
+      rules:
+        enabled: false
+
     # Disable bundled extras we don't need
     minio:
       enabled: false
