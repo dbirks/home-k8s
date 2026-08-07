@@ -1,0 +1,199 @@
+# CPU-only corpus assembler for the "agentic-coding-v1" corpus — a coding-agent
+# focused DSpark drafter corpus. Streams already-tokenized {input_ids, loss_mask}
+# sources, dedups by input_ids hash, offset-shuffles, and writes
+# /dataset/agentic-coding-v1/all.jsonl + regen.done so the existing trainer
+# (clean -> all_clean.jsonl -> prepare_data) can consume it unchanged.
+#
+# Sources (order = dedup priority; first-seen wins):
+#   1. agentic     tok_agentic.jsonl                         UPWEIGHT x2 (high-value differentiator, small)
+#   2. coding_regen /dataset/onpolicy-coding-v1/regen_*.jsonl keep ALL (opc-python + typescript)
+#   3. general     sample GENERAL_SAMPLE from tok_avesed_general.jsonl (minority, anti-forgetting)
+#
+# GPU-free: coexists with the running GPU regen. Pure-stdlib (no tokenizer needed —
+# supervised-token tallies come straight from loss_mask). NOT auto-applied.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-corpus-agentic-assemble-20260807-script
+  namespace: default
+data:
+  assemble.py: |
+    #!/usr/bin/env python3
+    """Assemble the agentic-coding-v1 training corpus from tokenized sources.
+
+    - upweight the agentic boundary samples x2 (small, highest-value signal)
+    - keep ALL on-policy coding regen (python + typescript)
+    - add a MODEST general slice (reservoir-sampled) to resist forgetting
+    - dedup by input_ids hash, concat + global offset-shuffle -> all.jsonl + regen.done
+
+    Memory-bounded throughout: sources stream line-by-line; only the general
+    reservoir (GENERAL_SAMPLE rows) and a byte-offset index live in RAM.
+    """
+    import argparse, glob, hashlib, json, os, random
+
+    # ---------------- tunables ----------------
+    AGENTIC_UPWEIGHT = 2     # duplicate each agentic boundary sample this many times
+    GENERAL_SAMPLE = 60000   # rows reservoir-sampled from the general slice
+    MAXLEN = 12288           # hard cap (trainer packs at 4096; keep some slack)
+    SEED = 1337
+    # ------------------------------------------
+
+    def _iter_rows(path):
+        """Stream {input_ids, loss_mask} dicts from a jsonl file (memory-bounded).
+        Rows lacking either key (e.g. regen_*.errors.jsonl) or over MAXLEN are skipped."""
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line: continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if "input_ids" not in r or "loss_mask" not in r: continue
+                if len(r["input_ids"]) > MAXLEN: continue
+                yield {"input_ids": r["input_ids"], "loss_mask": r["loss_mask"]}
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--combined", default="/dataset/agentic-coding-v1")
+        ap.add_argument("--agentic", default="/dataset/agentic-coding-v1/tok_agentic.jsonl")
+        ap.add_argument("--coding-glob", default="/dataset/onpolicy-coding-v1/regen_*.jsonl")
+        ap.add_argument("--general", default="/dataset/combined-v1/tok_avesed_general.jsonl")
+        a = ap.parse_args()
+        rng = random.Random(SEED)
+        C = a.combined
+        comp = {}; suptok = {}; seen = set()
+        out_path = os.path.join(C, "all.jsonl")
+        tmp_path = out_path + ".tmp"
+        offsets = []   # (byte_offset, length) — cheap index for the shuffle pass
+        os.makedirs(C, exist_ok=True)
+
+        def _dedup_new(r):
+            h = hashlib.sha1((",".join(map(str, r["input_ids"]))).encode()).hexdigest()
+            if h in seen: return False
+            seen.add(h); return True
+
+        # ---- Pass 1: stream every source -> tmp (no full-file loads) ----
+        with open(tmp_path, "wb") as out:
+            pos = 0
+            def write_row(r, name):
+                nonlocal pos
+                b = (json.dumps({"input_ids": r["input_ids"],
+                                 "loss_mask": r["loss_mask"]}) + "\n").encode()
+                offsets.append((pos, len(b))); pos += len(b); out.write(b)
+                comp[name] = comp.get(name, 0) + 1
+                suptok[name] = suptok.get(name, 0) + sum(r["loss_mask"])
+
+            # 1) agentic: UPWEIGHT copies. rep 0 dedups; extra copies are intended dups.
+            if os.path.exists(a.agentic):
+                for rep in range(AGENTIC_UPWEIGHT):
+                    for r in _iter_rows(a.agentic):
+                        if rep == 0 and not _dedup_new(r): continue
+                        write_row(r, "agentic")
+                print(f"  agentic: {comp.get('agentic',0)} rows "
+                      f"(x{AGENTIC_UPWEIGHT} of {comp.get('agentic',0)//max(1,AGENTIC_UPWEIGHT)} unique)",
+                      flush=True)
+            else:
+                print(f"  agentic: MISSING {a.agentic} — did the tokenize job finish?", flush=True)
+
+            # 2) on-policy coding regen: keep all (skip *.errors.jsonl explicitly)
+            for f in sorted(glob.glob(a.coding_glob)):
+                if ".errors." in os.path.basename(f): continue
+                k = 0
+                for r in _iter_rows(f):
+                    if _dedup_new(r):
+                        write_row(r, "coding_regen"); k += 1
+                print(f"  coding_regen[{os.path.basename(f)}]: {k} rows", flush=True)
+            print(f"  coding_regen TOTAL: {comp.get('coding_regen',0)} rows", flush=True)
+
+            # 3) general slice: reservoir-sample GENERAL_SAMPLE (bounded memory)
+            if os.path.exists(a.general):
+                reservoir = []; i = 0
+                for r in _iter_rows(a.general):
+                    if len(reservoir) < GENERAL_SAMPLE:
+                        reservoir.append(r)
+                    else:
+                        j = rng.randint(0, i)
+                        if j < GENERAL_SAMPLE: reservoir[j] = r
+                    i += 1
+                for r in reservoir:
+                    if _dedup_new(r): write_row(r, "general")
+                print(f"  general: {comp.get('general',0)} of {i} (reservoir)", flush=True)
+            else:
+                print(f"  general: MISSING {a.general}", flush=True)
+
+        # ---- Pass 2: offset-shuffle tmp -> all.jsonl (only offsets in RAM) ----
+        print("  shuffling via offset index...", flush=True)
+        rng.shuffle(offsets)
+        with open(tmp_path, "rb") as src, open(out_path, "w") as out:
+            for off, ln in offsets:
+                src.seek(off); out.write(src.read(ln).decode())
+        os.remove(tmp_path)
+        open(os.path.join(C, "regen.done"), "w").close()
+
+        print("\n=== FINAL CORPUS COMPOSITION ===", flush=True)
+        tot = sum(comp.values()); tots = sum(suptok.values()) or 1
+        for name in comp:
+            print(f"  {name:16s} {comp[name]:>7d} rows ({100*comp[name]/tot:4.1f}%) | "
+                  f"{suptok[name]/1e6:6.1f}M sup tok ({100*suptok[name]/tots:4.1f}%)")
+        print(f"  {'TOTAL':16s} {tot:>7d} rows | {tots/1e6:.1f}M supervised tokens")
+        print(f"  written: {out_path} (+ regen.done)")
+
+    if __name__ == "__main__":
+        main()
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    mkdir -p /output/logs
+    echo "[$(date)] === assembling agentic-coding-v1 corpus (pure stdlib) ==="
+    python3 /scripts/assemble.py 2>&1 | tee /output/logs/agentic-assemble.log
+    echo "[$(date)] assembly done."
+    sleep 3600
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-corpus-agentic-assemble-20260807
+  namespace: default
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        job-name: dspark-corpus-agentic-assemble-20260807
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: assemble
+          image: python:3.11-slim
+          command: ["/bin/bash", "/scripts/run.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: "4"
+              memory: 6Gi
+            limits:
+              cpu: "16"
+              memory: 24Gi
+          volumeMounts:
+            - name: dataset
+              mountPath: /dataset
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: dspark-dataset-hdd
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-corpus-agentic-assemble-20260807-script

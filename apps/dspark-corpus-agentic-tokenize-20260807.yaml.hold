@@ -1,0 +1,283 @@
+# CPU-only agentic-trajectory tokenizer for the "agentic-coding-v1" corpus.
+# Converts the RAW DeepSWE agentic conversations (system/user/assistant/tool,
+# ~30 assistant turns each) into the trainer's {input_ids, loss_mask} boundary
+# format (prompt=0, assistant-generated=1), matching the regen harness bit-for-bit.
+# GPU-free: coexists with the running GPU regen.
+#
+# Input : /output/deepswe-full-data/deepswe-all.jsonl (1110 conversations)
+# Output: /dataset/agentic-coding-v1/tok_agentic.jsonl
+#
+# tokenize_corpus.py is REUSED VERBATIM from dspark-corpus-tokenize-20260731 —
+# it already normalizes {messages|conversations} and tool/function/observation
+# roles and renders one boundary sample per assistant turn. Only run.sh changed
+# (single input source + new output dir). Assembly is a separate step
+# (dspark-corpus-agentic-assemble-20260807).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-corpus-agentic-tokenize-20260807-script
+  namespace: default
+data:
+  tokenize_corpus.py: |
+    #!/usr/bin/env python3
+    """Tokenize on-policy Qwen3.6-27B conversations -> {input_ids, loss_mask}.
+
+    Boundary convention matches speculators' build_boundary_sample:
+      prompt tokens -> loss_mask 0, assistant-generated tokens -> loss_mask 1.
+    Primary path uses the chat template's return_assistant_tokens_mask (precise,
+    template-authored). Fallback is per-assistant-turn boundary-diff that auto-
+    detects thinking-on vs thinking-stripped data. GPU-free, multiprocessing.
+    """
+    import argparse, glob, hashlib, json, os, sys
+    from multiprocessing import Pool
+
+    TOK = None
+    MAXLEN = 16384
+    IM_END = None
+
+    ROLE_ALIAS = {
+        "human": "user", "user": "user",
+        "gpt": "assistant", "bot": "assistant", "assistant": "assistant",
+        "system": "system",
+        "tool": "tool", "function": "tool", "observation": "tool",
+    }
+
+    def _init(model, maxlen):
+        global TOK, MAXLEN, IM_END
+        from transformers import AutoTokenizer
+        TOK = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+        MAXLEN = maxlen
+        IM_END = TOK.convert_tokens_to_ids("<|im_end|>")
+
+    def _norm(row):
+        """Normalize any source schema -> (messages, tools) or (None, None)."""
+        tools = row.get("tools")
+        if isinstance(tools, str):
+            try: tools = json.loads(tools)
+            except Exception: tools = None
+        if tools is not None and not isinstance(tools, list):
+            try: tools = list(tools)
+            except Exception: tools = None
+        if tools is not None:
+            tools = [dict(t) if not isinstance(t, dict) else t for t in tools] or None
+        raw = row.get("messages")
+        if raw is None: raw = row.get("conversations")
+        if raw is None: return None, None
+        msgs = []
+        for m in raw:
+            if not isinstance(m, dict): return None, None
+            role = m.get("role") or m.get("from")
+            role = ROLE_ALIAS.get(role, role)
+            content = m.get("content")
+            if content is None: content = m.get("value")
+            if isinstance(content, list):
+                parts = []
+                for p in content:
+                    if isinstance(p, dict):
+                        parts.append(p.get("text") or p.get("content") or "")
+                    else:
+                        parts.append(str(p))
+                content = "".join(parts)
+            if content is None: content = ""
+            if role not in ("user", "assistant", "system", "tool"):
+                return None, None
+            msgs.append({"role": role, "content": content})
+        return msgs, tools
+
+    def _prompt_ids(ctx, tools, think):
+        """Tokenized prompt = context + assistant generation prompt.
+        Qwen3.6's gen-prompt auto-opens <think>\\n (think=True) or an empty
+        <think>\\n\\n</think>\\n\\n (think=False)."""
+        kw = dict(tools=tools, add_generation_prompt=True, tokenize=True)
+        try:
+            out = TOK.apply_chat_template(ctx, enable_thinking=think, **kw)
+        except TypeError:
+            out = TOK.apply_chat_template(ctx, **kw)
+        # normalize: transformers returns a BatchEncoding (UserDict, NOT a dict
+        # subclass) with tokenize=True; also handle batched [[...]].
+        if not isinstance(out, list):
+            out = out["input_ids"]
+        if out and isinstance(out[0], list):
+            out = out[0]
+        return list(out)
+
+    def build(row):
+        """Return a LIST of {input_ids, loss_mask} boundary samples (one per
+        assistant turn), matching the harness's build_boundary_sample:
+        prompt_ids (mask 0) + completion_ids (mask 1). Concatenation — no
+        fragile token-prefix diff."""
+        msgs, tools = _norm(row)
+        if not msgs: return None
+        st = row.get("status")
+        if st is not None and str(st).lower() not in (
+                "success", "ok", "1", "true", "none"):
+            return None
+        samples = []
+        for i, m in enumerate(msgs):
+            if m["role"] != "assistant": continue
+            content = m["content"] or ""
+            if not content.strip(): continue
+            has_think = content.lstrip().startswith("<think>")
+            try:
+                # thinking-embedded content -> open <think> in prompt (avoid dup);
+                # thinking-stripped content -> empty think block, answer follows.
+                prompt_ids = _prompt_ids(msgs[:i], tools, True if has_think else False)
+            except Exception:
+                return None
+            body = content
+            if has_think:
+                body = content.lstrip()[len("<think>"):].lstrip("\n")
+            comp_ids = TOK.encode(body, add_special_tokens=False)
+            if IM_END is not None and (not comp_ids or comp_ids[-1] != IM_END):
+                comp_ids = comp_ids + [IM_END]
+            if not comp_ids: continue
+            ids = list(prompt_ids) + list(comp_ids)
+            if len(ids) > MAXLEN: continue
+            mask = [0] * len(prompt_ids) + [1] * len(comp_ids)
+            samples.append({"input_ids": ids, "loss_mask": mask})
+        return samples or None
+
+    def _rows(path):
+        if path.endswith(".parquet"):
+            import pyarrow.parquet as pq
+            for batch in pq.ParquetFile(path).iter_batches(batch_size=512):
+                for r in batch.to_pylist():
+                    yield r
+        else:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try: yield json.loads(line)
+                        except Exception: continue
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--model", required=True)
+        ap.add_argument("--src", required=True, help="glob for input file(s)")
+        ap.add_argument("--out", required=True)
+        ap.add_argument("--maxlen", type=int, default=16384)
+        ap.add_argument("--procs", type=int, default=min(32, os.cpu_count() or 8))
+        ap.add_argument("--seen", default=None, help="path to shared dedup hash file")
+        a = ap.parse_args()
+
+        files = sorted(glob.glob(a.src, recursive=True))
+        if not files:
+            print(f"NO INPUT for {a.src}", flush=True); return
+        seen = set()
+        if a.seen and os.path.exists(a.seen):
+            with open(a.seen) as f:
+                seen = set(l.strip() for l in f if l.strip())
+        kept = dup = skip = 0
+        os.makedirs(os.path.dirname(a.out), exist_ok=True)
+        newh = []
+        with open(a.out, "w") as out, Pool(a.procs, _init, (a.model, a.maxlen)) as pool:
+            def allrows():
+                for fp in files:
+                    for r in _rows(fp): yield r
+            for res in pool.imap_unordered(build, allrows(), chunksize=32):
+                if not res:
+                    skip += 1; continue
+                for s in res:
+                    h = hashlib.sha1(
+                        ",".join(map(str, s["input_ids"])).encode()).hexdigest()
+                    if h in seen:
+                        dup += 1; continue
+                    seen.add(h); newh.append(h)
+                    out.write(json.dumps(s) + "\n")
+                    kept += 1
+                    if kept % 20000 == 0:
+                        print(f"  {a.out}: kept={kept} dup={dup} skip={skip}",
+                              flush=True)
+        if a.seen:
+            with open(a.seen, "a") as f:
+                for h in newh: f.write(h + "\n")
+        print(f"DONE {a.out}: kept={kept} dup={dup} skip={skip}", flush=True)
+
+    if __name__ == "__main__":
+        main()
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    OUT=/dataset/agentic-coding-v1
+    SEEN=$OUT/seen_hashes.txt
+    SRC=/output/deepswe-full-data/deepswe-all.jsonl
+    mkdir -p "$OUT" /output/logs
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+    echo "[$(date)] installing deps..."
+    pip install --quiet --no-cache-dir transformers tokenizers jinja2 huggingface_hub hf_transfer || exit 1
+    echo "[$(date)] warming tokenizer ($MODEL)..."
+    python3 -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('$MODEL', trust_remote_code=True); print('tokenizer ok')" || exit 1
+
+    run() {  # name  glob
+      local name="$1" glob="$2" out="$OUT/tok_${1}.jsonl"
+      if [ -f "$OUT/tok_${1}.done" ]; then echo "[$(date)] SKIP $name (done)"; return; fi
+      echo "[$(date)] === tokenizing $name ==="
+      python3 /scripts/tokenize_corpus.py --model "$MODEL" --src "$glob" \
+        --out "$out" --seen "$SEEN" --procs 10 2>&1 | tee -a /output/logs/agentic-tokenize.log
+      [ -s "$out" ] && touch "$OUT/tok_${1}.done"
+    }
+
+    # single source: the raw DeepSWE agentic trajectories -> tok_agentic.jsonl
+    run agentic "$SRC"
+
+    echo "[$(date)] === tokenization complete — per-source counts ==="
+    for f in "$OUT"/tok_*.jsonl; do printf "  %-40s %s rows\n" "$(basename "$f")" "$(wc -l < "$f")"; done
+    touch "$OUT/tokenize.done"
+    echo "[$(date)] ALL DONE. Combined assembly is a separate step (dspark-corpus-agentic-assemble-20260807)."
+    sleep 3600
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-corpus-agentic-tokenize-20260807
+  namespace: default
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        job-name: dspark-corpus-agentic-tokenize-20260807
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tokenize
+          image: python:3.11-slim
+          command: ["/bin/bash", "/scripts/run.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          resources:
+            requests:
+              cpu: "4"
+              memory: 4Gi
+            limits:
+              cpu: "16"
+              memory: 12Gi
+          volumeMounts:
+            - name: dataset
+              mountPath: /dataset
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: dspark-dataset-hdd
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-corpus-agentic-tokenize-20260807-script

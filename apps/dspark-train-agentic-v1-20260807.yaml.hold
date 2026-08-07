@@ -1,26 +1,27 @@
-# DSpark Qwen3.6-27B — ONLINE block-16 BIG-CORPUS run on speculators v0.7.0.
-# The data-scaling experiment: same proven recipe that gave 1.66, but on the
-# ~546k-row / 327.8M-sup-token combined corpus (vs 32k before) AND ported to
-# v0.7.0's TrainConfig (user chose to run on v0.7.0's rewritten trainer).
+# DSpark Qwen3.6-27B — from-scratch AGENTIC-CODING run (agentic-coding-v1 corpus).
+# The "better data + agentic format" experiment: pure from-scratch (NO DFlash
+# warm-start), on a coding+agentic corpus (1110 real DeepSWE multi-turn tool-calling
+# trajectories x2 + on-policy coding regen + a modest general slice) — testing how
+# far better data pushes a from-scratch drafter, apples-to-apples vs the DFlash-extenders.
 #
-# v0.7.0 diffs handled: trainer is now config-schema driven (run.yaml below);
-# NEW defaults overridden to match the proven recipe -> optimizer muon->adamw,
-# scheduler linear->cosine, loss kl_div->{ce,tv}, attn flex->eager (SM120),
-# total_seq_len 8192->4096. Serve (launch_vllm) + prep (prepare_data) CLIs are
-# unchanged. speculators = PURE UPSTREAM tag v0.7.0 (fork abandoned; RoPE fix
-# now native via mrope_full_head_hack; prep keep_in_memory patched at runtime).
-# D-PACE loss (+~5% accept_len), 1 epoch, no-val (train_data_ratio 1.0), and
-# prefetch+verifier tuning to attack the 82% hidden-state-fetch stall.
+# ⚠️ CRITICAL FIX vs the failed 2026-08-06 run: that run cloned PURE-UPSTREAM
+# speculators v0.7.0, whose Qwen3.6 partial-rotary handling is broken -> the trained
+# drafter served at real accept_len 1.02 (RoPE train/serve mismatch, useless) despite
+# a healthy 1.88 training-val. This run clones the FORK dbirks/speculators branch
+# v0.7.0-qwen3.6 @ c25e90a (latest upstream + the scalar-partial-rotary fix in
+# dflash/core.py + coding presets) — the RoPE-correct lineage that served at 1.66.
+# See [[project_dspark_serve_config_key_bug]] + the RoPE diagnosis.
 #
-# THREE GATES before the multi-day run (train.sh runs them in order, exits on
-# any failure): (1) --dry-run builds the DSpark model + saves a checkpoint;
-# (2) --max-steps 30 smoke validates verifier->hidden-states->trainer end-to-end;
-# (3) full run. WATCH the smoke accept_len/loss before it flows into the full run.
+# GATES: (1) --dry-run builds the model; (2) 20-step smoke validates fork install
+# (incl. the new hs_connectors uv-workspace) + verifier->HS->trainer end-to-end;
+# (3) full run. checkpoint_freq 0.15 gives an EARLY (~15%) checkpoint so we can
+# serve-parity-test it out-of-band (single GPU: pause -> serve -> accept_len -> resume/abort)
+# BEFORE committing the full multi-day run — the gate that would've caught last time.
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: dspark-train-v070-bigcorpus-script
+  name: dspark-train-agentic-v1-script
   namespace: default
 data:
   run.yaml: |
@@ -38,7 +39,7 @@ data:
       draft_attn_impl: eager          # SM120: no flex-attention source patches
 
     data:
-      data_path: /output/data-qwen-scratch5-20260806
+      data_path: /output/data-agentic-v1-20260807
       total_seq_len: 4096     # proven value (data prepped at 4096)
       max_anchors: 192        # proven value
       num_workers: 4                  # +prefetch to overlap HS-fetch with compute
@@ -67,10 +68,10 @@ data:
       scheduler_num_cosine_cycles: 0.5
 
     trainer:
-      epochs: 1                       # 1 epoch first (~2-3 days); eval at half + decide
-      checkpoint_freq: 0.5            # checkpoint every half epoch for early eval
+      epochs: 1                       # 1 epoch first (~2-3 days)
+      checkpoint_freq: 0.15           # EARLY checkpoint (~15%) for the out-of-band serve-parity gate
       save_best: false                # no val split -> no best-tracking (skips validation)
-      save_path: /output/checkpoints-qwen-scratch5-20260806
+      save_path: /output/checkpoints-agentic-v1-20260807
       log_freq: 10
 
     dflash:
@@ -100,22 +101,28 @@ data:
     pip install uv --quiet --root-user-action ignore
     export PATH="/root/.local/bin:$PATH"; hash -r
 
-    # PURE UPSTREAM v0.7.0 (fork abandoned). Partial-rotary handled natively by
-    # v0.7.0's mrope_full_head_hack, so our old RoPE cherry-pick is dropped.
-    git clone --quiet https://github.com/vllm-project/speculators /tmp/spec
-    git -C /tmp/spec checkout --quiet v0.7.0
-    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (upstream tag v0.7.0)"
-    # Runtime patch (not a fork): upstream prepare_data hardcodes keep_in_memory=True
-    # which OOMs at ~546k rows. Safety net in case prep re-runs (arrow usually cached).
-    sed -i 's/keep_in_memory=True/keep_in_memory=False/g' \
-      /tmp/spec/src/speculators/data_generation/preprocessing.py || true
+    # FORK dbirks/speculators branch v0.7.0-qwen3.6 (latest upstream merged + the
+    # Qwen3.6 scalar-partial-rotary RoPE fix in dflash/core.py that pure-upstream
+    # lacks — its absence broke the 2026-08-06 run at serve time, real accept_len 1.02).
+    git clone --quiet --branch v0.7.0-qwen3.6 https://github.com/dbirks/speculators /tmp/spec
+    git -C /tmp/spec checkout --quiet c25e90a
+    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (fork v0.7.0-qwen3.6, RoPE fix)"
+    # abort early if the fork clone is wrong / RoPE fix absent (cheap guard vs a wasted run)
+    grep -q "_select_rotary_emb_class" /tmp/spec/src/speculators/models/dflash/core.py \
+      || { echo "FATAL: RoPE fix (_select_rotary_emb_class) missing — wrong speculators ref?"; exit 1; }
     SCRIPTS=/tmp/spec/scripts
+    # hs_connectors is now an external uv-workspace package (upstream refactor). Install
+    # it FIRST from the local path so speculators' 'hs-connectors' dep resolves locally
+    # (workspace source, NOT PyPI), then speculators itself.
+    uv pip install /tmp/spec/hs_connectors --system --quiet
     uv pip install /tmp/spec hf_transfer aiohttp datasets tqdm --system --quiet
+    python3 -c "import hs_connectors; from hs_connectors import HiddenStatesTransfer" \
+      || { echo "FATAL: hs_connectors import failed after install"; exit 1; }
 
     MODEL=unsloth/Qwen3.6-27B-NVFP4
-    DS=/dataset/combined-v1
-    PREP=/output/data-qwen-scratch5-20260806
-    CKPT=/output/checkpoints-qwen-scratch5-20260806
+    DS=/dataset/agentic-coding-v1
+    PREP=/output/data-agentic-v1-20260807
+    CKPT=/output/checkpoints-agentic-v1-20260807
     CFG=/scripts/run.yaml
     mkdir -p "$PREP" "$CKPT" /output/logs /dev/shm/hs
 
@@ -201,7 +208,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: dspark-train-v070-bigcorpus-20260731
+  name: dspark-train-agentic-v1-20260807
   namespace: default
 spec:
   backoffLimit: 100
@@ -262,7 +269,7 @@ spec:
             claimName: dspark-dataset-hdd
         - name: scripts
           configMap:
-            name: dspark-train-v070-bigcorpus-script
+            name: dspark-train-agentic-v1-script
             defaultMode: 0755
         - name: shm
           emptyDir:
