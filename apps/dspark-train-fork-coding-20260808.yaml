@@ -212,10 +212,8 @@ metadata:
   name: dspark-train-fork-coding-20260808
   namespace: default
 spec:
-  suspend: false         # RESUMED 2026-08-08: serve-parity SOLVED — the step-36954 checkpoint
-                         # serves at accept_len ~1.4 (pos-0 0.32) on vLLM 0.26.0+FLASHINFER
-                         # (0.25.1 mis-served our speculators-0.7.0.dev176 format -> 0%). Finish
-                         # the run; auto-resumes from step 36954. Serve/eval on 0.26.0 henceforth.
+  suspend: true          # briefly re-paused 2026-08-08 to serve-test the ORIGINAL fully-trained
+                         # scratch5 checkpoint on 0.26 (is round-1 even needed?). Resume after.
   backoffLimit: 100
   activeDeadlineSeconds: 345600   # 96h (546k rows x 2 epochs online is long)
   template:
