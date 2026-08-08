@@ -1,0 +1,357 @@
+# CPU-only agentic-trajectory tokenizer for the "agentic-coding-v2" corpus.
+#
+# WHY v2: the v1 corpus was built from the pre-assembled deepswe-all.jsonl, whose
+# assembly kept ONLY the assistant `content` string and dropped `tool_calls` +
+# `reasoning_content`. Since mini-swe-agent assistant turns carry the action in
+# tool_calls (content is usually a one-line preamble or None), v1 was gutted:
+# 3,317 samples / 69,945 supervised tokens, median 20 tok/turn (basically just
+# <|im_end|>). No agentic signal.
+#
+# v2 reads the RAW mini-swe-agent trajectories directly and reconstructs each
+# assistant turn as a proper Qwen3.6 chat message carrying reasoning_content +
+# content + tool_calls, so the SUPERVISED (loss_mask=1) span is the agent's real
+# reasoning + action. Measured profile over a 30-file sample (900 turns):
+#   median 65 / mean 268 / p90 346 supervised tok per turn, 30 turns/file
+#   -> ~66k samples, ~17.7M supervised tokens over 2,204 files (~250x v1).
+#
+# Input : /output/deepswe-local/trajectories/*.traj.json  (2,204 trajectories,
+#         each {"info":..,"messages":[system,user,(assistant,tool)*,exit],..})
+# Output: /dataset/agentic-coding-v2/tok_agentic.jsonl
+#
+# RENDERING APPROACH (verified against unsloth/Qwen3.6-27B-NVFP4 chat template):
+#   - Reconstruct messages: role-alias (drop non-chat roles like 'exit'); parse
+#     each tool_call's function.arguments from a JSON *string* into a *dict*
+#     (the template renders <parameter=..> ONLY when arguments is a mapping —
+#     leaving it a string silently drops all tool args); keep reasoning_content
+#     and content verbatim; tool observations -> role=tool (content).
+#   - Synthesize the single mini-swe-agent `bash` tool schema and pass it as
+#     `tools` (the raw traj stores no tools list). This only affects PROMPT
+#     tokens (mask 0); the supervised completion is identical with/without it.
+#   - Per assistant turn i, build the boundary sample by PREFIX-DIFF:
+#       prompt = apply_chat_template(msgs[:i],   tools, add_generation_prompt=True)
+#       full   = apply_chat_template(msgs[:i+1], tools, add_generation_prompt=False)
+#     The gen-prompt ends with '<|im_start|>assistant\n<think>\n', which is an
+#     exact token prefix of the full render of turn i (Qwen3.6 preserves the
+#     <think> block for every assistant turn here because tool observations have
+#     role 'tool', not 'user', so last_query_index never advances past the task).
+#     completion = full[len(prompt):]  -> reasoning + </think> + content +
+#     <tool_call><function=bash><parameter=command>..</> ..</tool_call><|im_end|>.
+#     loss_mask = [0]*prompt + [1]*completion. Verified prefix_ok on 900/900 turns.
+#   - Sliding-window to MAXLEN: keep the full completion, trim OLDEST context.
+#   - Skip only truly-empty turns (no content AND no tool_calls AND no reasoning).
+#     No exit_status filtering — every step is valid drafter signal even when the
+#     trajectory ended LimitsExceeded.
+#
+# GPU-free: coexists with the running GPU trainer/regen. Assembly is a separate
+# step (dspark-corpus-agentic-v2-assemble-20260808). NOT auto-applied (.hold).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-corpus-agentic-v2-tokenize-20260808-script
+  namespace: default
+data:
+  tokenize_corpus.py: |
+    #!/usr/bin/env python3
+    """Tokenize RAW mini-swe-agent trajectories -> {input_ids, loss_mask}.
+
+    Boundary convention matches speculators' build_boundary_sample:
+      prompt tokens -> loss_mask 0, assistant-generated tokens -> loss_mask 1.
+
+    One .traj.json = one trajectory (nested {"messages":[...]}). Each ASSISTANT
+    turn becomes one boundary sample whose supervised span is that turn's
+    reasoning_content + content + tool_calls, rendered by the Qwen3.6 chat
+    template via a prompt/full prefix-diff (see manifest header). GPU-free,
+    multiprocessing over files.
+    """
+    import argparse, glob, hashlib, json, os
+    from multiprocessing import Pool
+
+    TOK = None
+    MAXLEN = 4096
+    IM_END = None
+
+    ROLE_ALIAS = {
+        "human": "user", "user": "user",
+        "gpt": "assistant", "bot": "assistant", "assistant": "assistant",
+        "system": "system", "developer": "system",
+        "tool": "tool", "function": "tool", "observation": "tool",
+    }
+
+    # mini-swe-agent exposes a single `bash` tool. The raw trajectories don't
+    # store a tools schema, so we synthesize the one that was in play. This only
+    # shapes the PROMPT (mask 0); the supervised completion is unaffected.
+    BASH_TOOLS = [{
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": "Execute a bash command in the shell and return its "
+                           "output (stdout/stderr and return code).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string",
+                                "description": "The bash command to execute."}
+                },
+                "required": ["command"],
+            },
+        },
+    }]
+
+    def _init(model, maxlen):
+        global TOK, MAXLEN, IM_END
+        from transformers import AutoTokenizer
+        TOK = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+        MAXLEN = maxlen
+        IM_END = TOK.convert_tokens_to_ids("<|im_end|>")
+
+    def _flatten(content):
+        """Normalize content to a plain string (handles list-of-parts, None)."""
+        if content is None:
+            return ""
+        if isinstance(content, list):
+            parts = []
+            for p in content:
+                if isinstance(p, dict):
+                    parts.append(p.get("text") or p.get("content") or "")
+                else:
+                    parts.append(str(p))
+            return "".join(parts)
+        return content if isinstance(content, str) else str(content)
+
+    def _reconstruct(raw_msgs):
+        """Raw mini-swe-agent messages -> Qwen3.6 chat messages.
+        Keeps reasoning_content + content + tool_calls on assistant turns; parses
+        tool_call arguments from JSON string -> dict (required by the template).
+        Non-chat roles (e.g. 'exit') are dropped."""
+        msgs = []
+        for m in raw_msgs:
+            if not isinstance(m, dict):
+                continue
+            role = ROLE_ALIAS.get(m.get("role") or m.get("from"))
+            if role is None:
+                continue  # 'exit' and any unknown role -> not a chat turn
+            msg = {"role": role, "content": _flatten(m.get("content"))}
+            if role == "assistant":
+                rc = m.get("reasoning_content")
+                if isinstance(rc, str) and rc.strip():
+                    msg["reasoning_content"] = rc
+                tcs = m.get("tool_calls")
+                if tcs:
+                    norm = []
+                    for tc in tcs:
+                        if not isinstance(tc, dict):
+                            continue
+                        fn = tc.get("function") or {}
+                        name = fn.get("name")
+                        args = fn.get("arguments")
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except Exception:
+                                args = {"command": args}
+                        if not isinstance(args, dict):
+                            args = {}
+                        norm.append({"type": "function", "id": tc.get("id"),
+                                     "function": {"name": name, "arguments": args}})
+                    if norm:
+                        msg["tool_calls"] = norm
+            msgs.append(msg)
+        return msgs
+
+    def _render(msgs, tools, gen):
+        kw = dict(tools=tools, add_generation_prompt=gen, tokenize=True)
+        try:
+            out = TOK.apply_chat_template(msgs, enable_thinking=True, **kw)
+        except TypeError:
+            out = TOK.apply_chat_template(msgs, **kw)
+        if not isinstance(out, list):          # BatchEncoding
+            out = out["input_ids"]
+        if out and isinstance(out[0], list):   # batched
+            out = out[0]
+        return list(out)
+
+    def build(path):
+        """Return a LIST of {input_ids, loss_mask} boundary samples (one per
+        assistant turn) for one raw .traj.json file."""
+        try:
+            with open(path) as f:
+                d = json.load(f)
+        except Exception:
+            return None
+        raw = d.get("messages")
+        if not isinstance(raw, list):
+            return None
+        msgs = _reconstruct(raw)
+        if not msgs:
+            return None
+        tools = BASH_TOOLS
+        samples = []
+        for i, m in enumerate(msgs):
+            if m["role"] != "assistant":
+                continue
+            has_sig = (bool((m.get("content") or "").strip())
+                       or bool(m.get("tool_calls"))
+                       or bool((m.get("reasoning_content") or "").strip()))
+            if not has_sig:
+                continue  # truly-empty turn
+            try:
+                prompt = _render(msgs[:i], tools, True)
+                full = _render(msgs[:i + 1], tools, False)
+            except Exception:
+                continue
+            # gen-prompt is an exact token prefix of the full render of turn i.
+            if full[:len(prompt)] != prompt:
+                continue  # boundary anomaly -> skip rather than mislabel mask
+            comp = full[len(prompt):]
+            if not comp:
+                continue
+            if IM_END is not None and comp[-1] != IM_END:
+                # full render always ends the turn with <|im_end|>\n; guard anyway
+                comp = comp + [IM_END]
+            # SLIDING WINDOW to MAXLEN: keep the full completion (the supervised
+            # signal), trim the OLDEST context tokens. DeepSWE prompts run to
+            # ~25k tokens, so dropping over-length samples would discard nearly
+            # everything; instead we keep the recent window.
+            if len(comp) >= MAXLEN:
+                comp = comp[-MAXLEN:]
+                ids = comp
+                mask = [1] * len(comp)
+            else:
+                keep = MAXLEN - len(comp)
+                prompt = prompt[-keep:]
+                ids = prompt + comp
+                mask = [0] * len(prompt) + [1] * len(comp)
+            samples.append({"input_ids": ids, "loss_mask": mask})
+        return samples or None
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--model", required=True)
+        ap.add_argument("--src", required=True, help="glob for input .traj.json")
+        ap.add_argument("--out", required=True)
+        ap.add_argument("--maxlen", type=int, default=4096)
+        ap.add_argument("--procs", type=int, default=min(32, os.cpu_count() or 8))
+        ap.add_argument("--seen", default=None, help="shared dedup hash file")
+        a = ap.parse_args()
+
+        files = sorted(glob.glob(a.src, recursive=True))
+        if not files:
+            print(f"NO INPUT for {a.src}", flush=True); return
+        print(f"found {len(files)} trajectory files", flush=True)
+        seen = set()
+        if a.seen and os.path.exists(a.seen):
+            with open(a.seen) as f:
+                seen = set(l.strip() for l in f if l.strip())
+        kept = dup = skip = supsum = 0
+        os.makedirs(os.path.dirname(a.out), exist_ok=True)
+        newh = []
+        with open(a.out, "w") as out, Pool(a.procs, _init, (a.model, a.maxlen)) as pool:
+            for res in pool.imap_unordered(build, files, chunksize=4):
+                if not res:
+                    skip += 1; continue
+                for s in res:
+                    h = hashlib.sha1(
+                        ",".join(map(str, s["input_ids"])).encode()).hexdigest()
+                    if h in seen:
+                        dup += 1; continue
+                    seen.add(h); newh.append(h)
+                    out.write(json.dumps(s) + "\n")
+                    kept += 1
+                    supsum += sum(s["loss_mask"])
+                    if kept % 5000 == 0:
+                        print(f"  {a.out}: kept={kept} dup={dup} "
+                              f"empty_files={skip} sup_tok={supsum}", flush=True)
+        if a.seen:
+            with open(a.seen, "a") as f:
+                for h in newh: f.write(h + "\n")
+        med = supsum / kept if kept else 0
+        print(f"DONE {a.out}: kept={kept} dup={dup} empty_files={skip} "
+              f"total_sup_tok={supsum} mean_sup_tok={med:.1f}", flush=True)
+
+    if __name__ == "__main__":
+        main()
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    OUT=/dataset/agentic-coding-v2
+    SEEN=$OUT/seen_hashes.txt
+    SRC='/output/deepswe-local/trajectories/*.traj.json'
+    mkdir -p "$OUT" /output/logs
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+    echo "[$(date)] installing deps..."
+    pip install --quiet --no-cache-dir transformers tokenizers jinja2 huggingface_hub hf_transfer || exit 1
+    echo "[$(date)] warming tokenizer ($MODEL)..."
+    python3 -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('$MODEL', trust_remote_code=True); print('tokenizer ok')" || exit 1
+
+    if [ -f "$OUT/tok_agentic.done" ]; then
+      echo "[$(date)] SKIP tokenize (already done)"
+    else
+      echo "[$(date)] === tokenizing raw agentic trajectories ==="
+      python3 /scripts/tokenize_corpus.py --model "$MODEL" --src "$SRC" \
+        --out "$OUT/tok_agentic.jsonl" --seen "$SEEN" --procs 10 --maxlen 4096 \
+        2>&1 | tee -a /output/logs/agentic-v2-tokenize.log
+      [ -s "$OUT/tok_agentic.jsonl" ] && touch "$OUT/tok_agentic.done"
+    fi
+
+    echo "[$(date)] === tokenization complete ==="
+    for f in "$OUT"/tok_*.jsonl; do
+      printf "  %-40s %s rows\n" "$(basename "$f")" "$(wc -l < "$f")"
+    done
+    touch "$OUT/tokenize.done"
+    echo "[$(date)] ALL DONE. Assembly is a separate step (dspark-corpus-agentic-v2-assemble-20260808)."
+    sleep 3600
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-corpus-agentic-v2-tokenize-20260808
+  namespace: default
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        job-name: dspark-corpus-agentic-v2-tokenize-20260808
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tokenize
+          image: python:3.11-slim
+          command: ["/bin/bash", "/scripts/run.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+          resources:
+            requests:
+              cpu: "4"
+              memory: 4Gi
+            limits:
+              cpu: "12"
+              memory: 12Gi
+          volumeMounts:
+            - name: dataset
+              mountPath: /dataset
+            - name: output
+              mountPath: /output
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: dspark-dataset-hdd
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: scripts
+          configMap:
+            name: dspark-corpus-agentic-v2-tokenize-20260808-script
