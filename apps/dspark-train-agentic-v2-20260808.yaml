@@ -1,0 +1,273 @@
+# DSpark Qwen3.6-27B — ROUND 2: the AGENTIC-DATA experiment. Fresh from-scratch run on
+# the agentic-coding-v2 corpus (coding regen + 66k REAL agentic tool-call/reasoning
+# samples w/ sliding-window fix + 60k general). CLEAN A/B vs the coding-only baseline
+# (original scratch5, pure-upstream, serves ~1.7 on vLLM 0.26): identical pure-upstream
+# v0.7.0 code, ONLY the data changes -> isolates "does agentic data make a better drafter?".
+# Serve/eval on vLLM 0.26.0 + FLASHINFER (0.25.1 mis-serves this format — [[project_dspark_serve_config_key_bug]]).
+# Baseline to beat: ~1.7 (real, 0.26).
+#
+# v0.7.0 diffs handled: trainer is now config-schema driven (run.yaml below);
+# NEW defaults overridden to match the proven recipe -> optimizer muon->adamw,
+# scheduler linear->cosine, loss kl_div->{ce,tv}, attn flex->eager (SM120),
+# total_seq_len 8192->4096. Serve (launch_vllm) + prep (prepare_data) CLIs are
+# unchanged. speculators = PURE UPSTREAM tag v0.7.0 (fork abandoned; RoPE fix
+# now native via mrope_full_head_hack; prep keep_in_memory patched at runtime).
+# D-PACE loss (+~5% accept_len), 1 epoch, no-val (train_data_ratio 1.0), and
+# prefetch+verifier tuning to attack the 82% hidden-state-fetch stall.
+#
+# THREE GATES before the multi-day run (train.sh runs them in order, exits on
+# any failure): (1) --dry-run builds the DSpark model + saves a checkpoint;
+# (2) --max-steps 30 smoke validates verifier->hidden-states->trainer end-to-end;
+# (3) full run. WATCH the smoke accept_len/loss before it flows into the full run.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-train-agentic-v2-script
+  namespace: default
+data:
+  run.yaml: |
+    # ---- Proven block-16 DSpark recipe mapped to v0.7.0 TrainConfig ----
+    speculator_type: dspark
+    seed: 42
+
+    verifier:
+      verifier_name_or_path: unsloth/Qwen3.6-27B-NVFP4
+      trust_remote_code: true
+
+    draft:
+      num_layers: 3     # 2026-08-06: reverted 5->3 — 5 layers OOM co-resident w/ verifier on 96GB (needs multi-GPU, #67). This is the proven-fit "big 3-layer block-16 run" (#19) on the 546k corpus.
+      target_layer_ids: [1, 16, 31, 46, 61]
+      draft_attn_impl: eager          # SM120: no flex-attention source patches
+
+    data:
+      data_path: /output/data-agentic-v2-20260808
+      total_seq_len: 4096     # proven value (data prepped at 4096)
+      max_anchors: 192        # proven value
+      num_workers: 4                  # +prefetch to overlap HS-fetch with compute
+      prefetch_factor: 2              # (step was 82% fetch-bound; hide the stall)
+      train_data_ratio: 0.999         # must be <1.0; tiny val split (~545 rows) ->
+                                      # a quick ~2-min validation, not the 54k-sample hang
+      hidden_states_backend: file
+      hidden_states_path: /dev/shm/hs
+
+    generation:                       # online: pull hidden states from the verifier
+      vllm_endpoint: http://127.0.0.1:8001/v1
+      on_missing: generate
+      on_generate: delete
+
+    loss:
+      loss_fn: '{"ce": 0.1, "tv": 0.9}'
+
+    optimizer:
+      optimizer: adamw                # v0.7.0 defaults to muon; recipe uses adamw
+      lr: 0.0006
+      weight_decay: 0
+
+    scheduler:
+      scheduler_type: cosine          # v0.7.0 defaults to linear
+      scheduler_warmup_ratio: 0.04
+      scheduler_num_cosine_cycles: 0.5
+
+    trainer:
+      epochs: 1                       # 1 epoch first (~2-3 days); eval at half + decide
+      checkpoint_freq: 0.25            # checkpoint every half epoch for early eval
+      save_best: false                # no val split -> no best-tracking (skips validation)
+      save_path: /output/checkpoints-agentic-v2-20260808
+      log_freq: 10
+
+    dflash:
+      block_size: 16
+      dflash_decay_gamma: 4.0
+      per_position_loss_weight: fixed-exp-decay  # proven recipe. NOTE: v0.7.0 D-PACE
+      # (+~5% accept_len) requires loss_fn=ce (pure), incompatible with our {ce,tv}
+      # composite -> deferred to a follow-up A/B, not bundled into the data run.
+
+    dspark:
+      markov_rank: 256
+      markov_head_type: vanilla
+      enable_confidence_head: true
+      confidence_head_with_markov: true
+      confidence_head_alpha: 1.0
+  train.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+    export TOKENIZERS_PARALLELISM=false
+
+    echo "=== [$(date)] Qwen3.6-27B DSpark block-16 BIG-CORPUS run (v0.7.0) ==="
+    apt-get update -qq 2>&1 | tail -1
+    apt-get install -y git --no-install-recommends -qq
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"; hash -r
+
+    # PURE UPSTREAM v0.7.0 (fork abandoned). Partial-rotary handled natively by
+    # v0.7.0's mrope_full_head_hack, so our old RoPE cherry-pick is dropped.
+    git clone --quiet https://github.com/vllm-project/speculators /tmp/spec
+    git -C /tmp/spec checkout --quiet v0.7.0
+    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (upstream tag v0.7.0)"
+    # Runtime patch (not a fork): upstream prepare_data hardcodes keep_in_memory=True
+    # which OOMs at ~546k rows. Safety net in case prep re-runs (arrow usually cached).
+    sed -i 's/keep_in_memory=True/keep_in_memory=False/g' \
+      /tmp/spec/src/speculators/data_generation/preprocessing.py || true
+    SCRIPTS=/tmp/spec/scripts
+    uv pip install /tmp/spec hf_transfer aiohttp datasets tqdm --system --quiet
+
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    DS=/dataset/agentic-coding-v2
+    PREP=/output/data-agentic-v2-20260808
+    CKPT=/output/checkpoints-agentic-v2-20260808
+    CFG=/scripts/run.yaml
+    mkdir -p "$PREP" "$CKPT" /output/logs /dev/shm/hs
+
+    if [ ! -f "$DS/regen.done" ] || [ ! -f "$DS/all.jsonl" ]; then
+      echo "FATAL: $DS/{regen.done,all.jsonl} missing — corpus not assembled."; exit 1
+    fi
+    echo "[$(date)] corpus: $(wc -l < "$DS/all.jsonl") rows"
+
+    # ---- Prep (passthrough; assembler already wrote {input_ids,loss_mask}) ----
+    if [ ! -f "$PREP/token_freq.pt" ] && ! ls "$PREP"/*.arrow >/dev/null 2>&1; then
+      echo "=== [$(date)] prepare_data (seq-len 4096, 2 workers — 546k rows OOMs at 8) ==="
+      rm -rf "${PREP:?}"/* 2>/dev/null || true
+      python3 "$SCRIPTS/prepare_data.py" --model "$MODEL" \
+        --data "$DS/all.jsonl" --output "$PREP" --seq-length 4096 \
+        --num-preprocessing-workers 2 --overwrite \
+        2>&1 | tee /output/logs/prepare_v070.log
+      ls "$PREP"/*.arrow >/dev/null 2>&1 || { echo "FATAL: prep produced no arrow"; exit 1; }
+    else
+      echo "[$(date)] prep exists — skipping"
+    fi
+
+    # ================= GATE 1: dry-run (build DSpark model + save + exit) =======
+    echo "=== [$(date)] GATE 1 dry-run: validate config + build model ==="
+    rm -rf /output/dryrun-v070 2>/dev/null; mkdir -p /output/dryrun-v070
+    python3 "$SCRIPTS/train.py" --config "$CFG" --dry-run \
+      --save-path /output/dryrun-v070 2>&1 | tee /output/logs/dryrun_v070.log
+    rc=${PIPESTATUS[0]}   # train.py's real exit code, not tee's
+    if [ "$rc" -ne 0 ] || ! ls /output/dryrun-v070/*.json >/dev/null 2>&1; then
+      echo "FATAL: dry-run failed (rc=$rc) — config/model build error above."; exit 1
+    fi
+    echo "[$(date)] GATE 1 PASSED (model builds, config valid)"
+
+    # ---- launch verifier for online hidden-state extraction (coexist) ----
+    # max-num-seqs 4->8: serve more concurrent HS requests so the trainer's 4
+    # dataloader workers can prefetch ahead (attacks the 82% fetch stall).
+    unset PYTORCH_CUDA_ALLOC_CONF
+    echo "=== [$(date)] launch verifier (gpu-mem 0.33, max-num-seqs 8, coexist) ==="
+    python3 "$SCRIPTS/launch_vllm.py" "$MODEL" \
+      --target-layer-ids 1 16 31 46 61 \
+      --hidden-states-path /dev/shm/hs \
+      -- \
+      --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.33 \
+      --max-model-len 4608 --dtype bfloat16 --trust-remote-code \
+      --kv-cache-dtype fp8_e4m3 --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+      --enforce-eager --max-num-seqs 8 \
+      > /output/logs/verifier_v070.log 2>&1 &
+    VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
+    for i in $(seq 1 540); do
+      curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && break
+      kill -0 $VP 2>/dev/null || { echo "verifier died:"; cat /output/logs/verifier_v070.log; exit 1; }
+      sleep 10
+    done
+    echo "[$(date)] verifier healthy"
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    # ================= GATE 2: 20-step smoke (end-to-end) =======================
+    # train_data_ratio=1.0 -> no validation pass, so the smoke completes cleanly
+    # (unlike the prior run that hung on a 54k-sample online validation). Reports
+    # profile/fetch_frac so we can see if the prefetch+verifier tuning helped.
+    echo "=== [$(date)] GATE 2 smoke: 20 steps end-to-end (verifier->HS->trainer) ==="
+    rm -rf /output/smoke-v070 2>/dev/null
+    python3 "$SCRIPTS/train.py" --config "$CFG" --max-steps 20 \
+      --save-path /output/smoke-v070 --no-resume-from-checkpoint \
+      2>&1 | tee /output/logs/smoke_v070.log
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" -ne 0 ] || ! grep -qaE "global_step=[0-9]" /output/logs/smoke_v070.log; then
+      echo "FATAL: smoke failed (rc=$rc) — no real training steps. Pipeline broken."; exit 1
+    fi
+    echo "[$(date)] GATE 2 PASSED. fetch_frac / tokens_per_s above show the pace."
+    echo "[$(date)] auto-proceeding to FULL run in 45s — kill the job now if pace/loss looks wrong."
+    sleep 45
+
+    # ================= GATE 3: full run =========================================
+    echo "=== [$(date)] GATE 3 FULL block-16 big-corpus 1-epoch run ==="
+    python3 "$SCRIPTS/train.py" --config "$CFG" \
+      2>&1 | tee /output/logs/train_v070_bigcorpus.log
+
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
+    echo "=== [$(date)] FULL run complete ==="
+    ls -lh "$CKPT"/ || true
+    echo "[$(date)] Next: real-vLLM eval (temp 1.0, k=15) of the latest $CKPT checkpoint vs 4.29."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-agentic-v2-20260808
+  namespace: default
+spec:
+  backoffLimit: 100
+  activeDeadlineSeconds: 345600   # 96h (546k rows x 2 epochs online is long)
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: trainer
+          image: vllm/vllm-openai:v0.25.1   # proven SM120 (v0.26 crashes cutedsl)
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 32Gi
+            requests:
+              cpu: "4"
+              memory: 32Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: dataset
+              mountPath: /dataset
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: dspark-dataset-hdd
+        - name: scripts
+          configMap:
+            name: dspark-train-agentic-v2-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 24Gi
