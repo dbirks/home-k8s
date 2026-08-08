@@ -1,0 +1,278 @@
+# DSpark Qwen3.6-27B — ROUND 1: from-scratch CODING run on the FIXED FORK.
+# Purpose: prove the fork's RoPE fix actually produces a SERVABLE drafter end-to-end
+# (the failed 2026-08-06 run used pure-upstream -> served at 1.02). Clean A/B: SAME
+# corpus as that run (/dataset/combined-v1, 546k, already tokenized) — only the
+# speculators code changed (pure-upstream -> fork). If this serves at ~1.66-1.88, the
+# fix is confirmed. Round 2 (agentic-coding, proper corpus from raw .traj.json) follows.
+#
+# ⚠️ CRITICAL FIX vs the failed 2026-08-06 run: that run cloned PURE-UPSTREAM
+# speculators v0.7.0, whose Qwen3.6 partial-rotary handling is broken -> the trained
+# drafter served at real accept_len 1.02 (RoPE train/serve mismatch, useless) despite
+# a healthy 1.88 training-val. This run clones the FORK dbirks/speculators branch
+# v0.7.0-qwen3.6 @ c25e90a (latest upstream + the scalar-partial-rotary fix in
+# dflash/core.py + coding presets) — the RoPE-correct lineage that served at 1.66.
+# See [[project_dspark_serve_config_key_bug]] + the RoPE diagnosis.
+#
+# GATES: (1) --dry-run builds the model; (2) 20-step smoke validates fork install
+# (incl. the new hs_connectors uv-workspace) + verifier->HS->trainer end-to-end;
+# (3) full run. checkpoint_freq 0.15 gives an EARLY (~15%) checkpoint so we can
+# serve-parity-test it out-of-band (single GPU: pause -> serve -> accept_len -> resume/abort)
+# BEFORE committing the full multi-day run — the gate that would've caught last time.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-train-fork-coding-script
+  namespace: default
+data:
+  run.yaml: |
+    # ---- Proven block-16 DSpark recipe mapped to v0.7.0 TrainConfig ----
+    speculator_type: dspark
+    seed: 42
+
+    verifier:
+      verifier_name_or_path: unsloth/Qwen3.6-27B-NVFP4
+      trust_remote_code: true
+
+    draft:
+      num_layers: 3     # 2026-08-06: reverted 5->3 — 5 layers OOM co-resident w/ verifier on 96GB (needs multi-GPU, #67). This is the proven-fit "big 3-layer block-16 run" (#19) on the 546k corpus.
+      target_layer_ids: [1, 16, 31, 46, 61]
+      draft_attn_impl: eager          # SM120: no flex-attention source patches
+
+    data:
+      data_path: /output/data-fork-coding-20260808
+      total_seq_len: 4096     # proven value (data prepped at 4096)
+      max_anchors: 192        # proven value
+      num_workers: 4                  # +prefetch to overlap HS-fetch with compute
+      prefetch_factor: 2              # (step was 82% fetch-bound; hide the stall)
+      train_data_ratio: 0.999         # must be <1.0; tiny val split (~545 rows) ->
+                                      # a quick ~2-min validation, not the 54k-sample hang
+      hidden_states_backend: file
+      hidden_states_path: /dev/shm/hs
+
+    generation:                       # online: pull hidden states from the verifier
+      vllm_endpoint: http://127.0.0.1:8001/v1
+      on_missing: generate
+      on_generate: delete
+
+    loss:
+      loss_fn: '{"ce": 0.1, "tv": 0.9}'
+
+    optimizer:
+      optimizer: adamw                # v0.7.0 defaults to muon; recipe uses adamw
+      lr: 0.0006
+      weight_decay: 0
+
+    scheduler:
+      scheduler_type: cosine          # v0.7.0 defaults to linear
+      scheduler_warmup_ratio: 0.04
+      scheduler_num_cosine_cycles: 0.5
+
+    trainer:
+      epochs: 1                       # 1 epoch first (~2-3 days)
+      checkpoint_freq: 0.15           # EARLY checkpoint (~15%) for the out-of-band serve-parity gate
+      save_best: false                # no val split -> no best-tracking (skips validation)
+      save_path: /output/checkpoints-fork-coding-20260808
+      log_freq: 10
+
+    dflash:
+      block_size: 16
+      dflash_decay_gamma: 4.0
+      per_position_loss_weight: fixed-exp-decay  # proven recipe. NOTE: v0.7.0 D-PACE
+      # (+~5% accept_len) requires loss_fn=ce (pure), incompatible with our {ce,tv}
+      # composite -> deferred to a follow-up A/B, not bundled into the data run.
+
+    dspark:
+      markov_rank: 256
+      markov_head_type: vanilla
+      enable_confidence_head: true
+      confidence_head_with_markov: true
+      confidence_head_alpha: 1.0
+  train.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data
+    export CUDA_VISIBLE_DEVICES=0
+    export HF_HUB_ENABLE_HF_TRANSFER=1
+    export TOKENIZERS_PARALLELISM=false
+
+    echo "=== [$(date)] Qwen3.6-27B DSpark block-16 BIG-CORPUS run (v0.7.0) ==="
+    apt-get update -qq 2>&1 | tail -1
+    apt-get install -y git --no-install-recommends -qq
+    pip install uv --quiet --root-user-action ignore
+    export PATH="/root/.local/bin:$PATH"; hash -r
+
+    # FORK dbirks/speculators branch v0.7.0-qwen3.6 (latest upstream merged + the
+    # Qwen3.6 scalar-partial-rotary RoPE fix in dflash/core.py that pure-upstream
+    # lacks — its absence broke the 2026-08-06 run at serve time, real accept_len 1.02).
+    git clone --quiet --branch v0.7.0-qwen3.6 https://github.com/dbirks/speculators /tmp/spec
+    git -C /tmp/spec checkout --quiet c25e90a
+    echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (fork v0.7.0-qwen3.6, RoPE fix)"
+    # abort early if the fork clone is wrong / RoPE fix absent (cheap guard vs a wasted run)
+    grep -q "_select_rotary_emb_class" /tmp/spec/src/speculators/models/dflash/core.py \
+      || { echo "FATAL: RoPE fix (_select_rotary_emb_class) missing — wrong speculators ref?"; exit 1; }
+    SCRIPTS=/tmp/spec/scripts
+    # hs_connectors is now an external uv-workspace package (upstream refactor). Install
+    # it FIRST from the local path so speculators' 'hs-connectors' dep resolves locally
+    # (workspace source, NOT PyPI), then speculators itself.
+    uv pip install /tmp/spec/hs_connectors --system --quiet
+    uv pip install /tmp/spec hf_transfer aiohttp datasets tqdm --system --quiet
+    python3 -c "import hs_connectors; from hs_connectors import HiddenStatesTransfer" \
+      || { echo "FATAL: hs_connectors import failed after install"; exit 1; }
+
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    DS=/dataset/combined-v1
+    PREP=/output/data-fork-coding-20260808
+    CKPT=/output/checkpoints-fork-coding-20260808
+    CFG=/scripts/run.yaml
+    mkdir -p "$PREP" "$CKPT" /output/logs /dev/shm/hs
+
+    if [ ! -f "$DS/regen.done" ] || [ ! -f "$DS/all.jsonl" ]; then
+      echo "FATAL: $DS/{regen.done,all.jsonl} missing — corpus not assembled."; exit 1
+    fi
+    echo "[$(date)] corpus: $(wc -l < "$DS/all.jsonl") rows"
+
+    # ---- Prep (passthrough; assembler already wrote {input_ids,loss_mask}) ----
+    if [ ! -f "$PREP/token_freq.pt" ] && ! ls "$PREP"/*.arrow >/dev/null 2>&1; then
+      echo "=== [$(date)] prepare_data (seq-len 4096, 2 workers — 546k rows OOMs at 8) ==="
+      rm -rf "${PREP:?}"/* 2>/dev/null || true
+      python3 "$SCRIPTS/prepare_data.py" --model "$MODEL" \
+        --data "$DS/all.jsonl" --output "$PREP" --seq-length 4096 \
+        --num-preprocessing-workers 2 --overwrite \
+        2>&1 | tee /output/logs/prepare_v070.log
+      ls "$PREP"/*.arrow >/dev/null 2>&1 || { echo "FATAL: prep produced no arrow"; exit 1; }
+    else
+      echo "[$(date)] prep exists — skipping"
+    fi
+
+    # ================= GATE 1: dry-run (build DSpark model + save + exit) =======
+    echo "=== [$(date)] GATE 1 dry-run: validate config + build model ==="
+    rm -rf /output/dryrun-v070 2>/dev/null; mkdir -p /output/dryrun-v070
+    python3 "$SCRIPTS/train.py" --config "$CFG" --dry-run \
+      --save-path /output/dryrun-v070 2>&1 | tee /output/logs/dryrun_v070.log
+    rc=${PIPESTATUS[0]}   # train.py's real exit code, not tee's
+    if [ "$rc" -ne 0 ] || ! ls /output/dryrun-v070/*.json >/dev/null 2>&1; then
+      echo "FATAL: dry-run failed (rc=$rc) — config/model build error above."; exit 1
+    fi
+    echo "[$(date)] GATE 1 PASSED (model builds, config valid)"
+
+    # ---- launch verifier for online hidden-state extraction (coexist) ----
+    # max-num-seqs 4->8: serve more concurrent HS requests so the trainer's 4
+    # dataloader workers can prefetch ahead (attacks the 82% fetch stall).
+    unset PYTORCH_CUDA_ALLOC_CONF
+    echo "=== [$(date)] launch verifier (gpu-mem 0.33, max-num-seqs 8, coexist) ==="
+    python3 "$SCRIPTS/launch_vllm.py" "$MODEL" \
+      --target-layer-ids 1 16 31 46 61 \
+      --hidden-states-path /dev/shm/hs \
+      -- \
+      --host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.33 \
+      --max-model-len 4608 --dtype bfloat16 --trust-remote-code \
+      --kv-cache-dtype fp8_e4m3 --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+      --enforce-eager --max-num-seqs 8 \
+      > /output/logs/verifier_v070.log 2>&1 &
+    VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
+    for i in $(seq 1 540); do
+      curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && break
+      kill -0 $VP 2>/dev/null || { echo "verifier died:"; cat /output/logs/verifier_v070.log; exit 1; }
+      sleep 10
+    done
+    echo "[$(date)] verifier healthy"
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    # ================= GATE 2: 20-step smoke (end-to-end) =======================
+    # train_data_ratio=1.0 -> no validation pass, so the smoke completes cleanly
+    # (unlike the prior run that hung on a 54k-sample online validation). Reports
+    # profile/fetch_frac so we can see if the prefetch+verifier tuning helped.
+    echo "=== [$(date)] GATE 2 smoke: 20 steps end-to-end (verifier->HS->trainer) ==="
+    rm -rf /output/smoke-v070 2>/dev/null
+    python3 "$SCRIPTS/train.py" --config "$CFG" --max-steps 20 \
+      --save-path /output/smoke-v070 --no-resume-from-checkpoint \
+      2>&1 | tee /output/logs/smoke_v070.log
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" -ne 0 ] || ! grep -qaE "global_step=[0-9]" /output/logs/smoke_v070.log; then
+      echo "FATAL: smoke failed (rc=$rc) — no real training steps. Pipeline broken."; exit 1
+    fi
+    echo "[$(date)] GATE 2 PASSED. fetch_frac / tokens_per_s above show the pace."
+    echo "[$(date)] auto-proceeding to FULL run in 45s — kill the job now if pace/loss looks wrong."
+    sleep 45
+
+    # ================= GATE 3: full run =========================================
+    echo "=== [$(date)] GATE 3 FULL block-16 big-corpus 1-epoch run ==="
+    python3 "$SCRIPTS/train.py" --config "$CFG" \
+      2>&1 | tee /output/logs/train_v070_bigcorpus.log
+
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
+    echo "=== [$(date)] FULL run complete ==="
+    ls -lh "$CKPT"/ || true
+    echo "[$(date)] Next: real-vLLM eval (temp 1.0, k=15) of the latest $CKPT checkpoint vs 4.29."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-train-fork-coding-20260808
+  namespace: default
+spec:
+  backoffLimit: 100
+  activeDeadlineSeconds: 345600   # 96h (546k rows x 2 epochs online is long)
+  template:
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: trainer
+          image: vllm/vllm-openai:v0.25.1   # proven SM120 (v0.26 crashes cutedsl)
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/train.sh"]
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: 32Gi
+            requests:
+              cpu: "4"
+              memory: 32Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: output
+              mountPath: /output
+            - name: dataset
+              mountPath: /dataset
+            - name: scripts
+              mountPath: /scripts
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: output
+          persistentVolumeClaim:
+            claimName: dspark-output-hdd-v2
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: dspark-dataset-hdd
+        - name: scripts
+          configMap:
+            name: dspark-train-fork-coding-script
+            defaultMode: 0755
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 24Gi
