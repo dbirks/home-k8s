@@ -212,6 +212,9 @@ metadata:
   name: dspark-train-fork-coding-20260808
   namespace: default
 spec:
+  suspend: true          # 2026-08-08: PAUSED for the out-of-band serve-parity gate on
+                         # the step-36954 checkpoint. Flip back to false to resume (auto
+                         # resumes from checkpoint via resume_from_checkpoint default).
   backoffLimit: 100
   activeDeadlineSeconds: 345600   # 96h (546k rows x 2 epochs online is long)
   template:
