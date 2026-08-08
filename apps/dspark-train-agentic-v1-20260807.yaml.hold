@@ -8,7 +8,7 @@
 # speculators v0.7.0, whose Qwen3.6 partial-rotary handling is broken -> the trained
 # drafter served at real accept_len 1.02 (RoPE train/serve mismatch, useless) despite
 # a healthy 1.88 training-val. This run clones the FORK dbirks/speculators branch
-# v0.7.0-qwen3.6 @ c25e90a (latest upstream + the scalar-partial-rotary fix in
+# v0.7.0-qwen3.6 @ 486cb0b (latest upstream + the scalar-partial-rotary fix in
 # dflash/core.py + coding presets) — the RoPE-correct lineage that served at 1.66.
 # See [[project_dspark_serve_config_key_bug]] + the RoPE diagnosis.
 #
@@ -105,7 +105,7 @@ data:
     # Qwen3.6 scalar-partial-rotary RoPE fix in dflash/core.py that pure-upstream
     # lacks — its absence broke the 2026-08-06 run at serve time, real accept_len 1.02).
     git clone --quiet --branch v0.7.0-qwen3.6 https://github.com/dbirks/speculators /tmp/spec
-    git -C /tmp/spec checkout --quiet c25e90a
+    git -C /tmp/spec checkout --quiet 486cb0b
     echo "speculators @ $(git -C /tmp/spec rev-parse --short HEAD) (fork v0.7.0-qwen3.6, RoPE fix)"
     # abort early if the fork clone is wrong / RoPE fix absent (cheap guard vs a wasted run)
     grep -q "_select_rotary_emb_class" /tmp/spec/src/speculators/models/dflash/core.py \
