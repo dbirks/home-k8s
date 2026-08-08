@@ -131,9 +131,20 @@ data:
             if IM_END is not None and (not comp_ids or comp_ids[-1] != IM_END):
                 comp_ids = comp_ids + [IM_END]
             if not comp_ids: continue
-            ids = list(prompt_ids) + list(comp_ids)
-            if len(ids) > MAXLEN: continue
-            mask = [0] * len(prompt_ids) + [1] * len(comp_ids)
+            comp = list(comp_ids); prompt = list(prompt_ids)
+            # SLIDING WINDOW: instead of DROPPING samples longer than MAXLEN (which
+            # discarded almost every multi-turn agentic sample — DeepSWE trajectories
+            # are long), truncate the CONTEXT to the most-recent tokens and keep the
+            # full assistant completion. Preserves the agentic signal within the train
+            # window. (comp alone >= MAXLEN is rare; keep its tail.)
+            if len(comp) >= MAXLEN:
+                comp = comp[-MAXLEN:]
+                ids = comp; mask = [1] * len(comp)
+            else:
+                keep = MAXLEN - len(comp)
+                prompt = prompt[-keep:]
+                ids = prompt + comp
+                mask = [0] * len(prompt) + [1] * len(comp)
             samples.append({"input_ids": ids, "loss_mask": mask})
         return samples or None
 
@@ -215,7 +226,7 @@ data:
       if [ -f "$OUT/tok_${1}.done" ]; then echo "[$(date)] SKIP $name (done)"; return; fi
       echo "[$(date)] === tokenizing $name ==="
       python3 /scripts/tokenize_corpus.py --model "$MODEL" --src "$glob" \
-        --out "$out" --seen "$SEEN" --procs 10 2>&1 | tee -a /output/logs/agentic-tokenize.log
+        --out "$out" --seen "$SEEN" --procs 10 --maxlen 4096 2>&1 | tee -a /output/logs/agentic-tokenize.log
       [ -s "$out" ] && touch "$OUT/tok_${1}.done"
     }
 

@@ -32,7 +32,8 @@ data:
     import argparse, glob, hashlib, json, os, random
 
     # ---------------- tunables ----------------
-    AGENTIC_UPWEIGHT = 2     # duplicate each agentic boundary sample this many times
+    AGENTIC_UPWEIGHT = 1     # sliding-window recovered ~30k distinct agentic samples,
+                             # so NO duplication needed (avoids memorization from repeats)
     GENERAL_SAMPLE = 60000   # rows reservoir-sampled from the general slice
     MAXLEN = 12288           # hard cap (trainer packs at 4096; keep some slack)
     SEED = 1337
