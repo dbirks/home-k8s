@@ -1,6 +1,6 @@
 # Home K8s Cluster
 
-Single-node Talos Linux v1.12.6 cluster with an NVIDIA GPU.
+Single-node Talos Linux v1.13.6 cluster with an NVIDIA GPU.
 
 ## Repo structure
 

@@ -1,0 +1,155 @@
+# LFM2.5-2.6B — always-on tiny inference endpoint (Liquid AI) — STAGED for HAMi
+#
+# ============================ .yaml.hold = PARKED ============================
+# Flux IGNORES this while it ends in .hold. Activate during the end-of-run idle
+# window, AFTER HAMi is installed + smoke-tested (see HAMI-SWAP-RUNBOOK.md):
+# rename .hold -> .yaml. It starts at replicas: 1 and serves immediately.
+# =============================================================================
+#
+# Co-resides with GPU training on the single RTX PRO 6000 Blackwell via HAMi's
+# HARD per-pod memory cap (nvidia.com/gpumem). HAMi's libvgpu.so makes vLLM see
+# ONLY this slice as "total" VRAM, so it cannot collide with the training pod's
+# 86GB slice. Compute is uncapped/shared (Blackwell gpucores unreliable, by design);
+# training runs full-speed when this is idle, both contend during a burst.
+# See memory: project_gpu_sharing_hami_plan.
+#
+# Model: LiquidAI/LFM2.5-2.6B (2026-08-04, instruct/agentic, 128K ctx, arch
+#   Lfm2ForCausalLM). Native in vLLM since v0.10.2 -> runs on v0.25.1 with DEFAULT
+#   attention (no FLASHINFER, no --trust-remote-code, no mamba flags). ~5.4GB bf16.
+#
+# HAMi+vLLM gotchas (vLLM #40937 CUDA-graph clamp ignores the slice; HAMi #1381
+# profiling assert): use --enforce-eager (also saves memory, fine for a tiny
+# low-latency model) and keep --gpu-memory-utilization conservative. NOTE: under
+# HAMi, --gpu-memory-utilization is a fraction of the 12GB SLICE, not the 96GB card.
+#
+# Endpoint: lfm2.hoam.lan (private ingress), served-model-name "lfm2.5-2.6b".
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-lfm2
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm
+      model: lfm2
+  template:
+    metadata:
+      labels:
+        app: vllm
+        model: lfm2
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      # NOTE: the HAMi admission webhook auto-sets schedulerName: hami-scheduler
+      # and injects LD_PRELOAD=libvgpu.so — do NOT set schedulerName manually.
+      containers:
+        - name: vllm
+          # v0.25.1: proven SM120 stable, includes Lfm2ForCausalLM (since 0.10.2),
+          # runs with DEFAULT attention on this card.
+          image: vllm/vllm-openai:v0.25.1
+          command:
+            - vllm
+            - serve
+            - LiquidAI/LFM2.5-2.6B
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--served-model-name"
+            - lfm2.5-2.6b
+            - "--max-model-len=16384"
+            - "--max-num-seqs=8"
+            - "--dtype=bfloat16"
+            # Fraction of the 12GB HAMi slice (NOT the 96GB card). 0.85 x 12GB ~ 10GB
+            # budget: ~5.4GB weights + KV pool + CUDA ctx (HAMi counts ctx against cap).
+            - "--gpu-memory-utilization=0.85"
+            # REQUIRED under HAMi: skip CUDA-graph capture (vLLM #40937 ignores the
+            # slice clamp during capture -> can OOM the slice). Fine for a tiny model.
+            - "--enforce-eager"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_HOME
+              value: /data
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: HF_TOKEN
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              # HARD memory cap (MB). ~12GB slice for a ~5.4GB model + KV + ctx.
+              # Do NOT set nvidia.com/gpucores (defaultCores=0 -> compute uncapped).
+              nvidia.com/gpumem: 12000
+            requests:
+              cpu: "1"
+              memory: 6Gi
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: vllm-models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lfm2
+  namespace: default
+spec:
+  selector:
+    app: vllm
+    model: lfm2
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lfm2
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
+spec:
+  ingressClassName: private
+  rules:
+    - host: lfm2.hoam.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lfm2
+                port:
+                  number: 80
