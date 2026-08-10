@@ -47,8 +47,7 @@ spec:
       strategy:
         type: Recreate   # never overlap engine pods on the shared GPU (avoids double-alloc OOM)
       serviceMonitor:
-        enabled: true
-        additionalLabels: {}
+        enabled: false   # no Prometheus-operator ServiceMonitor CRD on this cluster; vLLM still exposes /metrics
       modelSpec:
         - name: qwen27
           enabled: true
@@ -99,5 +98,4 @@ spec:
       serviceType: ClusterIP
       routingLogic: "roundrobin"
       serviceMonitor:
-        enabled: true
-        additionalLabels: {}
+        enabled: false   # no Prometheus-operator ServiceMonitor CRD on this cluster; vLLM still exposes /metrics
