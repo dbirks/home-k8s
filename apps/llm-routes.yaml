@@ -30,7 +30,7 @@ spec:
             type: PathPrefix
             value: /v1
       backendRefs:
-        - name: vllm
+        - name: vllm-stack-router-service   # vLLM Production Stack router (Qwen3.6-27B)
           namespace: default
           port: 80
 ---
@@ -48,7 +48,7 @@ spec:
   to:
     - group: ""
       kind: Service
-      name: vllm
+      name: vllm-stack-router-service
 ---
 # Enforce API keys on /v1 ONLY (portal paths stay unauthenticated for OIDC login).
 apiVersion: gateway.kgateway.dev/v1alpha1
