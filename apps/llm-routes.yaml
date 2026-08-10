@@ -7,12 +7,14 @@
 # reachable cross-namespace via the ReferenceGrant below. When the vLLM Production
 # Stack is stood up in llm-portal, repoint this backendRef there and drop the grant.
 #
-# API-KEY MODEL (verified against the live kgateway CRD — supersedes earlier notes):
-#   - A key Secret is a PLAIN Secret whose stringData holds { <client-id>: <key-value> },
-#     one entry per key, selected by label. No special `type` required.
-#   - keySources: [{header: Authorization}] extracts the WHOLE header, so for OpenAI/
-#     Claude-Code clients (which send `Authorization: Bearer <key>`) the stored value
-#     MUST be `Bearer <key>`. The portal must store the "Bearer " prefix.
+# API-KEY MODEL (verified live + matched to the portal repo's Secret contract):
+#   - One Secret per credential (type extauth.solo.io/apikey), stringData holds
+#     { client-<opaque-id>: "llm_<credential>" } — the RAW key value, NO "Bearer " prefix.
+#   - Selected by label `llm-portal/api-key: "true"` (the portal's LabelDomain=llm-portal;
+#     this selector MUST match it or every key silently fails to authenticate).
+#   - keySources: [{header: Authorization}] — kgateway STRIPS the "Bearer " scheme and
+#     matches the bare token, so OpenAI/Claude-Code clients sending
+#     `Authorization: Bearer llm_...` match the raw stored value. (Verified: 200.)
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -64,4 +66,4 @@ spec:
       - header: Authorization
     secretSelector:
       matchLabels:
-        kgateway.dev/apikey: "true"
+        llm-portal/api-key: "true"
