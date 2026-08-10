@@ -85,7 +85,7 @@ spec:
       containers:
         - name: portal
           # pinned image tag (public ghcr, multi-arch). # {"$imagepolicy": "flux-system:llm-portal"}
-          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-f0d81798f48436312c06627a30bd2b2fdad83b92
+          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-cfa8dd06329c8aaa2c3386607a80772612854465
           ports:
             - containerPort: 8080
           envFrom:
