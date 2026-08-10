@@ -85,6 +85,12 @@ spec:
               - "main"
               - "qwen27"
           env:
+            # Override the service-link env the `vllm` Service injects as
+            # VLLM_PORT=tcp://...:80 (which vLLM misreads as its port -> crash). The
+            # chart can't set enableServiceLinks:false, but an explicit container env
+            # var wins over kubelet's injected one. 8000 is vLLM's default API port.
+            - name: VLLM_PORT
+              value: "8000"
             - name: VLLM_ATTENTION_BACKEND
               value: "FLASHINFER"       # SM120: required on v0.26.0
             - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
