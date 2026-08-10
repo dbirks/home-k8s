@@ -13,6 +13,11 @@
 # GatewayClass at install, so it needs the upstream Gateway API CRDs present first;
 # retries let it self-heal once prereqs/gateway-api-crds.yaml has applied them.
 ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kgateway-system   # must exist before the HelmRelease objects can be placed in it
+---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
