@@ -1,0 +1,160 @@
+# Eval of the ROUND-2 agentic-data DSpark drafter (apps/dspark-train-agentic-v2).
+#
+# ============================ .yaml.hold = PARKED ============================
+# Flux ignores this. FIRE it only after the training Job completes and frees the
+# GPU (can't co-reside with the ~90GB training run). To run: rename .hold -> .yaml
+# (Flux applies the one-shot Job) OR `kubectl apply -f` it.
+# =============================================================================
+#
+# CORRECTED serve stack (vs the old v0.25.1/temp-0/enforce-eager eval):
+#   - vLLM 0.26.0 + VLLM_ATTENTION_BACKEND=FLASHINFER (our speculators-format ckpt only
+#     serves correctly here; 0.25.1 gives 0% acceptance — see memory).
+#   - fc-patch the checkpoint copy (add transformer_layer_config.dflash_config.target_layer_ids
+#     len=5) so vLLM sizes the anchor-fusion fc to 5x5120=25600 (else [5120,25600]!=[5120,15360]).
+#   - accept_len read from vLLM's Spec-decode /metrics counter DELTA per set with a
+#     NON-suppressing config (no --enforce-eager, max-num-seqs 8). enforce-eager +
+#     max-num-seqs 1 suppress acceptance (gave satgeze ~1.0 in the old harness).
+#
+# TWO prompt sets:
+#   A. "apples" — the EXACT old coding+general prompts (temp 0) -> direct compare to the
+#      ~1.66 coding-only baseline. Answers: did agentic data help on the old benchmark?
+#   B. "agentic" — real-to-life coding-AGENT decoding: multi-turn system+tools frame,
+#      prior tool_call/result in context, long structured output (reasoning -> tool_call
+#      -> code), max_tokens 1024, tools via qwen3_coder parser. This is the workload the
+#      agentic corpus targeted, so it's the number that should move most.
+#   (temp 0 both: real coding agents decode near-greedy; also keeps A comparable. A temp>0
+#    "sampled rhythm" pass can be added if we want — see NOTE in eval.sh.)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dspark-eval-agentic-v2-script
+  namespace: default
+data:
+  prompts.jsonl: |
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Write a Python function that merges two sorted linked lists into one sorted list. Include the ListNode class."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Fix this bug: `def avg(xs): return sum(xs)/len(xs)` crashes on empty input. Make it return 0.0 for empty."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Implement an LRU cache in Python with get and put in O(1) using OrderedDict."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Write a TypeScript function `debounce<T>(fn: T, ms: number)` that returns a debounced version preserving argument types."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Write a Python decorator `@retry(times=3, delay=1)` that retries a function on exception with a delay."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Given a binary tree, write a function to return its level-order traversal as a list of lists (Python)."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Write a SQL query to find the second-highest salary from an Employee(id, salary) table, handling ties."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Implement quicksort in Rust for a Vec<i32>, sorting in place."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Write a Python function to detect a cycle in a directed graph (adjacency list) using DFS."}],"max_tokens":400}
+    {"set":"apples","cat":"coding","messages":[{"role":"user","content":"Write a React hook `useLocalStorage(key, initial)` that syncs state to localStorage (TypeScript)."}],"max_tokens":400}
+    {"set":"apples","cat":"general","messages":[{"role":"user","content":"Explain the difference between TCP and UDP in a few sentences."}],"max_tokens":400}
+    {"set":"apples","cat":"general","messages":[{"role":"user","content":"What are the tradeoffs between SQL and NoSQL databases?"}],"max_tokens":400}
+    {"set":"apples","cat":"general","messages":[{"role":"user","content":"Explain what a race condition is and give a simple example."}],"max_tokens":400}
+    {"set":"agentic","cat":"agent","max_tokens":1024,"messages":[{"role":"system","content":"You are a coding agent working in a git repo. You have a `bash` tool. Think step by step, then call the tool to inspect or edit files. Keep going until the task is done."},{"role":"user","content":"The test `tests/test_stats.py::test_empty` fails with `ZeroDivisionError` in `stats.py`'s `average()` when given an empty list. Investigate and fix it so it returns 0.0 for empty input, without breaking the non-empty case."}]}
+    {"set":"agentic","cat":"agent","max_tokens":1024,"messages":[{"role":"system","content":"You are a coding agent with a `bash` tool. Reason, then act with tool calls."},{"role":"user","content":"Our FastAPI service returns 500 on POST /users when the body is missing the `email` field. Add validation that returns 422 with a clear message. The handler is in app/routes/users.py."},{"role":"assistant","content":"<think>I should look at the current handler before editing.</think>","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"cat app/routes/users.py\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"from fastapi import APIRouter\nfrom app.models import User\nrouter = APIRouter()\n\n@router.post('/users')\ndef create_user(body: dict):\n    user = User(name=body['name'], email=body['email'])\n    return {'id': user.id}\n"}]}
+    {"set":"agentic","cat":"agent","max_tokens":1024,"messages":[{"role":"system","content":"You are a coding agent with a `bash` tool."},{"role":"user","content":"Refactor the duplicated retry logic in `client/fetch.ts` and `client/upload.ts` into a shared `withRetry` helper in `client/retry.ts`, then update both call sites. Start by inspecting the files."}]}
+    {"set":"agentic","cat":"agent","max_tokens":1024,"messages":[{"role":"system","content":"You are a coding agent with a `bash` tool. Think, then call tools."},{"role":"user","content":"A Go service leaks goroutines under load. `worker.go` starts a goroutine per request but never cancels them. Add context-based cancellation so they exit when the request is done."},{"role":"assistant","content":"<think>Let me read worker.go to see how the goroutines are started.</think>","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"sed -n '1,60p' worker.go\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"package main\n\nimport (\n\t\"net/http\"\n)\n\nfunc handle(w http.ResponseWriter, r *http.Request) {\n\tgo process(r) // fire-and-forget\n\tw.WriteHeader(202)\n}\n\nfunc process(r *http.Request) {\n\tfor {\n\t\tdoWork(r)\n\t}\n}\n"}]}
+    {"set":"agentic","cat":"agent","max_tokens":1024,"messages":[{"role":"system","content":"You are a coding agent with a `bash` tool."},{"role":"user","content":"CI fails: `npm run build` errors with 'Cannot find module ./config' in src/index.ts after we renamed config.ts to config.default.ts. Find every broken import and fix them. Begin by grepping for the old path."}]}
+    {"set":"agentic","cat":"agent","max_tokens":1024,"messages":[{"role":"system","content":"You are a coding agent with a `bash` tool. Reason, then act."},{"role":"user","content":"Add a `--dry-run` flag to the Python CLI in `deploy.py` (argparse) that prints the actions it would take without executing the shell commands. Inspect the file first, then make the edit."}]}
+  bench.py: |
+    import json, os, time, urllib.request
+    URL="http://127.0.0.1:8001/v1/chat/completions"; MODEL="unsloth/Qwen3.6-27B-NVFP4"
+    K=int(os.environ.get("K","15"))
+    def metrics():
+        try: m=urllib.request.urlopen("http://127.0.0.1:8001/metrics",timeout=10).read().decode()
+        except Exception: return (0.0,0.0)
+        d=a=0.0
+        for line in m.splitlines():
+            if line.startswith("vllm:spec_decode_num_draft_tokens_total"): d=float(line.split()[-1])
+            elif line.startswith("vllm:spec_decode_num_accepted_tokens_total"): a=float(line.split()[-1])
+        return (d,a)
+    def run(label, items):
+        d0,a0=metrics(); toks=0; t0=time.time(); n=0
+        for it in items:
+            body={"model":MODEL,"messages":it["messages"],"max_tokens":it.get("max_tokens",400),"temperature":0}
+            data=json.dumps(body).encode()
+            req=urllib.request.Request(URL,data=data,headers={"Content-Type":"application/json"})
+            try:
+                r=json.loads(urllib.request.urlopen(req,timeout=600).read())
+                toks += r.get("usage",{}).get("completion_tokens",0); n+=1
+            except Exception as ex: print("  req err:",str(ex)[:160])
+        dt=time.time()-t0; d1,a1=metrics(); dd,da=d1-d0,a1-a0
+        al = 1 + (da/(dd/K)) if dd else float('nan')
+        tps = toks/dt if dt else 0.0
+        print(f"  [{label}] n={n} tokens={toks} time={dt:.1f}s tok/s={tps:.1f} accept_len={al:.3f}")
+        return {"label":label,"n":n,"tokens":toks,"tok_s":tps,"accept_len":al}
+    P=[json.loads(l) for l in open("/scripts/prompts.jsonl") if l.strip()]
+    out={}
+    for s in ("apples","agentic"):
+        items=[x for x in P if x["set"]==s]
+        if items: out[s]=run(s, items)
+    json.dump(out, open(f"/output/logs/eval_agentic_v2_{os.environ.get('MODE','on')}.json","w"))
+  eval.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data; export HF_HUB_ENABLE_HF_TRANSFER=1
+    MODEL=unsloth/Qwen3.6-27B-NVFP4
+    CKPTDIR=/output/checkpoints-agentic-v2-20260808
+    mkdir -p /output/logs
+    # auto-select the FINAL checkpoint
+    SRC=""
+    for c in "$CKPTDIR/checkpoint_best" "$CKPTDIR/0" "$CKPTDIR"/epoch*_end "$CKPTDIR"/epoch*_step*; do
+      [ -f "$c/config.json" ] && { SRC=$(readlink -f "$c"); break; }
+    done
+    [ -n "$SRC" ] && [ -f "$SRC/config.json" ] || { echo "FATAL: no checkpoint under $CKPTDIR"; ls -la "$CKPTDIR"; exit 1; }
+    echo "checkpoint: $SRC"
+    # fc-patch on a COPY (keep original pristine); symlink the big weights
+    DST=/output/eval-agentic-v2-patched; mkdir -p "$DST"
+    cp "$SRC/config.json" "$DST/"; [ -f "$SRC/config.py" ] && cp "$SRC/config.py" "$DST/"
+    ln -sf "$SRC/model.safetensors" "$DST/model.safetensors"
+    python3 -c "import json; p='$DST/config.json'; c=json.load(open(p)); c.setdefault('transformer_layer_config',{})['dflash_config']={'mask_token_id':248077,'target_layer_ids':[1,16,31,46,61]}; json.dump(c,open(p,'w'),indent=2); print('patched fc dflash_config len=5')"
+
+    COMMON="--host 127.0.0.1 --port 8001 --gpu-memory-utilization 0.90 --max-model-len 12288 \
+      --dtype bfloat16 --trust-remote-code --kv-cache-dtype fp8_e4m3 \
+      --mamba-cache-dtype float16 --mamba-ssm-cache-dtype float16 \
+      --no-enable-prefix-caching --max-num-seqs 8 \
+      --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3"
+    wait_health(){ for i in $(seq 1 360); do curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1 && return 0; kill -0 "$1" 2>/dev/null || { echo "vLLM died:"; tail -60 "$2"; return 1; }; sleep 10; done; echo timeout; tail -40 "$2"; return 1; }
+
+    # PASS 1: drafter ON -> per-set accept_len (non-suppressing config)
+    echo "=== [$(date)] PASS 1 drafter ON (k=15) ==="
+    vllm serve "$MODEL" $COMMON \
+      --speculative-config "{\"method\":\"dspark\",\"model\":\"$DST\",\"num_speculative_tokens\":15}" \
+      > /output/logs/eval_agentic_v2_on.log 2>&1 &
+    VP=$!; wait_health $VP /output/logs/eval_agentic_v2_on.log || { kill $VP 2>/dev/null; exit 1; }
+    MODE=on python3 /scripts/bench.py 2>&1 | tee /output/logs/eval_agentic_v2_on_result.log
+    echo "--- vLLM native SpecDecoding metric (cross-check) ---"
+    grep -aE "SpecDecoding metrics|Mean acceptance length" /output/logs/eval_agentic_v2_on.log | tail -3
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null
+    # NOTE: to also measure a temp>0 "sampled rhythm", add a PASS with temperature>0 in bench.py.
+    echo "=== [$(date)] eval done — compare apples accept_len to the ~1.66 baseline; agentic = real-world number ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dspark-eval-agentic-v2-20260810
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 5400
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:v0.26.0
+          command: ["/bin/bash", "/scripts/eval.sh"]
+          env:
+            - { name: HF_HOME, value: /data }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
+            - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "4", memory: 32Gi }
+            requests: { cpu: "4", memory: 32Gi }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: output, mountPath: /output }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: vllm-models } }
+        - { name: output, persistentVolumeClaim: { claimName: dspark-output-hdd-v2 } }
+        - { name: scripts, configMap: { name: dspark-eval-agentic-v2-script, defaultMode: 0755 } }
