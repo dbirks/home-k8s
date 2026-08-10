@@ -1,0 +1,103 @@
+# vLLM Production Stack — the /v1 backend for llm.birks.dev.
+#
+# Serves Qwen3.6-27B-NVFP4 behind the stack's OpenAI-compatible router. kgateway's
+# /v1 HTTPRoute points at the router Service (see apps/llm-routes.yaml). Plan/rationale
+# in GitHub #66. On ONE 96GB GPU only one model runs at a time — this file serves Qwen
+# only; the Laguna swap-mode config is preserved in #66 + git history if ever wanted.
+#
+# SM120 notes: v0.26.0 + VLLM_ATTENTION_BACKEND=FLASHINFER (0.26 crashes cutedsl on
+# SM120 without it). Qwen3.6 is a hybrid DeltaNet+Attention model -> fp8 KV is OK but
+# the DeltaNet recurrent state must be float16 (--mamba-cache-dtype), and prefix caching
+# is off (hybrid GDN bug). Spec-decode (DFlash/DSpark drafter) intentionally OMITTED for
+# the first bringup — add --speculative-config once the plain serve is confirmed healthy.
+#
+# GPU: requires plain apps/vllm.yaml (vllm-qwen27) scaled to 0 first — two Qwens can't
+# co-reside. Router is ClusterIP (reached in-cluster by kgateway; no MetalLB IP).
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: vllm-production-stack
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://vllm-project.github.io/production-stack
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vllm-stack
+  namespace: default
+spec:
+  interval: 10m
+  timeout: 45m   # first engine init + model download/load is slow
+  chart:
+    spec:
+      chart: vllm-stack
+      version: "0.1.12"
+      sourceRef:
+        kind: HelmRepository
+        name: vllm-production-stack
+        namespace: flux-system
+      interval: 1h
+  values:
+    servingEngineSpec:
+      enableEngine: true
+      runtimeClassName: "nvidia"
+      strategy:
+        type: Recreate   # never overlap engine pods on the shared GPU (avoids double-alloc OOM)
+      serviceMonitor:
+        enabled: true
+        additionalLabels: {}
+      modelSpec:
+        - name: qwen27
+          enabled: true
+          replicaCount: 1
+          repository: "vllm/vllm-openai"
+          tag: "v0.26.0"
+          modelURL: "unsloth/Qwen3.6-27B-NVFP4"
+          runtimeClassName: "nvidia"
+          requestGPU: 1
+          requestCPU: 4
+          requestMemory: "24Gi"
+          pvcStorage: "60Gi"
+          storageClass: "local-path"
+          shmSize: "16Gi"
+          enableLoRA: false          # FOOTGUN: chart defaults true -> injects --enable-lora + sidecar
+          hf_token:
+            secretName: "hf-token"
+            secretKey: "HF_TOKEN"
+          keda:
+            enabled: false           # manual, no autoscaling
+          vllmConfig:
+            # omit `v0` -> V1 engine (v0:"1" forces legacy V0)
+            enablePrefixCaching: false
+            maxModelLen: 16384
+            gpuMemoryUtilization: 0.88
+            extraArgs:
+              - "--kv-cache-dtype"
+              - "fp8_e4m3"
+              - "--mamba-cache-dtype"
+              - "float16"
+              - "--mamba-ssm-cache-dtype"
+              - "float16"
+              - "--trust-remote-code"
+              - "--served-model-name"
+              - "main"
+              - "qwen27"
+          env:
+            - name: VLLM_ATTENTION_BACKEND
+              value: "FLASHINFER"       # SM120: required on v0.26.0
+            - name: VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: "latency"
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: "12.0f"
+    routerSpec:
+      enableRouter: true
+      serviceType: ClusterIP
+      routingLogic: "roundrobin"
+      serviceMonitor:
+        enabled: true
+        additionalLabels: {}
