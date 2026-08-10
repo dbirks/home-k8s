@@ -1,0 +1,39 @@
+# llm.birks.dev Gateway (kgateway) — the single entry the Cloudflare Tunnel points at.
+#
+# ClusterIP proxy service (not LoadBalancer): cloudflared runs in-cluster and reaches
+# this over cluster DNS, so we don't spend a MetalLB LAN IP on a public-only endpoint.
+# HTTP :80 only — TLS terminates at Cloudflare's edge, origin hop stays plain HTTP.
+#
+# HTTPRoutes + the apiKeyAuth TrafficPolicy are added once the backend (vLLM production
+# stack) and portal live in this namespace (keeping Gateway/routes/policy/key-Secrets all
+# in llm-portal avoids cross-namespace ReferenceGrants under kgateway PERMISSIVE mode).
+---
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: GatewayParameters
+metadata:
+  name: llm-gw-params
+  namespace: llm-portal
+spec:
+  kube:
+    service:
+      type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: llm-gw
+  namespace: llm-portal
+spec:
+  gatewayClassName: kgateway
+  infrastructure:
+    parametersRef:
+      group: gateway.kgateway.dev
+      kind: GatewayParameters
+      name: llm-gw-params
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
