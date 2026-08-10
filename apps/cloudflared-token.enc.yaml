@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    token: ENC[AES256_GCM,data:YADjf4HkONRt+M1DjL+CLTdZaYb2dSxStL0O/Lb2t26Gb/0OSqN2qrtjHt7941RMvzZcs57xIMcBp/Z+sSzQGH82ReeqLuFoboMlbu41UgiFlKgb+ziGhu1w0/jfvOB/8FmSQNfQENfwFnIq9EJDwyBYC6mlsWK7x3EW8paSKy6me8U1Vk6zj/Iwtz0s8q7+dtYnNvCmrIJz9UI2o8PAtP9ZM8uOEHoxcIVRt7xafZOl0W7kGx7bmnZN/IfOCkXBSjssX5fXFEFFCr8CFrwuvCa04XMNPohRtcl7A7yzW8Ly6Qf5DrlrRx8asqPY0iSYT+r/X8G5GXw=,iv:ldjxAqY+xD/j+0dpAilcjb27lLEUFo+H41jIy47Y238=,tag:ccavEwh2hooBORTvF9BZnQ==,type:str]
+kind: Secret
+metadata:
+    name: cloudflared-token
+    namespace: llm-portal
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBUUWZlOXVTU3M4WUg2eTd1
+            VGFlOCtBK2hYWnBrUU9VZ3k3c2lyVVVLK240CkJ5bGgrK2hnbUdnaEJSUGF3R3p5
+            TEpoSkc4d0ZwNC9Tam1pMk5yNG5jckUKLS0tIFBtMHQxT25BdVRnV1QxTHFKQi9t
+            N0laL2h6YmxvN3VNM2VjV2JoZldVajQKu/QbScbCBxWiywLHo7n1OpmPs+1rPawA
+            uZAKkCF9uqWZrqpCLnkPtiv+lalpfpSDXKn07r6rUcgAUPfgpxOsnw==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-08-10T07:11:36Z"
+    mac: ENC[AES256_GCM,data:P67BQfODtBtpmrI9Slb1wxalID3iL6Cb5/DdS3Dv0atZIrDZCSlsUtZGwx+K8z2WgceJ+FBujPLqwxkEuL5t3cDUeWN967q0LKj8jn4VnmAqnwtqWg8gk0hrHgkUz9lzYi+n0Fp1LgdZcE1aqYex1CIes+ERT9tD+ZXkCGHMj/s=,iv:d+kdY0atxvdBSUpVGc2cNVaM9l0Z80hkqO+WIQZhqLw=,tag:6rWZhbNYi9prrFjsgyI2Ig==,type:str]
+    version: 3.13.0

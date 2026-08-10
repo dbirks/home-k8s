@@ -1,0 +1,74 @@
+# kgateway — Gateway API implementation for the llm.birks.dev public path.
+#
+# Installed via Helm (two OCI charts): kgateway-crds (its own *.gateway.kgateway.dev
+# CRDs incl. TrafficPolicy) then kgateway (controller + GatewayClass "kgateway").
+# The upstream Gateway API CRDs it needs come from prereqs/gateway-api-crds.yaml.
+#
+# Purpose: serve ONLY the cloudflared -> llm.birks.dev path. Coexists with ingress-nginx
+# (separate control planes; kgateway only reconciles Gateways with gatewayClassName
+# "kgateway"). Enforces per-key API auth on /v1/* via TrafficPolicy.spec.apiKeyAuth
+# (OSS since v2.2). Envoy dataplane; keys sourced from labeled Secrets in llm-portal.
+#
+# install/upgrade remediation retries: the chart creates a gateway.networking.k8s.io
+# GatewayClass at install, so it needs the upstream Gateway API CRDs present first;
+# retries let it self-heal once prereqs/gateway-api-crds.yaml has applied them.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: kgateway
+  namespace: flux-system
+spec:
+  type: oci
+  interval: 1h
+  url: oci://cr.kgateway.dev/kgateway-dev/charts
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kgateway-crds
+  namespace: kgateway-system
+spec:
+  interval: 1h
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: kgateway-crds
+      version: v2.4.2
+      sourceRef:
+        kind: HelmRepository
+        name: kgateway
+        namespace: flux-system
+      interval: 1h
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kgateway
+  namespace: kgateway-system
+spec:
+  interval: 1h
+  dependsOn:
+    - name: kgateway-crds
+  install:
+    remediation:
+      retries: 5          # self-heal until upstream Gateway API CRDs land
+  upgrade:
+    remediation:
+      retries: 5
+  chart:
+    spec:
+      chart: kgateway
+      version: v2.4.2
+      sourceRef:
+        kind: HelmRepository
+        name: kgateway
+        namespace: flux-system
+      interval: 1h
+  values: {}              # defaults; creates GatewayClass "kgateway"
