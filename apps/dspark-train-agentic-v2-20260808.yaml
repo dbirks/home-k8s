@@ -207,11 +207,12 @@ metadata:
   name: dspark-train-agentic-v2-20260808
   namespace: default
 spec:
-  # 2026-08-10: PAUSED at ~77% (live step ~132,980) to free the whole GPU for the
-  # vLLM production-stack + API-key portal buildout (llm.birks.dev via cloudflared).
-  # Resumes from the last checkpoint (step 129,822, ~40min of work lost). Flip
-  # suspend->false to resume training and pick up where it left off.
-  suspend: true
+  # 2026-08-10: RESUMED. The llm.birks.dev portal + gateway + tunnel are live and the
+  # vLLM Production Stack is proven-deployable (parked as vllm-stack.yaml.hold to give
+  # the GPU back to training — Qwen-27B serving ~84GB can't co-reside with ~90GB
+  # training on 96GB; HAMi + a tiny model is the always-on-both path). Resumes from the
+  # last checkpoint (step 129,822).
+  suspend: false
   backoffLimit: 100
   activeDeadlineSeconds: 345600   # 96h (546k rows x 2 epochs online is long)
   template:
