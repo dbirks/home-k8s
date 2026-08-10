@@ -1,0 +1,67 @@
+# llm.birks.dev routing + API-key enforcement.
+#
+# /v1/* -> vLLM backend, guarded by kgateway apiKeyAuth (per-key Secrets).
+# (/ -> portal is added once the portal Deployment/Service exist.)
+#
+# INTERIM BACKEND: the plain `vllm` Service (Qwen3.6-27B) in the `default` namespace,
+# reachable cross-namespace via the ReferenceGrant below. When the vLLM Production
+# Stack is stood up in llm-portal, repoint this backendRef there and drop the grant.
+#
+# API-KEY MODEL (verified against the live kgateway CRD — supersedes earlier notes):
+#   - A key Secret is a PLAIN Secret whose stringData holds { <client-id>: <key-value> },
+#     one entry per key, selected by label. No special `type` required.
+#   - keySources: [{header: Authorization}] extracts the WHOLE header, so for OpenAI/
+#     Claude-Code clients (which send `Authorization: Bearer <key>`) the stored value
+#     MUST be `Bearer <key>`. The portal must store the "Bearer " prefix.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-v1
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1
+      backendRefs:
+        - name: vllm
+          namespace: default
+          port: 80
+---
+# Allow the llm-portal HTTPRoute to reference the vllm Service in `default`.
+apiVersion: gateway.networking.k8s.io/v1
+kind: ReferenceGrant
+metadata:
+  name: llm-portal-httproute-to-vllm
+  namespace: default
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: llm-portal
+  to:
+    - group: ""
+      kind: Service
+      name: vllm
+---
+# Enforce API keys on /v1 ONLY (portal paths stay unauthenticated for OIDC login).
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: TrafficPolicy
+metadata:
+  name: vllm-apikey-auth
+  namespace: llm-portal
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: vllm-v1
+  apiKeyAuth:
+    keySources:
+      - header: Authorization
+    secretSelector:
+      matchLabels:
+        kgateway.dev/apikey: "true"
