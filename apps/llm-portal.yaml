@@ -1,0 +1,54 @@
+# llm.birks.dev — API-key portal: namespace + RBAC (foundational)
+#
+# The portal (Go app, repo dbirks/kubernetes-llm-api-key-portal) signs users in via
+# Entra OIDC and creates/revokes API keys as Kubernetes Secrets in THIS namespace.
+# kgateway then enforces those keys on /v1/* (its controller already has cluster-wide
+# Secret read via its own ClusterRole). Keeping the portal's key-Secrets, the
+# HTTPRoute, and the TrafficPolicy all in `llm-portal` avoids cross-namespace
+# ReferenceGrant (kgateway PERMISSIVE mode would otherwise fail closed).
+#
+# Secret shape kgateway expects (OSS apiKeyAuth, v2.2+): ONE Secret per key,
+# type extauth.solo.io/apikey, data key literally `api-key`, client identity =
+# Secret name. (NB: this differs from the brief's multi-entry client-<id> shape —
+# the portal code must write one-Secret-per-key. Flagged to the portal repo.)
+#
+# OIDC secret (ENTRA_CLIENT_SECRET + SESSION_KEY) lives in apps/llm-portal-oidc.enc.yaml
+# (SOPS). Public config (tenant/client id, PUBLIC_BASE_URL) goes inline on the portal
+# Deployment (added once the ghcr image is published).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-portal
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: llm-portal
+  namespace: llm-portal
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: llm-portal-secrets
+  namespace: llm-portal
+rules:
+  # Least-privilege: the portal manages API-key Secrets in its own namespace only.
+  # No "update" — keys are immutable (create -> use -> revoke/delete).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: llm-portal-secrets
+  namespace: llm-portal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: llm-portal-secrets
+subjects:
+  - kind: ServiceAccount
+    name: llm-portal
+    namespace: llm-portal

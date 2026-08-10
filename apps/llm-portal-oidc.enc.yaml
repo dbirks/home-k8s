@@ -1,0 +1,23 @@
+apiVersion: v1
+data:
+    ENTRA_CLIENT_SECRET: ENC[AES256_GCM,data:Sz+1N3lyvvOvt41VPc/rxxBhBmSmwXLnoKrYDBWAJTtyWwQzFGrBwar6ValCFXnoPlVXt8Vtc4o=,iv:e0gDwPibx64XOAuQxtfSuvA6UUfGq+SmvTQVhJmaqRw=,tag:FIDOtTx6l9ebdi4vKc3pPg==,type:str]
+    SESSION_KEY: ENC[AES256_GCM,data:ffDYCHb7xppFCi254MVuDXOn5hsRY94ckZEorF1Sv2e8NvCMP/JI1KmHgrMMM7Ls6UVZsLNE/dn4Tp3v,iv:qAnsZsq7dsNntvoEiqxj5S9dtuSQNjaKNngUfZvnh1g=,tag:6nYutMPmNv4VPPaia58xWQ==,type:str]
+kind: Secret
+metadata:
+    name: llm-portal-oidc
+    namespace: llm-portal
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB2WDUzaVRIM0FiTzdDdU0x
+            N3N2d0FlUzZjTnVsWGgrTU5zd2pxQnA1aW1ZCkViZkFWU0lWbzZreExkQkNxTGcv
+            cFcySXp5NHVwTjlCTTMwSFNZTW9KZFEKLS0tIC81MFFiTnVBTE5kZzIxNnp2Tkhi
+            MEZYbG9GMkV2enRZN0lVbUF5elAwK2sKSIgo0u3NJCXi3oRbNF31t52YP3zoquH4
+            i1fZ+R+1ky08KizVtfaLMUjCcJCEVYII9H2zvPE+8nIs7dlzY1g4yA==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-08-10T07:02:07Z"
+    mac: ENC[AES256_GCM,data:eihzfL+hjtDbiozpodz/RFrv0lAJP/VjCKZIcI2WYbjsaUll9nhScUd/f53eyy1/1o/XQ0bsbuDHFy01LW7tBvsgnOxlrNqATiVner3O4b6z/VhPG6/gRpemfgZKDVniXE8V8lP//XfgDiQC+7uLC/MUgvOaEtBqs0va06MUDDM=,iv:V2qCy/9CvBs2Ms8tow3yKUTzi7aRDkEqG0AdXkshywA=,tag:rlS6gYptzk6fuVxgqkbLEA==,type:str]
+    version: 3.13.0
