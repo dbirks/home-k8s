@@ -53,6 +53,19 @@ subjects:
     name: llm-portal
     namespace: llm-portal
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-portal-config
+  namespace: llm-portal
+data:
+  PUBLIC_BASE_URL: "https://llm.birks.dev"
+  ENTRA_TENANT_ID: "c396bef6-8e08-40ab-b4f7-02d01fb0b6ce"   # public id
+  ENTRA_CLIENT_ID: "1787dab3-157b-4872-a88a-bffe4ba75094"   # public id
+  KEYSTORE_MODE: "kubernetes"        # persist keys as k8s Secrets (default is memory!)
+  KUBERNETES_NAMESPACE: "llm-portal" # where key Secrets are written
+  DEFAULT_MODEL: "main"              # prefilled in setup snippets; matches vLLM served-model-name
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -75,17 +88,11 @@ spec:
           image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-f0d81798f48436312c06627a30bd2b2fdad83b92
           ports:
             - containerPort: 8080
-          env:
-            - { name: PUBLIC_BASE_URL, value: "https://llm.birks.dev" }
-            - { name: ENTRA_TENANT_ID, value: "c396bef6-8e08-40ab-b4f7-02d01fb0b6ce" }   # public id
-            - { name: ENTRA_CLIENT_ID, value: "1787dab3-157b-4872-a88a-bffe4ba75094" }   # public id
-            - name: ENTRA_CLIENT_SECRET
-              valueFrom: { secretKeyRef: { name: llm-portal-oidc, key: ENTRA_CLIENT_SECRET } }
-            - name: SESSION_KEY
-              valueFrom: { secretKeyRef: { name: llm-portal-oidc, key: SESSION_KEY } }
-            - { name: KEYSTORE_MODE, value: "kubernetes" }        # persist keys as k8s Secrets (default is memory!)
-            - { name: KUBERNETES_NAMESPACE, value: "llm-portal" } # where key Secrets are written
-            - { name: DEFAULT_MODEL, value: "main" }              # prefilled in the setup snippets; matches vLLM served-model-name
+          envFrom:
+            - configMapRef:
+                name: llm-portal-config    # non-secret config (base URL, Entra IDs, keystore)
+            - secretRef:
+                name: llm-portal-oidc      # ENTRA_CLIENT_SECRET + SESSION_KEY (SOPS-decrypted)
           readinessProbe:
             httpGet: { path: /, port: 8080 }
             initialDelaySeconds: 5
