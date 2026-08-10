@@ -67,3 +67,23 @@ spec:
     secretSelector:
       matchLabels:
         llm-portal/api-key: "true"
+---
+# Catch-all -> portal (sign-in, /account, key create/revoke). Same namespace as the
+# Gateway, so no ReferenceGrant. NO apiKeyAuth here (OIDC login must be reachable);
+# /v1 is a longer prefix so it still routes to vLLM.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: portal
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: llm-portal
+          port: 80
