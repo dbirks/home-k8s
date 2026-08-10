@@ -54,7 +54,10 @@ spec:
   # 2026-07-25: back UP to 1 for the overnight DeepSWE resume (conc-6) — serves "main"
   # for the mini-swe-agent runners. Laguna is paused (replicas 0) so the GPU is free.
   # 2026-07-25 (later): DeepSWE done -> back to 0, GPU handed to the DSpark-full training Job.
-  replicas: 0
+  # 2026-08-10: back UP to 1 — DSpark training suspended to build the llm.birks.dev
+  # coworker endpoint; this serves as the /v1 backend (kgateway HTTPRoute targets the
+  # `vllm` Service) and keeps the freed GPU doing useful work.
+  replicas: 1
   strategy:
     type: Recreate
   selector:
