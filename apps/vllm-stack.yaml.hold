@@ -1,3 +1,10 @@
+# ============================ PARKED (.yaml.hold) ============================
+# Flux ignores this. Parked 2026-08-11 to take the endpoint DOWN for the whole
+# Muse-Glimmer NVFP4 quantization (apps/muse-quant.yaml) — the quant owns the GPU.
+# A stuck helm upgrade was flapping qwen27; pruning the HelmRelease (via .hold)
+# uninstalls it cleanly and frees the card. To serve again: rename -> .yaml, set
+# qwen27 replicaCount back to 1, reconcile. (muse-glimmer stays at 0 as before.)
+# ============================================================================
 # vLLM Production Stack — the /v1 backend for llm.birks.dev.
 #
 # Serves Qwen3.6-27B-NVFP4 behind the stack's OpenAI-compatible router. kgateway's
