@@ -74,6 +74,12 @@ spec:
             maxModelLen: 16384
             gpuMemoryUtilization: 0.88
             extraArgs:
+              # --enforce-eager: skip inductor CUDA-graph compilation. On SM120 that
+              # compilation for 27B overruns the chart's 10-min startup probe -> the
+              # engine got SIGKILLed at 10min and crash-looped. Eager loads in ~3-5min
+              # and passes the probe. Costs some decode latency (no CUDA graphs); revisit
+              # once stable (extend startupProbe.failureThreshold instead to keep graphs).
+              - "--enforce-eager"
               - "--kv-cache-dtype"
               - "fp8_e4m3"
               - "--mamba-cache-dtype"
