@@ -259,34 +259,37 @@ data:
         raise SystemExit(f"FATAL: export format is {(qc or {}).get('format')!r}, expected nvfp4-pack-quantized")
     print(f"OK [{MODE}]: nvfp4-pack-quantized export verified at {OUT}", flush=True)
 ---
+# Quantize Job: runs smoke (nsamples 8, iters 0 — validate download+calibration+packing+export)
+# then default (nsamples 128, iters 200 — the real artifact). Preflight GREEN gated this:
+# Muse loads (transformers-from-source), dense (SM120-safe), clean text/vision/head module map.
+# HF_HOME on the PVC so the ~60GB BF16 base downloads ONCE and re-runs reuse it.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-quant-preflight-20260811d
+  name: muse-quant-run-20260811
   namespace: default
 spec:
-  backoffLimit: 1
-  activeDeadlineSeconds: 2400   # pip install + config/processor download + meta inventory (fast)
+  backoffLimit: 0               # long, expensive GPU run — never auto-retry; fix + re-fire by name bump
+  activeDeadlineSeconds: 28800  # up to 8h: ~60GB download + smoke + default (iters 200)
   template:
     spec:
       restartPolicy: Never
-      # NO GPU / no runtimeClassName: preflight is CPU-only. Config load + MLLM detection +
-      # meta-device Linear inventory need no GPU, so this runs immediately regardless of GPU
-      # contention. (SM120 is already known-good — the card serves NVFP4 today.)
+      runtimeClassName: nvidia
       enableServiceLinks: false     # avoid the `vllm` Service injecting VLLM_* env into this pod
       priorityClassName: system-node-critical
       containers:
-        - name: preflight
+        - name: quantize
           image: vllm/vllm-openai:v0.26.0
-          command: ["/bin/bash", "/scripts/prep.sh", "preflight"]
+          command: ["/bin/bash", "/scripts/prep.sh", "quantize"]   # smoke then default
           env:
             - { name: HF_HOME, value: /workspace/hf }
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
             - { name: MUSE_MODEL, value: "meta-models/Muse-Glimmer-30B" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
             - { name: ARTIFACTS, value: /workspace/artifacts }
           resources:
-            limits: { cpu: "4", memory: 24Gi }
-            requests: { cpu: "4", memory: 12Gi }
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
+            requests: { cpu: "4", memory: 24Gi }
           volumeMounts:
             - { name: workspace, mountPath: /workspace }
             - { name: scripts, mountPath: /scripts }
