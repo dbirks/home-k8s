@@ -64,6 +64,11 @@ data:
     fi
     echo "=== [$(date)] installing ${AR_SPEC} + deps ==="
     "$PY" -m pip install --no-cache-dir "$AR_SPEC" datasets accelerate 2>&1 | tail -15
+    # Muse (model_type muse_glimmer) is newer than the pinned transformers release and has no
+    # auto_map (not a remote-code model) -> install transformers from source so the arch is known.
+    echo "=== [$(date)] installing transformers from source (for muse_glimmer arch) ==="
+    "$PY" -m pip install --no-cache-dir --upgrade "git+https://github.com/huggingface/transformers.git" 2>&1 | tail -8
+    "$PY" -c "import transformers; print('transformers', transformers.__version__)"
     echo "=== [$(date)] torch AFTER install (must still import) ==="
     "$PY" -c "import torch;print('torch',torch.__version__,'cuda?',torch.cuda.is_available())" || true
     "$PY" -m pip freeze 2>/dev/null > /workspace/artifacts/pip-freeze.txt || true
@@ -257,7 +262,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-quant-preflight-20260811c
+  name: muse-quant-preflight-20260811d
   namespace: default
 spec:
   backoffLimit: 1
