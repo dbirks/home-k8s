@@ -251,13 +251,30 @@ data:
     _, saved = ar.quantize_and_save(output_dir=str(OUT), format="llm_compressor")
     print("Saved:", saved, flush=True)
 
-    c = json.loads((OUT/"config.json").read_text())
+    # AutoRound writes into a nested subdir (e.g. OUT/<model>-nvfp-w4g16). Resolve the real
+    # artifact dir from the returned path, with rglob + OUT fallbacks.
+    def _find_cfg(base):
+        base = Path(base)
+        if (base / "config.json").is_file():
+            return base
+        for p in sorted(base.rglob("config.json")):
+            return p.parent
+        return None
+    cand = saved[0] if isinstance(saved, (list, tuple)) else saved
+    SAVED = _find_cfg(cand) if cand else None
+    SAVED = SAVED or _find_cfg(OUT)
+    if SAVED is None:
+        raise SystemExit(f"FATAL: no config.json found under {cand!r} or {OUT}")
+    print("resolved artifact dir:", SAVED, flush=True)
+    (ART / f"artifact-path-{MODE}.txt").write_text(str(SAVED) + "\n")
+
+    c = json.loads((SAVED / "config.json").read_text())
     qc = c.get("quantization_config") or c.get("text_config", {}).get("quantization_config")
-    (ART/f"quant-config-{MODE}.json").write_text(json.dumps(qc, indent=2, default=str))
+    (ART / f"quant-config-{MODE}.json").write_text(json.dumps(qc, indent=2, default=str))
     print("quantization_config:\n", json.dumps(qc, indent=2, default=str)[:2000], flush=True)
     if (qc or {}).get("format") != "nvfp4-pack-quantized":
         raise SystemExit(f"FATAL: export format is {(qc or {}).get('format')!r}, expected nvfp4-pack-quantized")
-    print(f"OK [{MODE}]: nvfp4-pack-quantized export verified at {OUT}", flush=True)
+    print(f"OK [{MODE}]: nvfp4-pack-quantized export verified at {SAVED}", flush=True)
 ---
 # Quantize Job: runs smoke (nsamples 8, iters 0 — validate download+calibration+packing+export)
 # then default (nsamples 128, iters 200 — the real artifact). Preflight GREEN gated this:
@@ -266,7 +283,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-quant-run-20260811
+  name: muse-quant-run-20260811b
   namespace: default
 spec:
   backoffLimit: 0               # long, expensive GPU run — never auto-retry; fix + re-fire by name bump
