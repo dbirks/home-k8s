@@ -51,7 +51,8 @@ spec:
       modelSpec:
         - name: qwen27
           enabled: true
-          replicaCount: 1
+          replicaCount: 0   # SCALED DOWN: GPU handed to the Muse-Glimmer NVFP4 AutoRound
+                            # quantization Job (apps/muse-quant.yaml). Restore to 1 to serve.
           repository: "vllm/vllm-openai"
           tag: "v0.26.0"
           modelURL: "unsloth/Qwen3.6-27B-NVFP4"
