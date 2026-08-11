@@ -69,6 +69,11 @@ data:
     # few-shot in-context) restores the signal, and base/quant stay apples-to-apples.
     run_one () {
       local key="$1"; local M="$2"; local tsk="$3"
+      # local dir whose config.json is nested (AutoRound writes OUT/<model>-<scheme>) -> resolve it
+      if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then
+        local nested; nested=$(dirname "$(find "$M" -name config.json 2>/dev/null | head -1)")
+        [ -n "$nested" ] && [ "$nested" != "." ] && M="$nested"
+      fi
       echo "=== [$(date)] EVAL ${key} :: ${M} :: tasks=${tsk} ==="
       python3 -m lm_eval --model vllm \
         --model_args "pretrained=${M},dtype=auto,max_model_len=4096,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True" \
@@ -76,12 +81,19 @@ data:
         --output_path "/workspace/eval/${key}" 2>&1 | tee "/workspace/eval/${key}.log" | tail -35
       echo "=== [$(date)] done ${key} (pipe status ${PIPESTATUS[0]}) ==="
     }
-    # Fast precheck on BF16 base: did no-chat-template restore non-random MCQ? (arc_challenge, ~10min)
-    run_one precheck-bf16 "meta-models/Muse-Glimmer-30B" "arc_challenge" || true
-    python3 -c "import json,glob; f=sorted(glob.glob('/workspace/eval/precheck-bf16/**/results_*.json',recursive=True)); print('PRECHECK arc_challenge acc_norm =', round(json.load(open(f[-1]))['results']['arc_challenge']['acc_norm,none'],4)) if f else print('PRECHECK: no result')" || true
-    run_one bf16-base       "meta-models/Muse-Glimmer-30B"                                                       "$TASKS" || echo "!!! bf16-base FAILED"
-    run_one redhat-nvfp4    "RedHatAI/Muse-Glimmer-30B-NVFP4"                                                    "$TASKS" || echo "!!! redhat-nvfp4 FAILED"
-    run_one autoround-nvfp4 "/workspace/runs/Muse-Glimmer-30B-NVFP4-AutoRound-default/Muse-Glimmer-30B-nvfp-w4g16" "$TASKS" || echo "!!! autoround-nvfp4 FAILED"
+    # MODELS env (optional): space-separated "key=modelpath" pairs -> eval just those (for new variants).
+    # Unset -> the default 3-way (BF16 / RedHat / ours-NVFP4) with the arc_challenge precheck.
+    if [ -n "${MODELS:-}" ]; then
+      for pair in $MODELS; do
+        run_one "${pair%%=*}" "${pair#*=}" "$TASKS" || echo "!!! ${pair%%=*} FAILED"
+      done
+    else
+      run_one precheck-bf16 "meta-models/Muse-Glimmer-30B" "arc_challenge" || true
+      python3 -c "import json,glob; f=sorted(glob.glob('/workspace/eval/precheck-bf16/**/results_*.json',recursive=True)); print('PRECHECK arc_challenge acc_norm =', round(json.load(open(f[-1]))['results']['arc_challenge']['acc_norm,none'],4)) if f else print('PRECHECK: no result')" || true
+      run_one bf16-base       "meta-models/Muse-Glimmer-30B"                                                       "$TASKS" || echo "!!! bf16-base FAILED"
+      run_one redhat-nvfp4    "RedHatAI/Muse-Glimmer-30B-NVFP4"                                                    "$TASKS" || echo "!!! redhat-nvfp4 FAILED"
+      run_one autoround-nvfp4 "/workspace/runs/Muse-Glimmer-30B-NVFP4-AutoRound-default/Muse-Glimmer-30B-nvfp-w4g16" "$TASKS" || echo "!!! autoround-nvfp4 FAILED"
+    fi
     echo "=== [$(date)] ALL EVALS DONE — summary ==="
     python3 - <<'PY'
     import json, glob
