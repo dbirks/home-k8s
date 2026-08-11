@@ -64,18 +64,24 @@ data:
     python3 -m pip install --no-cache-dir lm-eval 2>&1 | tail -6
     python3 -c "import lm_eval; print('lm-eval', lm_eval.__version__)"
     TASKS=${TASKS:-arc_challenge,hellaswag,winogrande,truthfulqa_mc2,mmlu}
+    # NO --apply_chat_template: for this REASONING model, chat-template loglikelihood collapses
+    # MCQ to ~random (first run: BF16 base MMLU 0.266). Classic OpenLLM-v1 loglikelihood (raw
+    # few-shot in-context) restores the signal, and base/quant stay apples-to-apples.
     run_one () {
-      local key="$1"; local M="$2"
-      echo "=== [$(date)] EVAL ${key} :: ${M} :: tasks=${TASKS} ==="
+      local key="$1"; local M="$2"; local tsk="$3"
+      echo "=== [$(date)] EVAL ${key} :: ${M} :: tasks=${tsk} ==="
       python3 -m lm_eval --model vllm \
         --model_args "pretrained=${M},dtype=auto,max_model_len=4096,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True" \
-        --tasks "${TASKS}" --apply_chat_template --fewshot_as_multiturn --batch_size auto \
+        --tasks "${tsk}" --batch_size auto \
         --output_path "/workspace/eval/${key}" 2>&1 | tee "/workspace/eval/${key}.log" | tail -35
       echo "=== [$(date)] done ${key} (pipe status ${PIPESTATUS[0]}) ==="
     }
-    run_one bf16-base       "meta-models/Muse-Glimmer-30B"                                                       || echo "!!! bf16-base FAILED"
-    run_one redhat-nvfp4    "RedHatAI/Muse-Glimmer-30B-NVFP4"                                                    || echo "!!! redhat-nvfp4 FAILED"
-    run_one autoround-nvfp4 "/workspace/runs/Muse-Glimmer-30B-NVFP4-AutoRound-default/Muse-Glimmer-30B-nvfp-w4g16" || echo "!!! autoround-nvfp4 FAILED"
+    # Fast precheck on BF16 base: did no-chat-template restore non-random MCQ? (arc_challenge, ~10min)
+    run_one precheck-bf16 "meta-models/Muse-Glimmer-30B" "arc_challenge" || true
+    python3 -c "import json,glob; f=sorted(glob.glob('/workspace/eval/precheck-bf16/**/results_*.json',recursive=True)); print('PRECHECK arc_challenge acc_norm =', round(json.load(open(f[-1]))['results']['arc_challenge']['acc_norm,none'],4)) if f else print('PRECHECK: no result')" || true
+    run_one bf16-base       "meta-models/Muse-Glimmer-30B"                                                       "$TASKS" || echo "!!! bf16-base FAILED"
+    run_one redhat-nvfp4    "RedHatAI/Muse-Glimmer-30B-NVFP4"                                                    "$TASKS" || echo "!!! redhat-nvfp4 FAILED"
+    run_one autoround-nvfp4 "/workspace/runs/Muse-Glimmer-30B-NVFP4-AutoRound-default/Muse-Glimmer-30B-nvfp-w4g16" "$TASKS" || echo "!!! autoround-nvfp4 FAILED"
     echo "=== [$(date)] ALL EVALS DONE — summary ==="
     python3 - <<'PY'
     import json, glob
@@ -129,7 +135,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-eval-3way-20260811
+  name: muse-eval-3way-20260811b
   namespace: default
 spec:
   backoffLimit: 0
