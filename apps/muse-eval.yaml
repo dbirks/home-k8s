@@ -1,0 +1,84 @@
+# Serve-validation + evaluation for the Muse-Glimmer NVFP4 AutoRound quant (GitHub #81).
+#
+# Step 1 (this file): serve-validate — load our compressed-tensors NVFP4 artifact in the Muse
+# vLLM build on SM120 and confirm it generates. De-risks the full eval (NVFP4 on SM120 can have
+# kernel gotchas; dense models are the safe path, and Muse is dense).
+#
+# Image: vllm/vllm-openai:muse-glimmer-x86_64-cu130 (purpose-built Muse serving image; cu130
+# matches the card's torch + SM120). Artifact read from the muse-quant-workspace PVC.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-eval-scripts
+  namespace: default
+data:
+  serve-validate.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    MODEL=${MODEL_PATH:-/workspace/runs/Muse-Glimmer-30B-NVFP4-AutoRound-default/Muse-Glimmer-30B-nvfp-w4g16}
+    LOG=/workspace/eval/serve-validate.log
+    mkdir -p /workspace/eval
+    echo "=== [$(date)] artifact: $MODEL ==="
+    ls -la "$MODEL" 2>&1 | head -20
+    echo "=== [$(date)] starting vllm serve (enforce-eager for fast startup) ==="
+    vllm serve "$MODEL" \
+      --host 127.0.0.1 --port 8000 \
+      --served-model-name muse-glimmer-autoround \
+      --max-model-len 8192 --gpu-memory-utilization 0.90 \
+      --enforce-eager --trust-remote-code \
+      --enable-auto-tool-choice --tool-call-parser muse_glimmer --reasoning-parser muse_glimmer \
+      > "$LOG" 2>&1 &
+    VP=$!
+    ok=0
+    for i in $(seq 1 180); do
+      if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then ok=1; echo "HEALTHY after ~$((i*10))s"; break; fi
+      if ! kill -0 $VP 2>/dev/null; then echo "!!! SERVER PROCESS DIED"; tail -100 "$LOG"; exit 1; fi
+      sleep 10
+    done
+    if [ "$ok" != 1 ]; then echo "!!! health TIMEOUT (30m)"; tail -100 "$LOG"; kill $VP 2>/dev/null; exit 1; fi
+    echo "=== /v1/models ==="; curl -s http://127.0.0.1:8000/v1/models; echo
+    echo "=== text generation ==="
+    curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' \
+      -d '{"model":"muse-glimmer-autoround","messages":[{"role":"user","content":"In one sentence, what is NVFP4 quantization?"}],"max_tokens":120,"temperature":0.7}'; echo
+    echo "=== coding generation (temp 0) ==="
+    curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' \
+      -d '{"model":"muse-glimmer-autoround","messages":[{"role":"user","content":"Write a Python function is_prime(n) with a docstring."}],"max_tokens":220,"temperature":0}'; echo
+    echo "=== GPU mem after load ==="; nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null || true
+    echo "=== serve log signals ==="; grep -aE "Loading|GiB|KV cache|Maximum concurrency|Supported_tasks|Starting|EngineCore|Available routes|init engine|compressed|nvfp4|NVFP4|FlashInfer" "$LOG" | tail -30
+    kill $VP 2>/dev/null; wait $VP 2>/dev/null
+    echo "=== [$(date)] serve-validate DONE ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-serve-validate-20260811
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 2400
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: serve-validate
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/serve-validate.sh"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: VLLM_PORT, value: "8000" }
+            - { name: VLLM_ATTENTION_BACKEND, value: "FLASHINFER" }
+            - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
+            requests: { cpu: "4", memory: 24Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-eval-scripts, defaultMode: 0755 } }
