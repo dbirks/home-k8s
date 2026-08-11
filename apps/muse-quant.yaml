@@ -45,26 +45,27 @@ data:
     # Install the quant toolchain into the vLLM image, then run a stage. torch is left ALONE
     # (auto-round requires torch unpinned -> pip sees the image's SM120 build as satisfied).
     set -euo pipefail
+    PY="$(command -v python3 || command -v python)"   # vllm image ships python3, not python
     export HF_HOME=/workspace/hf
     export PYTHONUNBUFFERED=1
     export TOKENIZERS_PARALLELISM=false
     mkdir -p /workspace/artifacts /workspace/runs "$HF_HOME"
-    echo "=== [$(date)] torch BEFORE install ==="
-    python -c "import torch;print('torch',torch.__version__,'cuda?',torch.cuda.is_available())"
+    echo "=== [$(date)] python=$PY torch BEFORE install ==="
+    "$PY" -c "import torch;print('torch',torch.__version__,'cuda?',torch.cuda.is_available())" || true
     echo "=== [$(date)] installing auto-round (dbirks fork main) + deps ==="
-    pip install --no-cache-dir \
+    "$PY" -m pip install --no-cache-dir \
       "auto-round @ https://github.com/dbirks/auto-round/archive/refs/heads/main.tar.gz" \
       datasets accelerate 2>&1 | tail -15
-    echo "=== [$(date)] torch AFTER install (must still import + see CUDA) ==="
-    python -c "import torch;print('torch',torch.__version__,'cuda?',torch.cuda.is_available())"
-    pip freeze 2>/dev/null > /workspace/artifacts/pip-freeze.txt || true
+    echo "=== [$(date)] torch AFTER install (must still import) ==="
+    "$PY" -c "import torch;print('torch',torch.__version__,'cuda?',torch.cuda.is_available())" || true
+    "$PY" -m pip freeze 2>/dev/null > /workspace/artifacts/pip-freeze.txt || true
     echo "=== [$(date)] running stage: ${1:-preflight} ==="
     case "${1:-preflight}" in
       preflight)
-        python /scripts/preflight.py ;;
+        "$PY" /scripts/preflight.py ;;
       quantize)
-        export QUANT_MODE=smoke;   python /scripts/quantize.py
-        export QUANT_MODE=default; python /scripts/quantize.py ;;
+        export QUANT_MODE=smoke;   "$PY" /scripts/quantize.py
+        export QUANT_MODE=default; "$PY" /scripts/quantize.py ;;
       *) echo "unknown stage ${1:-}"; exit 2 ;;
     esac
     echo "=== [$(date)] stage ${1:-preflight} complete ==="
@@ -248,7 +249,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-quant-preflight-20260811
+  name: muse-quant-preflight-20260811b
   namespace: default
 spec:
   backoffLimit: 1
@@ -256,7 +257,9 @@ spec:
   template:
     spec:
       restartPolicy: Never
-      runtimeClassName: nvidia
+      # NO GPU / no runtimeClassName: preflight is CPU-only. Config load + MLLM detection +
+      # meta-device Linear inventory need no GPU, so this runs immediately regardless of GPU
+      # contention. (SM120 is already known-good — the card serves NVFP4 today.)
       enableServiceLinks: false     # avoid the `vllm` Service injecting VLLM_* env into this pod
       priorityClassName: system-node-critical
       containers:
@@ -269,7 +272,7 @@ spec:
             - { name: MUSE_MODEL, value: "meta-models/Muse-Glimmer-30B" }
             - { name: ARTIFACTS, value: /workspace/artifacts }
           resources:
-            limits: { nvidia.com/gpu: 1, cpu: "4", memory: 24Gi }
+            limits: { cpu: "4", memory: 24Gi }
             requests: { cpu: "4", memory: 12Gi }
           volumeMounts:
             - { name: workspace, mountPath: /workspace }
