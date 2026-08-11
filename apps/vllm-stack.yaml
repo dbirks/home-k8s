@@ -105,6 +105,72 @@ spec:
               value: "latency"
             - name: FLASHINFER_CUDA_ARCH_LIST
               value: "12.0f"
+        # muse-glimmer: a SECOND model kept at replicaCount: 0 ON PURPOSE — present in
+        # git and ready to scale, but NOT running now. It requests zero GPU while at 0.
+        #
+        # GPU SWAP IS MANUAL: only ONE model can hold the single 96GB GPU at a time. To
+        # actually serve Muse you MUST first scale qwen27 above to replicaCount: 0 (and
+        # apps/vllm.yaml's vllm-qwen27 must already be 0) — otherwise the second engine
+        # double-allocs the GPU and OOMs. This entry does NOT enforce that; it's a
+        # deliberate manual swap.
+        #
+        # The vllm/vllm-openai:muse-glimmer image tag + muse_glimmer tool/reasoning
+        # parsers come from the Muse serving recipe. Their availability gets validated at
+        # the FIRST real scale-up — this at-0 entry is not exercised until then.
+        - name: muse-glimmer
+          enabled: true
+          replicaCount: 0            # scaled to zero: ready-to-scale, requests no GPU
+          repository: "vllm/vllm-openai"
+          tag: "muse-glimmer"        # Muse-specific vLLM image tag
+          modelURL: "RedHatAI/Muse-Glimmer-30B-NVFP4"
+          runtimeClassName: "nvidia"
+          requestGPU: 1
+          requestCPU: 4
+          requestMemory: "24Gi"
+          pvcStorage: "70Gi"         # ~17GB NVFP4 text weights + BF16 vision tower/embeddings/lm_head
+          storageClass: "local-path"
+          shmSize: "16Gi"
+          enableLoRA: false          # FOOTGUN: chart defaults true -> injects --enable-lora + sidecar
+          hf_token:
+            secretName: "hf-token"
+            secretKey: "HF_TOKEN"
+          keda:
+            enabled: false           # manual, no autoscaling
+          vllmConfig:
+            # Muse is a DENSE Gemma2-derived multimodal model (NOT hybrid/Mamba) — so no
+            # --mamba-cache-dtype args (those are Qwen-only). --kv-cache-dtype intentionally
+            # left unset for first bringup (let it default) to reduce risk.
+            enablePrefixCaching: false   # conservative first bringup (sliding-window/iRoPE)
+            maxModelLen: 8192            # start short per quant handoff; raise later
+            gpuMemoryUtilization: 0.90
+            extraArgs:
+              # --enforce-eager: same fix as qwen27 — SM120 27B+ CUDA-graph compile
+              # overruns the chart's 10-min startup probe -> SIGKILL loop; eager loads
+              # fast enough to pass the probe.
+              - "--enforce-eager"
+              - "--trust-remote-code"
+              - "--enable-auto-tool-choice"
+              - "--tool-call-parser"
+              - "muse_glimmer"
+              - "--reasoning-parser"
+              - "muse_glimmer"
+              - "--generation-config"
+              - "auto"
+              - "--served-model-name"
+              - "muse"
+              - "muse-glimmer"
+          env:
+            # Override the service-link env the `vllm` Service injects as
+            # VLLM_PORT=tcp://...:80 (which vLLM misreads as its port -> crash). Same
+            # reason as qwen27. 8000 is vLLM's default API port.
+            - name: VLLM_PORT
+              value: "8000"
+            - name: VLLM_ATTENTION_BACKEND
+              value: "FLASHINFER"       # SM120: required on v0.26.x
+            - name: FLASHINFER_CUDA_ARCH_LIST
+              value: "12.0f"            # SM120 targeting
+            # MoE-only vars (VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8 / VLLM_FLASHINFER_MOE_BACKEND)
+            # intentionally OMITTED — Muse is dense, not MoE.
     routerSpec:
       enableRouter: true
       serviceType: ClusterIP
