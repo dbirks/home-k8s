@@ -204,11 +204,12 @@ data:
     import importlib, json, os
     from pathlib import Path
 
-    MODEL = os.environ.get("MUSE_MODEL", "meta-models/Muse-Glimmer-30B")
-    MODE  = os.environ.get("QUANT_MODE", "smoke")
-    CALIB = os.environ.get("CALIB_DATASET", "NeelNanda/pile-10k")
-    ART   = Path(os.environ.get("ARTIFACTS", "/workspace/artifacts"))
-    OUT   = Path(os.environ.get("QUANT_OUT", f"/workspace/runs/Muse-Glimmer-30B-NVFP4-AutoRound-{MODE}"))
+    MODEL  = os.environ.get("MUSE_MODEL", "meta-models/Muse-Glimmer-30B")
+    MODE   = os.environ.get("QUANT_MODE", "smoke")
+    SCHEME = os.environ.get("QUANT_SCHEME", "NVFP4")   # NVFP4 (W4A4, Blackwell) | W4A16 (int4 weight-only, any GPU)
+    CALIB  = os.environ.get("CALIB_DATASET", "NeelNanda/pile-10k")
+    ART    = Path(os.environ.get("ARTIFACTS", "/workspace/artifacts"))
+    OUT    = Path(os.environ.get("QUANT_OUT", f"/workspace/runs/Muse-Glimmer-30B-{SCHEME}-AutoRound-{MODE}"))
     ART.mkdir(parents=True, exist_ok=True); OUT.mkdir(parents=True, exist_ok=True)
 
     MODES = {
@@ -218,7 +219,7 @@ data:
     }
     if MODE not in MODES: raise SystemExit(f"bad QUANT_MODE={MODE}")
     P = MODES[MODE]
-    print(f"=== quantize MODE={MODE} params={P} model={MODEL} -> {OUT} ===", flush=True)
+    print(f"=== quantize SCHEME={SCHEME} MODE={MODE} params={P} model={MODEL} -> {OUT} ===", flush=True)
 
     import torch  # noqa
     from auto_round import AutoRound
@@ -227,7 +228,7 @@ data:
     print("model_type:", getattr(cfg, "model_type", None), "arch:", getattr(cfg, "architectures", None), flush=True)
 
     def make(**extra):
-        return AutoRound(MODEL, scheme="NVFP4", dataset=CALIB, device_map=0,
+        return AutoRound(MODEL, scheme=SCHEME, dataset=CALIB, device_map=0,
                          trust_remote_code=True, quant_nontext_module=False, seed=42, **P, **extra)
 
     try:
@@ -266,15 +267,18 @@ data:
     if SAVED is None:
         raise SystemExit(f"FATAL: no config.json found under {cand!r} or {OUT}")
     print("resolved artifact dir:", SAVED, flush=True)
-    (ART / f"artifact-path-{MODE}.txt").write_text(str(SAVED) + "\n")
+    (ART / f"artifact-path-{SCHEME}-{MODE}.txt").write_text(str(SAVED) + "\n")
 
     c = json.loads((SAVED / "config.json").read_text())
     qc = c.get("quantization_config") or c.get("text_config", {}).get("quantization_config")
-    (ART / f"quant-config-{MODE}.json").write_text(json.dumps(qc, indent=2, default=str))
+    (ART / f"quant-config-{SCHEME}-{MODE}.json").write_text(json.dumps(qc, indent=2, default=str))
     print("quantization_config:\n", json.dumps(qc, indent=2, default=str)[:2000], flush=True)
-    if (qc or {}).get("format") != "nvfp4-pack-quantized":
-        raise SystemExit(f"FATAL: export format is {(qc or {}).get('format')!r}, expected nvfp4-pack-quantized")
-    print(f"OK [{MODE}]: nvfp4-pack-quantized export verified at {SAVED}", flush=True)
+    fmt = (qc or {}).get("format")
+    wbits = (((qc or {}).get("config_groups", {}).get("group_0", {}) or {}).get("weights", {}) or {}).get("num_bits")
+    print(f"format={fmt} weight_bits={wbits}", flush=True)
+    if not qc or wbits != 4:
+        raise SystemExit(f"FATAL: expected 4-bit weights, got num_bits={wbits} (format {fmt})")
+    print(f"OK [{SCHEME}/{MODE}]: {fmt} export verified at {SAVED}", flush=True)
 ---
 # Quantize Job: runs smoke (nsamples 8, iters 0 — validate download+calibration+packing+export)
 # then default (nsamples 128, iters 200 — the real artifact). Preflight GREEN gated this:
@@ -302,6 +306,44 @@ spec:
             - { name: HF_HOME, value: /workspace/hf }
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
             - { name: MUSE_MODEL, value: "meta-models/Muse-Glimmer-30B" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+            - { name: ARTIFACTS, value: /workspace/artifacts }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
+            requests: { cpu: "4", memory: 24Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-quant-scripts, defaultMode: 0755 } }
+---
+# int4 W4A16 AutoRound quant (weight-only) — runs on ANY modern GPU (Ampere/Ada/Hopper/Blackwell +
+# DGX Spark) via Marlin, unlike the Blackwell-only NVFP4 W4A4. Same pipeline, QUANT_SCHEME=W4A16.
+# Should be LESS lossy than W4A4 (activations stay BF16). Queued to run after the eval freed the GPU.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-quant-w4a16-20260811
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 28800
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: quantize
+          image: vllm/vllm-openai:v0.26.0
+          command: ["/bin/bash", "/scripts/prep.sh", "quantize"]   # smoke then default, scheme W4A16
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: MUSE_MODEL, value: "meta-models/Muse-Glimmer-30B" }
+            - { name: QUANT_SCHEME, value: "W4A16" }
             - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
             - { name: ARTIFACTS, value: /workspace/artifacts }
           resources:
