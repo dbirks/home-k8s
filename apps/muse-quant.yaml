@@ -79,6 +79,8 @@ data:
       quantize)
         export QUANT_MODE=smoke;   "$PY" /scripts/quantize.py
         export QUANT_MODE=default; "$PY" /scripts/quantize.py ;;
+      quantize-default)
+        export QUANT_MODE=default; "$PY" /scripts/quantize.py ;;
       *) echo "unknown stage ${1:-}"; exit 2 ;;
     esac
     echo "=== [$(date)] stage ${1:-preflight} complete ==="
@@ -207,9 +209,10 @@ data:
     MODEL  = os.environ.get("MUSE_MODEL", "meta-models/Muse-Glimmer-30B")
     MODE   = os.environ.get("QUANT_MODE", "smoke")
     SCHEME = os.environ.get("QUANT_SCHEME", "NVFP4")   # NVFP4 (W4A4, Blackwell) | W4A16 (int4 weight-only, any GPU)
+    RUN_TAG = os.environ.get("RUN_TAG", "")            # output-name suffix, e.g. "-mp1" for a mixed-precision variant
     CALIB  = os.environ.get("CALIB_DATASET", "NeelNanda/pile-10k")
     ART    = Path(os.environ.get("ARTIFACTS", "/workspace/artifacts"))
-    OUT    = Path(os.environ.get("QUANT_OUT", f"/workspace/runs/Muse-Glimmer-30B-{SCHEME}-AutoRound-{MODE}"))
+    OUT    = Path(os.environ.get("QUANT_OUT", f"/workspace/runs/Muse-Glimmer-30B-{SCHEME}{RUN_TAG}-AutoRound-{MODE}"))
     ART.mkdir(parents=True, exist_ok=True); OUT.mkdir(parents=True, exist_ok=True)
 
     MODES = {
@@ -227,9 +230,30 @@ data:
     cfg = AutoConfig.from_pretrained(MODEL, trust_remote_code=True)
     print("model_type:", getattr(cfg, "model_type", None), "arch:", getattr(cfg, "architectures", None), flush=True)
 
+    # Optional selective higher-precision for W4A4 activation-outlier modules (e.g. mlp.down_proj).
+    # EXEMPT_MODULES="down_proj,up_proj" raises those mlp modules' act_bits (weights stay SCHEME
+    # unless EXEMPT_W_BITS set). 52 text-decoder layers confirmed via preflight inventory.
+    layer_config = {}
+    _exempt = os.environ.get("EXEMPT_MODULES", "").strip()
+    if _exempt:
+        _tc = getattr(cfg, "text_config", cfg)
+        _nl = int(getattr(_tc, "num_hidden_layers", None) or getattr(cfg, "num_hidden_layers", None) or 52)
+        _ab = int(os.environ.get("EXEMPT_ACT_BITS", "8"))
+        _wb = os.environ.get("EXEMPT_W_BITS", "").strip()
+        for _i in range(_nl):
+            for _m in [x.strip() for x in _exempt.split(",") if x.strip()]:
+                _e = {"act_bits": _ab}
+                if _wb:
+                    _e["bits"] = int(_wb)
+                layer_config[f"model.language_model.layers.{_i}.mlp.{_m}"] = _e
+        print(f"layer_config: {len(layer_config)} modules exempted (act_bits={_ab}" + (f", bits={_wb}" if _wb else "") + ")", flush=True)
+
     def make(**extra):
-        return AutoRound(MODEL, scheme=SCHEME, dataset=CALIB, device_map=0,
-                         trust_remote_code=True, quant_nontext_module=False, seed=42, **P, **extra)
+        kw = dict(scheme=SCHEME, dataset=CALIB, device_map=0, trust_remote_code=True,
+                  quant_nontext_module=False, seed=42, **P, **extra)
+        if layer_config:
+            kw["layer_config"] = layer_config
+        return AutoRound(MODEL, **kw)
 
     try:
         ar = make()
@@ -344,6 +368,48 @@ spec:
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
             - { name: MUSE_MODEL, value: "meta-models/Muse-Glimmer-30B" }
             - { name: QUANT_SCHEME, value: "W4A16" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+            - { name: ARTIFACTS, value: /workspace/artifacts }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
+            requests: { cpu: "4", memory: 24Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-quant-scripts, defaultMode: 0755 } }
+---
+# Selective-precision NVFP4 (mp1): keep mlp.down_proj ACTIVATIONS at 8-bit (the #1 W4A4 outlier
+# module per the sensitivity plan in #81) while weights stay NVFP4 -> minimal size cost, aims to
+# close the gap vs GPTQ. default-only (disk-safe, no smoke). Muse image is already on the node
+# (no re-pull). Verify the export config_groups actually show a mixed scheme before trusting it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-quant-nvfp4-mp1-20260811
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 14400
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: quantize
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "quantize-default"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: MUSE_MODEL, value: "meta-models/Muse-Glimmer-30B" }
+            - { name: QUANT_SCHEME, value: "NVFP4" }
+            - { name: RUN_TAG, value: "-mp1" }
+            - { name: EXEMPT_MODULES, value: "down_proj" }
+            - { name: EXEMPT_ACT_BITS, value: "8" }
             - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
             - { name: ARTIFACTS, value: /workspace/artifacts }
           resources:
