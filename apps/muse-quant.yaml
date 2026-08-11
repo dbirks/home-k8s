@@ -52,10 +52,18 @@ data:
     mkdir -p /workspace/artifacts /workspace/runs "$HF_HOME"
     echo "=== [$(date)] python=$PY torch BEFORE install ==="
     "$PY" -c "import torch;print('torch',torch.__version__,'cuda?',torch.cuda.is_available())" || true
-    echo "=== [$(date)] installing auto-round (dbirks fork main) + deps ==="
-    "$PY" -m pip install --no-cache-dir \
-      "auto-round @ https://github.com/dbirks/auto-round/archive/refs/heads/main.tar.gz" \
-      datasets accelerate 2>&1 | tail -15
+    echo "=== [$(date)] ensuring git (auto-round build invokes it) ==="
+    if ! command -v git >/dev/null 2>&1; then
+      (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true
+    fi
+    if command -v git >/dev/null 2>&1; then
+      AR_SPEC="auto-round @ git+https://github.com/dbirks/auto-round.git@main"   # clone carries .git -> setuptools_scm ok
+    else
+      echo "WARN: git unavailable; falling back to PyPI auto-round wheel (lacks post-0.14.2 opt_rtn NVFP4 fix)"
+      AR_SPEC="auto-round"
+    fi
+    echo "=== [$(date)] installing ${AR_SPEC} + deps ==="
+    "$PY" -m pip install --no-cache-dir "$AR_SPEC" datasets accelerate 2>&1 | tail -15
     echo "=== [$(date)] torch AFTER install (must still import) ==="
     "$PY" -c "import torch;print('torch',torch.__version__,'cuda?',torch.cuda.is_available())" || true
     "$PY" -m pip freeze 2>/dev/null > /workspace/artifacts/pip-freeze.txt || true
@@ -249,7 +257,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-quant-preflight-20260811b
+  name: muse-quant-preflight-20260811c
   namespace: default
 spec:
   backoffLimit: 1
