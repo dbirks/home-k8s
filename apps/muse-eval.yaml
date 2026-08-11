@@ -175,3 +175,38 @@ spec:
       volumes:
         - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
         - { name: scripts, configMap: { name: muse-eval-scripts, defaultMode: 0755 } }
+---
+# Eval the int4 W4A16 variant (MODELS override) -> adds its recovery row to #81. BF16 baseline
+# results already on the PVC; recovery computed against them. GPU; datasets re-download (~70MB).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-eval-w4a16-20260811
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/eval.sh"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: VLLM_PORT, value: "8000" }
+            - { name: MODELS, value: "autoround-w4a16=/workspace/runs/Muse-Glimmer-30B-W4A16-AutoRound-default" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 32Gi }
+            requests: { cpu: "4", memory: 12Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-eval-scripts, defaultMode: 0755 } }
