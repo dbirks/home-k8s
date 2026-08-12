@@ -1,5 +1,5 @@
-# Overnight HARD eval sweep (#81): MMLU-Pro + GPQA (loglikelihood) + HumanEval (coding),
-# across BF16 / W4A16 / NVFP4(ours) / RedHat. Disk-safe (downloads freed after each) + resilient.
+# Overnight HARD eval sweep (#81): MMLU-Pro (loglikelihood) + HumanEval (coding), across
+# BF16 / W4A16 / NVFP4(ours) / RedHat. Disk-safe + resilient + per-task timeout. GPQA dropped (gated).
 apiVersion: v1
 data:
   eval-hard.sh: |
@@ -20,8 +20,9 @@ data:
     python3 -m pip install --no-cache-dir lm-eval 2>&1 | tail -5
     python3 -c "import lm_eval; print('lm-eval', lm_eval.__version__)"
 
-    LL_TASKS=${LL_TASKS:-leaderboard_mmlu_pro,leaderboard_gpqa}
+    LL_TASKS=${LL_TASKS:-leaderboard_mmlu_pro}   # GPQA dropped: Idavidrein/gpqa is a GATED HF dataset our token can't access
     CODE_TASKS=${CODE_TASKS:-humaneval}
+    TIMEOUT=${TIMEOUT:-10800}   # per lm_eval call cap (3h) so a stall can't eat the whole run
     ARGS="dtype=auto,max_model_len=8192,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True"
 
     resolve () { local M="$1"; if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then M=$(dirname "$(find "$M" -name config.json 2>/dev/null | head -1)"); fi; echo "$M"; }
@@ -31,13 +32,13 @@ data:
       local M; M=$(resolve "$M0")
       echo "=== [$(date)] HARD-EVAL $key :: $M ==="
       echo "--- [$(date)] $key loglikelihood ($LL_TASKS) ---"
-      python3 -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
+      timeout "$TIMEOUT" python3 -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
         --tasks "$LL_TASKS" --batch_size auto \
-        --output_path "/workspace/eval/hard/$key" 2>&1 | tee "/workspace/eval/hard/$key-ll.log" | tail -20 || echo "!!! $key LL FAILED"
+        --output_path "/workspace/eval/hard/$key" 2>&1 | tee "/workspace/eval/hard/$key-ll.log" | tail -20
       echo "--- [$(date)] $key coding ($CODE_TASKS) ---"
-      python3 -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
+      timeout "$TIMEOUT" python3 -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
         --tasks "$CODE_TASKS" --confirm_run_unsafe_code --apply_chat_template --gen_kwargs max_gen_toks=1024 --batch_size auto \
-        --output_path "/workspace/eval/hard/$key" 2>&1 | tee "/workspace/eval/hard/$key-code.log" | tail -20 || echo "!!! $key CODE FAILED"
+        --output_path "/workspace/eval/hard/$key" 2>&1 | tee "/workspace/eval/hard/$key-code.log" | tail -20
       echo "=== [$(date)] done $key ==="
       if [ -n "$cache_glob" ]; then rm -rf $cache_glob 2>/dev/null && echo "freed cache: $cache_glob"; fi
       df -h /workspace | tail -1
@@ -71,11 +72,11 @@ metadata:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-eval-hard-20260812
+  name: muse-eval-hard-20260812b
   namespace: default
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: 43200   # up to 12h overnight
+  activeDeadlineSeconds: 43200
   template:
     spec:
       restartPolicy: Never
