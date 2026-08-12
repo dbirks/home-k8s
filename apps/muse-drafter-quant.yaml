@@ -34,10 +34,14 @@ data:
     mkdir -p /workspace/artifacts /workspace/runs "$HF_HOME"
     echo "=== [$(date)] ensuring git ==="
     command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true
-    echo "=== [$(date)] installing transformers-from-source + llmcompressor + compressed-tensors ==="
+    # ORDER MATTERS: llmcompressor 0.13.0 pins transformers<=5.14.1, which lacks the Muse arch.
+    # Install the llmcompressor stack FIRST, then force transformers-from-source LAST so it wins
+    # (pip will warn about the version conflict; that's expected — the newer transformers is what runs).
+    echo "=== [$(date)] installing llmcompressor stack ==="
+    "$PY" -m pip install --no-cache-dir llmcompressor compressed-tensors accelerate datasets 2>&1 | tail -6
+    echo "=== [$(date)] forcing transformers-from-source LAST (overrides llmcompressor pin) ==="
     "$PY" -m pip install --no-cache-dir --upgrade "git+https://github.com/huggingface/transformers.git" 2>&1 | tail -6
-    "$PY" -m pip install --no-cache-dir --upgrade llmcompressor compressed-tensors accelerate 2>&1 | tail -6
-    "$PY" -c "import transformers,llmcompressor; print('transformers',transformers.__version__,'llmcompressor',llmcompressor.__version__)"
+    "$PY" -c "import transformers,llmcompressor; print('FINAL transformers',transformers.__version__,'llmcompressor',llmcompressor.__version__)"
     "$PY" -m pip freeze 2>/dev/null > /workspace/artifacts/drafter-pip-freeze.txt || true
     echo "=== [$(date)] running drafter quant ==="
     "$PY" /scripts/quant_drafter.py
@@ -114,7 +118,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-drafter-fp8-20260812
+  name: muse-drafter-fp8-20260812b
   namespace: default
 spec:
   backoffLimit: 1
