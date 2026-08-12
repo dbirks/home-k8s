@@ -19,6 +19,7 @@ data:
     set -uo pipefail
     PY="$(command -v python3 || command -v python)"
     export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+    export VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
     mkdir -p /workspace/artifacts "$HF_HOME"
     command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true
     echo "=== [$(date)] installing auto-round (dbirks fork) + transformers-from-source ==="
@@ -28,8 +29,9 @@ data:
     "$PY" /scripts/smoke.py
   smoke.py: |
     #!/usr/bin/env python3
-    """Tiny-model AutoScheme export smoke. Tries NVFP4+MXFP8 then NVFP4+FP8_STATIC.
-    Reports whether llm_compressor export yields a genuinely MIXED config."""
+    """Tiny-model AutoScheme END-TO-END smoke (v2): export NVFP4+MXFP8 with shared_layers keeping
+    fused q/k/v (and gate/up) on ONE scheme, then LOAD in vLLM on SM120 and generate.
+    v1 proved export works but vLLM crashed on fused-QKV mixed shards -> shared_layers is the fix."""
     import json, os, traceback
     from pathlib import Path
     MODEL = os.environ.get("SMOKE_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
@@ -37,57 +39,56 @@ data:
     import torch  # noqa
     from auto_round import AutoRound, AutoScheme
 
-    def summarize(cfgdir):
-        c = json.loads((Path(cfgdir) / "config.json").read_text())
-        qc = c.get("quantization_config") or c.get("text_config", {}).get("quantization_config") or {}
-        groups = qc.get("config_groups") or {}
-        sig = {}
-        for gname, g in groups.items():
-            w = (g.get("weights") or {}); a = (g.get("input_activations") or {})
-            sig[gname] = {"w_bits": w.get("num_bits"), "w_type": w.get("type"),
-                          "a_bits": a.get("num_bits"), "a_type": a.get("type"), "targets": g.get("targets")}
-        return {"format": qc.get("format"), "n_groups": len(groups), "groups": sig,
-                "ignore": qc.get("ignore"), "has_layerwise": "config_groups" in qc}
-
     def find_cfg(base):
         base = Path(base)
         if (base / "config.json").is_file(): return base
         for p in sorted(base.rglob("config.json")): return p.parent
         return None
 
-    results = {}
-    for tag, opts in [("nvfp4+mxfp8", ("NVFP4", "MXFP8")), ("nvfp4+fp8static", ("NVFP4", "FP8_STATIC"))]:
-        out = f"/workspace/runs/autoscheme-smoke-{tag}"
-        print(f"\n===== [{tag}] AutoScheme options={opts} avg_bits=4.75 =====", flush=True)
+    # Keep fused modules uniform so vLLM's QKVParallelLinear / MergedColumnParallelLinear see one scheme.
+    SHARED = [["q_proj", "k_proj", "v_proj"], ["gate_proj", "up_proj"]]
+    out = "/workspace/runs/autoscheme-smoke-shared-nvfp4mxfp8"
+    result = {"model": MODEL, "shared_layers": SHARED}
+    print(f"\n===== AutoScheme NVFP4+MXFP8 avg_bits=4.75 shared_layers={SHARED} =====", flush=True)
+    d = None
+    try:
+        scheme = AutoScheme(avg_bits=4.75, options=("NVFP4", "MXFP8"), shared_layers=SHARED, nsamples=8)
+        ar = AutoRound(model=MODEL, scheme=scheme, iters=0, nsamples=8, seqlen=512,
+                       device_map=0, trust_remote_code=True, seed=42)
+        _, saved = ar.quantize_and_save(output_dir=out, format="llm_compressor")
+        cand = saved[0] if isinstance(saved, (list, tuple)) else saved
+        d = find_cfg(cand) or find_cfg(out)
+        c = json.loads((Path(d) / "config.json").read_text())
+        qc = c.get("quantization_config") or {}
+        result["export"] = "OK"; result["format"] = qc.get("format"); result["n_groups"] = len(qc.get("config_groups") or {})
+        print("export OK ->", d, "format", result["format"], "n_groups", result["n_groups"], flush=True)
+    except Exception as e:
+        result["export"] = "ERROR"; result["export_error"] = repr(e)[:600]
+        print("EXPORT ERROR:", repr(e)[:600], flush=True); traceback.print_exc()
+
+    # END-TO-END: try to serve it on this SM120 card.
+    if d is not None:
+        print("\n===== vLLM load test on SM120 =====", flush=True)
         try:
-            scheme = AutoScheme(avg_bits=4.75, options=opts, nsamples=8)
-            ar = AutoRound(model=MODEL, scheme=scheme, iters=0, nsamples=8, seqlen=512,
-                           device_map=0, trust_remote_code=True, seed=42)
-            _, saved = ar.quantize_and_save(output_dir=out, format="llm_compressor")
-            cand = saved[0] if isinstance(saved, (list, tuple)) else saved
-            d = find_cfg(cand) or find_cfg(out)
-            if d is None:
-                results[tag] = {"export": "NO_CONFIG_JSON"}; print(tag, "-> NO CONFIG.JSON", flush=True); continue
-            s = summarize(d)
-            distinct = {(v["w_bits"], v["w_type"], v["a_bits"], v["a_type"]) for v in s["groups"].values()}
-            s["export"] = "OK"; s["truly_mixed"] = len(distinct) > 1
-            results[tag] = s
-            print(tag, "-> export OK; truly_mixed =", s["truly_mixed"], flush=True)
-            print(json.dumps(s, indent=2)[:1500], flush=True)
+            from vllm import LLM, SamplingParams
+            llm = LLM(model=d, trust_remote_code=True, enforce_eager=True,
+                      max_model_len=2048, gpu_memory_utilization=0.35, dtype="auto")
+            txt = llm.generate(["The capital of France is"], SamplingParams(max_tokens=16, temperature=0))[0].outputs[0].text
+            result["serve"] = "OK"; result["sample"] = txt
+            print("SERVE OK ->", repr(txt), flush=True)
         except Exception as e:
-            results[tag] = {"export": "ERROR", "error": repr(e)[:600]}
-            print(tag, "-> EXPORT ERROR:", repr(e)[:600], flush=True)
-            traceback.print_exc()
-    (ART / "autoscheme-smoke-result.json").write_text(json.dumps(results, indent=2, default=str))
+            result["serve"] = "ERROR"; result["serve_error"] = repr(e)[:800]
+            print("SERVE ERROR:", repr(e)[:800], flush=True); traceback.print_exc()
+
+    (ART / "autoscheme-shared-smoke-result.json").write_text(json.dumps(result, indent=2, default=str))
     print("\n===== VERDICT =====", flush=True)
-    any_mixed = any(isinstance(v, dict) and v.get("truly_mixed") for v in results.values())
-    print("AutoScheme mixed NVFP4 export FEASIBLE:", any_mixed, flush=True)
-    print(json.dumps(results, indent=2, default=str), flush=True)
+    print("shared_layers export:", result.get("export"), "| vLLM serve on SM120:", result.get("serve"), flush=True)
+    print("END_TO_END_OK:", result.get("export") == "OK" and result.get("serve") == "OK", flush=True)
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-smoke-20260812
+  name: muse-autoscheme-smoke-v2-20260812
   namespace: default
 spec:
   backoffLimit: 1
