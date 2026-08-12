@@ -101,3 +101,45 @@ spec:
         - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
         - { name: scripts, configMap: { name: muse-drafter-servetest-scripts } }
         - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
+---
+# Isolation: same test with the BF16 drafter. If it ALSO crashes in flash_attn_varlen, the illegal
+# memory access is a DFlash-attention-on-SM120 vLLM bug, independent of our FP8 quant. Also drops
+# num_spec_tokens to 8 (a smaller block in case 16 tickles the kernel) as a second variable.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-drafter-servetest-bf16-20260812
+  namespace: default
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels: { app: muse-drafter-servetest }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: servetest
+          image: vllm/vllm-openai:muse-glimmer
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: DRAFTER, value: "meta-models/Muse-Glimmer-30B-assistant" }
+            - { name: NUM_SPEC, value: "8" }
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-drafter-servetest-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
