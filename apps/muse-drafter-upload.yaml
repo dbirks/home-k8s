@@ -1,0 +1,140 @@
+# Private HF upload of the FP8 DFlash drafter + model card.
+# One-shot Job -> PRIVATE dbirks/Muse-Glimmer-30B-assistant-FP8 (follows Meta's `-assistant` naming).
+# Reuses hf-write-token (SOPS). Small python image (disk-light).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-drafter-upload-scripts
+  namespace: default
+data:
+  README.md: |
+    ---
+    base_model: meta-models/Muse-Glimmer-30B-assistant
+    base_model_relation: quantized
+    pipeline_tag: text-generation
+    library_name: transformers
+    license: apache-2.0
+    language:
+      - en
+    tags:
+      - fp8
+      - fp8-e4m3
+      - w8a8
+      - compressed-tensors
+      - llm-compressor
+      - vllm
+      - speculative-decoding
+      - draft-model
+      - quantized
+    ---
+
+    # Muse-Glimmer-30B-assistant-FP8
+
+    **FP8 E4M3 · W8A8 dynamic** quantization of
+    [`meta-models/Muse-Glimmer-30B-assistant`](https://huggingface.co/meta-models/Muse-Glimmer-30B-assistant) —
+    the **DFlash speculative-decoding drafter** for
+    [`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/Muse-Glimmer-30B). Produced with
+    [llm-compressor](https://github.com/vllm-project/llm-compressor) and packaged in
+    [compressed-tensors](https://github.com/neuralmagic/compressed-tensors) for vLLM. **2.38 GB** (vs ~5.1 GB BF16).
+
+    > This is a **draft model** — it is not used standalone. It proposes tokens that the full
+    > Muse-Glimmer-30B target model verifies, to accelerate decoding (speculative decoding).
+
+    ## Model overview
+    - **Base:** [`meta-models/Muse-Glimmer-30B-assistant`](https://huggingface.co/meta-models/Muse-Glimmer-30B-assistant) — a DFlash block-diffusion drafter (`MuseGlimmerAssistantModel`): 5 layers, block size 16, `target_layer_ids [1,13,25,37,49]`, 2.556 B params.
+    - **Quantization:** FP8 E4M3, **W8A8 dynamic** — 8-bit `float` weights (per-channel static scales) + 8-bit `float` activations (per-token **dynamic** scales). All `Linear` modules.
+    - **Format:** compressed-tensors (`format: float-quantized`, `quant_method: compressed-tensors`), auto-detected by vLLM.
+    - **Quantizer:** llm-compressor `QuantizationModifier(scheme="FP8_DYNAMIC")` — data-free (no calibration set needed).
+    - **Why FP8 for a drafter:** the drafter is small but resident cost matters for co-residency with the target. FP8 roughly halves it (~5.1 GB → 2.38 GB) with the lowest acceptance-rate risk of the 4/8-bit options, and hits the SM120 `cutlass_scaled_mm` FP8 fast path. Precedent: `amd/kimi-k2.5-eagle3-fp8`.
+
+    ## ⚠️ Serving requirements (important)
+    A **quantized** DFlash drafter needs a vLLM build with two things:
+    1. **Muse-Glimmer integration** — vLLM PR **#51655** (adds `muse_glimmer` + `muse_glimmer_assistant`).
+    2. **The quantized-drafter fix** — vLLM **#51581** (fused/sliced `qkv_proj` `F.linear` bypasses the compressed-tensors scales → wrong drafts); fixed by PR **#51684**.
+
+    Without the #51581 fix, the drafter loads but **emits silently-wrong drafts** (acceptance collapses). Use an image that carries both. Acceptance-rate vs the BF16 drafter is **pending** on that image.
+
+    ```bash
+    # target + FP8 drafter (illustrative; requires a vLLM build with #51655 + #51684)
+    vllm serve meta-models/Muse-Glimmer-30B \
+      --served-model-name muse-glimmer \
+      --speculative-config '{"model":"dbirks/Muse-Glimmer-30B-assistant-FP8","num_speculative_tokens":16}' \
+      --max-model-len 8192
+    ```
+
+    ## Reproducibility
+    ```python
+    from transformers import AutoModel  # bare ...Model, NOT ...ForCausalLM
+    from llmcompressor import oneshot
+    from llmcompressor.modifiers.quantization import QuantizationModifier
+
+    model = AutoModel.from_pretrained(
+        "meta-models/Muse-Glimmer-30B-assistant", torch_dtype="auto", trust_remote_code=True)
+    oneshot(model=model,
+            recipe=QuantizationModifier(targets="Linear", scheme="FP8_DYNAMIC", ignore=["lm_head"]),
+            output_dir="Muse-Glimmer-30B-assistant-FP8")
+    ```
+    Toolchain gotcha: `llmcompressor==0.13.0` pins `transformers<=5.14.1`, which lacks the Muse arch — install the
+    llm-compressor stack **first**, then force transformers-from-source (5.16.0.dev0) **last** so it wins. The drafter
+    ships no tokenizer (it borrows the parent's), so `oneshot`'s processor auto-load prints a harmless init error; the
+    save still completes. Full effort log: home-k8s issue #81 / dbirks/vllm issue #2.
+
+    ## Limitations
+    - Draft model only; requires the Muse-Glimmer-30B target + a compatible vLLM build (see above).
+    - Acceptance-rate vs BF16 not yet measured on-cluster (blocked on the #51684 serving fix landing in an image).
+    - FP8 activations are dynamic (per-token) — no static activation calibration.
+  upload.py: |
+    #!/usr/bin/env python3
+    """Create a PRIVATE HF repo and upload the FP8 drafter + model card."""
+    import os, shutil
+    from huggingface_hub import HfApi
+    TOKEN = os.environ["HF_TOKEN"]
+    REPO = os.environ.get("HF_REPO", "dbirks/Muse-Glimmer-30B-assistant-FP8")
+    MODEL_DIR = os.environ["MODEL_DIR"]
+    api = HfApi(token=TOKEN)
+    who = api.whoami(); print("account=", who.get("name"), flush=True)
+    src = "/scripts/README.md"
+    if os.path.isfile(src):
+        shutil.copy(src, os.path.join(MODEL_DIR, "README.md")); print("staged README.md", flush=True)
+    print(f"creating PRIVATE repo {REPO} ...", flush=True)
+    api.create_repo(REPO, repo_type="model", private=True, exist_ok=True)
+    print(f"uploading {MODEL_DIR} -> {REPO} ...", flush=True)
+    try:
+        api.upload_large_folder(repo_id=REPO, folder_path=MODEL_DIR, repo_type="model")
+    except (AttributeError, TypeError) as e:
+        print("upload_large_folder unavailable, fallback:", repr(e), flush=True)
+        api.upload_folder(repo_id=REPO, folder_path=MODEL_DIR, repo_type="model",
+                          commit_message="FP8 E4M3 (W8A8 dynamic) DFlash drafter + model card")
+    info = api.model_info(REPO)
+    print(f"UPLOAD DONE: https://huggingface.co/{REPO}  private={info.private}  files={len(info.siblings)}", flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-drafter-upload-20260812
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 7200
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: upload
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub && python3 /scripts/upload.py"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: HF_REPO, value: "dbirks/Muse-Glimmer-30B-assistant-FP8" }
+            - { name: MODEL_DIR, value: "/workspace/runs/Muse-Glimmer-30B-assistant-FP8-dynamic" }
+            - { name: HF_HOME, value: "/workspace/hf" }
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits: { cpu: "4", memory: 8Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-drafter-upload-scripts, defaultMode: 0755 } }
