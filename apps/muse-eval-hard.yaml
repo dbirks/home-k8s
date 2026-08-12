@@ -1,5 +1,5 @@
-# Overnight HARD eval sweep (#81): MMLU-Pro (loglikelihood) + HumanEval (coding), across
-# BF16 / W4A16 / NVFP4(ours) / RedHat. Disk-safe + resilient + per-task timeout. GPQA dropped (gated).
+# Overnight HARD eval (#81): MMLU-Pro (1000-question subset) + HumanEval, x4 models.
+# Full MMLU-Pro was ~114k reqs / ~8h per model (infeasible) -> LIMIT=1000. Disk-safe + resilient + timeouts.
 apiVersion: v1
 data:
   eval-hard.sh: |
@@ -22,6 +22,8 @@ data:
 
     LL_TASKS=${LL_TASKS:-leaderboard_mmlu_pro}   # GPQA dropped: Idavidrein/gpqa is a GATED HF dataset our token can't access
     CODE_TASKS=${CODE_TASKS:-humaneval}
+    LIMIT=${LIMIT:-1000}         # subset MMLU-Pro to 1000 fixed questions (full = 114k reqs ~8h/model, infeasible).
+                                 # Same 1000 across all models -> still a valid apples-to-apples recovery comparison.
     TIMEOUT=${TIMEOUT:-10800}   # per lm_eval call cap (3h) so a stall can't eat the whole run
     ARGS="dtype=auto,max_model_len=8192,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True"
 
@@ -31,9 +33,9 @@ data:
       local key="$1"; local M0="$2"; local cache_glob="$3"
       local M; M=$(resolve "$M0")
       echo "=== [$(date)] HARD-EVAL $key :: $M ==="
-      echo "--- [$(date)] $key loglikelihood ($LL_TASKS) ---"
+      echo "--- [$(date)] $key loglikelihood ($LL_TASKS, limit=$LIMIT) ---"
       timeout "$TIMEOUT" python3 -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
-        --tasks "$LL_TASKS" --batch_size auto \
+        --tasks "$LL_TASKS" --limit "$LIMIT" --batch_size auto \
         --output_path "/workspace/eval/hard/$key" 2>&1 | tee "/workspace/eval/hard/$key-ll.log" | tail -20
       echo "--- [$(date)] $key coding ($CODE_TASKS) ---"
       timeout "$TIMEOUT" python3 -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
@@ -72,7 +74,7 @@ metadata:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-eval-hard-20260812b
+  name: muse-eval-hard-20260812c
   namespace: default
 spec:
   backoffLimit: 0
