@@ -1,0 +1,56 @@
+# One-shot: fix the compressed-tensors config-parsing warning on HF (group_0.format was null).
+apiVersion: v1
+data:
+  patch-config.py: |
+    import os, json, tempfile
+    from huggingface_hub import HfApi, hf_hub_download
+    TOKEN = os.environ["HF_TOKEN"]
+    api = HfApi(token=TOKEN)
+    repos = [r.strip() for r in os.environ.get("REPOS", "").split(",") if r.strip()]
+    for repo in repos:
+        p = hf_hub_download(repo_id=repo, filename="config.json", repo_type="model", token=TOKEN)
+        c = json.load(open(p))
+        qc = c.get("quantization_config") or (c.get("text_config") or {}).get("quantization_config") or {}
+        top = qc.get("format")
+        changed = False
+        for gname, g in (qc.get("config_groups") or {}).items():
+            if g.get("format") in (None, ""):
+                g["format"] = top
+                changed = True
+                print(f"{repo}: {gname}.format -> {top!r}", flush=True)
+        if changed:
+            out = os.path.join(tempfile.mkdtemp(), "config.json")
+            json.dump(c, open(out, "w"), indent=2)
+            api.upload_file(path_or_fileobj=out, path_in_repo="config.json", repo_id=repo, repo_type="model",
+                            commit_message="Set config_groups.*.format to the top-level format (fixes HF config-parsing warning)")
+            print(f"{repo}: uploaded patched config.json", flush=True)
+        else:
+            print(f"{repo}: no change needed (group format already a string)", flush=True)
+    print("DONE", flush=True)
+kind: ConfigMap
+metadata:
+  name: muse-cfgfix-scripts
+  namespace: default
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: muse-cfgfix-20260812, namespace: default }
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: cfgfix
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub && python3 /scripts/patch-config.py"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: REPOS, value: "dbirks/Muse-Glimmer-30B-NVFP4-AutoRound,dbirks/Muse-Glimmer-30B-int4-AutoRound" }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts: [{ name: scripts, mountPath: /scripts }]
+      volumes: [{ name: scripts, configMap: { name: muse-cfgfix-scripts } }]
