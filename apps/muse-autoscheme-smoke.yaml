@@ -20,6 +20,7 @@ data:
     PY="$(command -v python3 || command -v python)"
     export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
     export VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
+    export VLLM_WORKER_MULTIPROC_METHOD=fork   # offline LLM() in a procedural script -> avoid spawn re-import
     mkdir -p /workspace/artifacts "$HF_HOME"
     command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true
     echo "=== [$(date)] installing auto-round (dbirks fork) + transformers-from-source ==="
@@ -88,7 +89,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-smoke-v3-20260812
+  name: muse-autoscheme-smoke-v4-20260812
   namespace: default
 spec:
   backoffLimit: 1
