@@ -1,0 +1,79 @@
+# AutoScheme iteration — GATE: does vLLM v0.27-dev (muse-glimmer image) SERVE a mixed-precision export?
+# v0.26.0 failed ('QKVParallelLinear has no attribute data' loading fused QKV under mixed config_groups,
+# even with shared_layers). If the newer image loads the existing tiny shared_layers mixed checkpoint +
+# generates, mixed-precision serving works -> we can produce Muse-30B AutoScheme variants at several
+# avg_bits and benchmark them. If it still fails, mixed-precision serving needs an upstream vLLM fix.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-autoscheme-gate-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    PY="$(command -v python3 || command -v python)"
+    export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+    export VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
+    export VLLM_WORKER_MULTIPROC_METHOD=fork
+    "$PY" /scripts/gate.py
+  gate.py: |
+    #!/usr/bin/env python3
+    import os, glob, json, traceback
+    if __name__ == "__main__":
+        base = os.environ.get("CKPT", "/workspace/runs/autoscheme-smoke-shared-nvfp4mxfp8")
+        cfgs = sorted(glob.glob(base + "/**/config.json", recursive=True))
+        if not cfgs and os.path.isfile(base + "/config.json"):
+            cfgs = [base + "/config.json"]
+        if not cfgs:
+            print("NO CHECKPOINT at", base, "-> will need to regenerate"); raise SystemExit(2)
+        d = os.path.dirname(cfgs[0])
+        qc = (json.load(open(cfgs[0])).get("quantization_config") or {})
+        print("ckpt:", d, "| format:", qc.get("format"), "| groups:", len(qc.get("config_groups") or {}), flush=True)
+        try:
+            from vllm import LLM, SamplingParams
+            import vllm; print("vllm", vllm.__version__, flush=True)
+            llm = LLM(model=d, trust_remote_code=True, enforce_eager=True,
+                      max_model_len=2048, gpu_memory_utilization=0.3, dtype="auto")
+            txt = llm.generate(["The capital of France is"], SamplingParams(max_tokens=16, temperature=0))[0].outputs[0].text
+            print("GEN:", repr(txt), flush=True)
+            print("RESULT: MIXED-PRECISION SERVES on", vllm.__version__, flush=True)
+        except Exception as e:
+            print("RESULT: MIXED-PRECISION LOAD FAILED:", repr(e)[:600], flush=True)
+            traceback.print_exc()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-autoscheme-gate-20260812
+  namespace: default
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels: { app: muse-autoscheme-gate }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: gate
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/run.sh"]
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-autoscheme-gate-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }
