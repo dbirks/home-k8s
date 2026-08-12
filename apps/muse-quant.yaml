@@ -303,6 +303,23 @@ data:
     if not qc or wbits != 4:
         raise SystemExit(f"FATAL: expected 4-bit weights, got num_bits={wbits} (format {fmt})")
     print(f"OK [{SCHEME}/{MODE}]: {fmt} export verified at {SAVED}", flush=True)
+
+    # Post-fix: HF's config parser requires config_groups.*.format to be a STRING; AutoRound writes
+    # it as null -> "Configuration Parsing Warning" on the model page. Set it to the top-level format.
+    try:
+        _cp = SAVED / "config.json"
+        _cc = json.loads(_cp.read_text())
+        _q = _cc.get("quantization_config") or (_cc.get("text_config") or {}).get("quantization_config") or {}
+        _top = _q.get("format")
+        _patched = False
+        for _g in (_q.get("config_groups") or {}).values():
+            if _g.get("format") in (None, ""):
+                _g["format"] = _top; _patched = True
+        if _patched:
+            _cp.write_text(json.dumps(_cc, indent=2))
+            print(f"post-fix: config_groups.*.format -> {_top}", flush=True)
+    except Exception as _e:
+        print("post-fix skipped:", repr(_e), flush=True)
 ---
 # Quantize Job: runs smoke (nsamples 8, iters 0 — validate download+calibration+packing+export)
 # then default (nsamples 128, iters 200 — the real artifact). Preflight GREEN gated this:
