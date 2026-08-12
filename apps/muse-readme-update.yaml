@@ -1,0 +1,243 @@
+# One-shot: push updated model-card READMEs (scheme-prominent headers) to both private repos.
+apiVersion: v1
+data:
+  int4-README.md: |
+    ---
+    base_model: meta-models/Muse-Glimmer-30B
+    base_model_relation: quantized
+    pipeline_tag: image-text-to-text
+    library_name: transformers
+    license: apache-2.0
+    language:
+      - en
+    tags:
+      - int4
+      - w4a16
+      - compressed-tensors
+      - auto-round
+      - vllm
+      - multimodal
+      - quantized
+    ---
+
+    # Muse-Glimmer-30B-int4-AutoRound
+
+    > **int4 · W4A16 — 4-bit weights, 16-bit activations.** Quantization of
+    > [`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/Muse-Glimmer-30B) produced with
+    > [Intel AutoRound](https://github.com/intel/auto-round), in
+    > [compressed-tensors](https://github.com/neuralmagic/compressed-tensors) for vLLM.
+    > The **W4A16** scheme (weights-only) keeps activations at BF16 → **highest accuracy** of the 4-bit variants
+    > and **runs on any modern NVIDIA GPU** (Ampere → Hopper → Blackwell, incl. **DGX Spark**) via Marlin. ~20.7 GB (vs ~60 GB BF16).
+    > Text decoder is int4; vision tower + `lm_head` stay BF16.
+    >
+    > **→ On a Blackwell card and want FP4 activation speed?** Use the **[NVFP4 / W4A4 sibling](https://huggingface.co/dbirks/Muse-Glimmer-30B-NVFP4-AutoRound)**.
+
+    ## Model overview
+    - **Base model:** [`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/Muse-Glimmer-30B) — a dense (Gemma2-derived) multimodal reasoning decoder + vision tower.
+    - **Quantization:** **W4A16** (int4 weight-only, group size 128) on the text-decoder `Linear` layers; vision tower / adapter / projection / patch-embedder / `lm_head` kept BF16.
+    - **Format:** compressed-tensors (`pack-quantized`), auto-detected by vLLM.
+    - **Quantizer:** Intel AutoRound (arXiv:2309.05516), 128 samples · seqlen 2048 · 200 iters · `NeelNanda/pile-10k`.
+    - **Why this one:** highest accuracy recovery of the 4-bit variants **and** the broadest hardware support — if you don't have a Blackwell card, this is the one to use. (For Blackwell FP4 speed, see the [NVFP4 sibling](https://huggingface.co/dbirks/Muse-Glimmer-30B-NVFP4-AutoRound).)
+
+    ## Evaluation — accuracy recovery vs BF16
+    EleutherAI `lm-evaluation-harness`, in-process `--model vllm`, OpenLLM-v1, identical settings; Recovery % = quant ÷ BF16 × 100. (No chat template: Muse is a reasoning model, and chat-template MCQ loglikelihood collapses to ~random — see notes.)
+
+    | Task | BF16 base | **This (int4 W4A16)** | Recovery % |
+    |---|---|---|---|
+    | arc_challenge | 0.6254 | 0.6041 | 96.6 |
+    | hellaswag | 0.8275 | 0.8187 | 98.9 |
+    | winogrande | 0.7798 | 0.7695 | 98.7 |
+    | truthfulqa_mc2 | 0.6168 | 0.6099 | 98.9 |
+    | mmlu | 0.7977 | 0.7930 | 99.4 |
+    | **OpenLLM V1 Avg** | **0.7295** | **0.7191** | **98.50%** |
+
+    <sub>For reference on the same harness: Red Hat GPTQ-NVFP4 = 98.36%, AutoRound NVFP4 (W4A4) = 97.09%. This W4A16 build is the highest-recovery 4-bit option, at the smallest size (20.7 GB).</sub>
+
+    ## Deployment (vLLM)
+    vLLM auto-detects the scheme from `config.json` — **no quantization flag needed**. int4 W4A16 serves via the Marlin kernel on any Ampere-or-newer GPU.
+    ```bash
+    vllm serve dbirks/Muse-Glimmer-30B-int4-AutoRound \
+      --tensor-parallel-size 1 --max-model-len 8192 \
+      --enable-auto-tool-choice --tool-call-parser muse_glimmer --reasoning-parser muse_glimmer
+    ```
+    ```python
+    from openai import OpenAI
+    client = OpenAI(base_url="http://localhost:8000/v1", api_key="x")
+    r = client.chat.completions.create(model="dbirks/Muse-Glimmer-30B-int4-AutoRound",
+        messages=[{"role":"user","content":[
+            {"type":"text","text":"Describe this image."},
+            {"type":"image_url","image_url":{"url":"https://…"}}]}])
+    print(r.choices[0].message.content)
+    ```
+    > **Note:** Muse-Glimmer is a *reasoning* model — with the reasoning parser on, chain-of-thought comes back in the `reasoning` field and the final answer in `content`; give it enough `max_tokens`.
+
+    ## Limitations
+    - Small accuracy loss vs BF16 (see table). Only the text decoder is quantized (vision tower BF16, intentional).
+    - Weight-only (W4A16): activations stay BF16, so no activation-quant speedup — but maximal compatibility + accuracy. For Blackwell FP4 (W4A4) speed, use the NVFP4 sibling.
+
+    ## Reproducibility
+    ```python
+    from auto_round import AutoRound
+    ar = AutoRound("meta-models/Muse-Glimmer-30B", scheme="W4A16", dataset="NeelNanda/pile-10k",
+                   nsamples=128, seqlen=2048, batch_size=4, iters=200,
+                   device_map=0, trust_remote_code=True, quant_nontext_module=False, seed=42)
+    ar.quantize_and_save(output_dir="Muse-Glimmer-30B-int4-AutoRound", format="llm_compressor")
+    ```
+    Toolchain: auto-round 0.15.0, transformers 5.16.0.dev0 (source — required for the `muse_glimmer` arch), compressed-tensors 0.17.0, torch 2.11.0+cu130. Full effort log: home-k8s issue #81.
+
+    ## Citation
+    ```bibtex
+    @article{cheng2023optimize, title={Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLMs}, author={Cheng, Wenhua and others}, journal={arXiv:2309.05516}, year={2023}}
+    ```
+  nvfp4-README.md: |
+    ---
+    base_model: meta-models/Muse-Glimmer-30B
+    base_model_relation: quantized
+    pipeline_tag: image-text-to-text
+    library_name: transformers
+    license: apache-2.0       # base model is Apache-2.0 (Meta Superintelligence Labs)
+    language:
+      - en
+    tags:
+      - nvfp4
+      - fp4
+      - compressed-tensors
+      - auto-round
+      - vllm
+      - multimodal
+      - quantized
+    ---
+
+    # Muse-Glimmer-30B-NVFP4-AutoRound
+
+    > **NVFP4 · W4A4 — 4-bit weights + 4-bit activations.** Quantization of
+    > [`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/Muse-Glimmer-30B) produced with
+    > [Intel AutoRound](https://github.com/intel/auto-round), in
+    > [compressed-tensors](https://github.com/neuralmagic/compressed-tensors) for vLLM on **NVIDIA Blackwell**
+    > (native FP4 tensor cores). The **W4A4** scheme trades a little accuracy for FP4 activation *speed* on Blackwell.
+    > Text decoder is NVFP4 W4A4; vision tower + `lm_head` stay BF16. ~22 GB (vs ~60 GB BF16).
+    >
+    > **→ Want any-GPU support and higher accuracy?** Use the **[W4A16 sibling](https://huggingface.co/dbirks/Muse-Glimmer-30B-int4-AutoRound)** (int4, weights-only).
+
+    ## Model overview
+    - **Base model:** [`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/Muse-Glimmer-30B) — a dense (Gemma2-derived) multimodal decoder + vision tower.
+    - **Quantization:** NVFP4 (W4A4) on the text-decoder `Linear` layers; vision tower / adapter / projection / patch-embedder / `lm_head` kept BF16.
+    - **Format:** compressed-tensors (`nvfp4-pack-quantized`), auto-detected by vLLM.
+    - **Quantizer:** Intel AutoRound (arXiv:2309.05516).
+    - **Intended use:** efficient inference on NVIDIA Blackwell (B200 / RTX PRO 6000 / DGX Spark) via vLLM.
+
+    ## Quantization recipe
+    - **Method:** AutoRound, scheme `NVFP4` — 4-bit **weights and input activations**, NVFP4 microscale (group size 16, FP8 `e4m3` block scale + FP32 global), symmetric, `strategy: tensor_group`.
+    - **Quantized:** all `Linear` in the 52 `model.language_model.layers.*` decoder blocks (416 Linears).
+    - **Kept BF16:** `model.vision_tower.*`, `model.vision_adapter.*`, `model.vision_projection`, `model.vision_tower.patch_embedder.patch_embedding`, `lm_head` (mirrors the RedHatAI/Muse-Glimmer-30B-NVFP4 scope).
+    - **Calibration:** `NeelNanda/pile-10k`, 128 samples, seqlen 2048, 200 tuning iters (SignRound-style block reconstruction).
+    - **Hardware:** single NVIDIA RTX PRO 6000 Blackwell 96 GB (SM120); ~94.5 min, peak 47.6 GB VRAM.
+
+    ## Deployment (vLLM)
+    vLLM auto-detects the NVFP4 scheme from `config.json` — **no quantization flag needed**. On Blackwell, use a build with FP4 tensor-core kernels (FlashInfer/CUTLASS) — **not** the Marlin fallback.
+
+    ```bash
+    vllm serve Muse-Glimmer-30B-NVFP4-AutoRound \
+      --tensor-parallel-size 1 --max-model-len 8192 \
+      --enable-auto-tool-choice --tool-call-parser muse_glimmer --reasoning-parser muse_glimmer
+    # SM120 (consumer Blackwell): VLLM_ATTENTION_BACKEND=FLASHINFER, FLASHINFER_CUDA_ARCH_LIST=12.0f
+    ```
+    ```python
+    from openai import OpenAI
+    client = OpenAI(base_url="http://localhost:8000/v1", api_key="x")
+    r = client.chat.completions.create(
+        model="Muse-Glimmer-30B-NVFP4-AutoRound",
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image_url", "image_url": {"url": "https://…"}}]}],
+    )
+    print(r.choices[0].message.content)
+    ```
+    > **Note:** Muse-Glimmer is a *reasoning* model — with the reasoning parser enabled, the chain-of-thought is returned in the `reasoning` field and the final answer in `content`. Give it enough `max_tokens` to finish reasoning.
+
+    ## Evaluation — accuracy recovery vs BF16
+    Measured with EleutherAI `lm-evaluation-harness` (`--apply_chat_template --fewshot_as_multiturn`), identical settings across all three; **Recovery % = quant / BF16 × 100**.
+
+    | Task | BF16 base | Red Hat GPTQ-NVFP4 | **This (AutoRound NVFP4)** | Recovery % |
+    |---|---|---|---|---|
+    | arc_challenge | 0.6254 | 0.6126 | 0.5998 | 95.9 |
+    | hellaswag | 0.8275 | 0.8156 | 0.8030 | 97.0 |
+    | winogrande | 0.7798 | 0.7719 | 0.7703 | 98.8 |
+    | truthfulqa_mc2 | 0.6168 | 0.6036 | 0.5943 | 96.4 |
+    | mmlu | 0.7977 | 0.7854 | 0.7767 | 97.4 |
+    | **OpenLLM V1 Avg** | **0.7295** | **0.7178** (98.4%) | **0.7089** | **97.1%** |
+
+    <sub>lm-eval-harness, `--model vllm`, no chat template (reasoning model → MCQ loglikelihood needs it off). Size: 22 GB (this) vs 29 GB (Red Hat) vs 56 GB (BF16).</sub>
+
+    _(Vision path is BF16/untouched; a light `lmms-eval` MMMU/TextVQA sanity vs BF16 confirms the multimodal path is intact.)_
+
+    ## Hardware & format notes
+    - NVFP4 requires **NVIDIA Blackwell (SM100/SM120)** FP4 tensor cores; it won't accelerate on Ada/Hopper.
+    - Two-level scaling: FP8 (`e4m3`) scale per 16-value block + FP32 tensor-level global scale.
+    - On consumer SM120, prefer native/CUTLASS/FlashInfer FP4 kernels over Marlin (~2× slower). Validated here: FlashInfer `fp4_gemm` autotuning engaged on load.
+
+    ## Limitations
+    - Small accuracy loss vs BF16 (see table); varies by task.
+    - Only the text decoder is quantized — no speedup on the vision tower (intentional, to preserve multimodal quality).
+    - Sampling/parser support varies by inference framework; validated on vLLM (Muse build) on SM120.
+
+    ## Reproducibility
+    ```python
+    from auto_round import AutoRound
+    ar = AutoRound(
+        "meta-models/Muse-Glimmer-30B",
+        scheme="NVFP4", dataset="NeelNanda/pile-10k",
+        nsamples=128, seqlen=2048, batch_size=4, iters=200,
+        device_map=0, trust_remote_code=True, quant_nontext_module=False, seed=42,
+    )
+    ar.quantize_and_save(output_dir="Muse-Glimmer-30B-NVFP4-AutoRound", format="llm_compressor")
+    ```
+    Toolchain: auto-round 0.15.0, transformers 5.16.0.dev0 (source — required for the `muse_glimmer` arch), compressed-tensors 0.17.0, torch 2.11.0+cu130, on `vllm/vllm-openai:v0.26.0`. Full effort log: home-k8s issue #81.
+
+    ## Citation
+    ```bibtex
+    @article{cheng2023optimize, title={Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLMs}, author={Cheng, Wenhua and others}, journal={arXiv:2309.05516}, year={2023}}
+    ```
+  update-readmes.py: |
+    import os
+    from huggingface_hub import HfApi
+    api = HfApi(token=os.environ["HF_TOKEN"])
+    jobs = [
+        ("dbirks/Muse-Glimmer-30B-NVFP4-AutoRound", "/scripts/nvfp4-README.md"),
+        ("dbirks/Muse-Glimmer-30B-int4-AutoRound",  "/scripts/int4-README.md"),
+    ]
+    for repo, readme in jobs:
+        api.upload_file(path_or_fileobj=readme, path_in_repo="README.md", repo_id=repo,
+                        repo_type="model", commit_message="Lead the card with the W4A4/W4A16 scheme + sibling cross-link")
+        print("updated README ->", repo, flush=True)
+    print("DONE", flush=True)
+kind: ConfigMap
+metadata:
+  name: muse-readme-update-scripts
+  namespace: default
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-readme-update-20260812
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: readme
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub && python3 /scripts/update-readmes.py"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: scripts, configMap: { name: muse-readme-update-scripts } }
