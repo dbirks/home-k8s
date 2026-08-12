@@ -1,0 +1,101 @@
+# Overnight HARD eval sweep (#81): MMLU-Pro + GPQA (loglikelihood) + HumanEval (coding),
+# across BF16 / W4A16 / NVFP4(ours) / RedHat. Disk-safe (downloads freed after each) + resilient.
+apiVersion: v1
+data:
+  eval-hard.sh: |
+    #!/bin/bash
+    # Overnight HARD eval sweep across 4 models on discriminating tasks:
+    #   loglikelihood (clean for a reasoning model, no chat template): leaderboard_mmlu_pro, leaderboard_gpqa
+    #   coding (generative, chat template + room to reason): humaneval
+    # Disk-safe: remote models are downloaded, evaluated, then their HF cache is deleted (bounded disk).
+    # Resilient: per-model/per-task failures are logged and skipped, never fatal. Results -> /workspace/eval/hard/<key>/.
+    set -uo pipefail
+    export HF_HOME=/workspace/hf
+    export VLLM_ATTENTION_BACKEND=FLASHINFER
+    export FLASHINFER_CUDA_ARCH_LIST=12.0f
+    export TOKENIZERS_PARALLELISM=false
+    export HF_ALLOW_CODE_EVAL=1
+    mkdir -p /workspace/eval/hard
+    echo "=== [$(date)] installing lm-eval ==="
+    python3 -m pip install --no-cache-dir lm-eval 2>&1 | tail -5
+    python3 -c "import lm_eval; print('lm-eval', lm_eval.__version__)"
+
+    LL_TASKS=${LL_TASKS:-leaderboard_mmlu_pro,leaderboard_gpqa}
+    CODE_TASKS=${CODE_TASKS:-humaneval}
+    ARGS="dtype=auto,max_model_len=8192,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True"
+
+    resolve () { local M="$1"; if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then M=$(dirname "$(find "$M" -name config.json 2>/dev/null | head -1)"); fi; echo "$M"; }
+
+    eval_model () {
+      local key="$1"; local M0="$2"; local cache_glob="$3"
+      local M; M=$(resolve "$M0")
+      echo "=== [$(date)] HARD-EVAL $key :: $M ==="
+      echo "--- [$(date)] $key loglikelihood ($LL_TASKS) ---"
+      python3 -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
+        --tasks "$LL_TASKS" --batch_size auto \
+        --output_path "/workspace/eval/hard/$key" 2>&1 | tee "/workspace/eval/hard/$key-ll.log" | tail -20 || echo "!!! $key LL FAILED"
+      echo "--- [$(date)] $key coding ($CODE_TASKS) ---"
+      python3 -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
+        --tasks "$CODE_TASKS" --confirm_run_unsafe_code --apply_chat_template --gen_kwargs max_gen_toks=1024 --batch_size auto \
+        --output_path "/workspace/eval/hard/$key" 2>&1 | tee "/workspace/eval/hard/$key-code.log" | tail -20 || echo "!!! $key CODE FAILED"
+      echo "=== [$(date)] done $key ==="
+      if [ -n "$cache_glob" ]; then rm -rf $cache_glob 2>/dev/null && echo "freed cache: $cache_glob"; fi
+      df -h /workspace | tail -1
+    }
+
+    # BF16 + W4A16 are local/cached (no cleanup). RedHat + NVFP4 are downloaded then their cache is freed.
+    eval_model bf16-base       "meta-models/Muse-Glimmer-30B"                             ""
+    eval_model autoround-w4a16 "/workspace/runs/Muse-Glimmer-30B-W4A16-AutoRound-default" ""
+    eval_model redhat-nvfp4    "RedHatAI/Muse-Glimmer-30B-NVFP4"                          "/workspace/hf/hub/models--RedHatAI--Muse-Glimmer-30B-NVFP4"
+    eval_model autoround-nvfp4 "dbirks/Muse-Glimmer-30B-NVFP4-AutoRound"                  "/workspace/hf/hub/models--dbirks--Muse-Glimmer-30B-NVFP4-AutoRound"
+
+    echo "=== [$(date)] ALL HARD EVALS DONE — summary ==="
+    python3 - <<'PY'
+    import json, glob
+    for f in sorted(glob.glob("/workspace/eval/hard/**/results_*.json", recursive=True)):
+        try:
+            d = json.load(open(f)); r = d.get("results", {})
+            print("==", f)
+            for t, v in r.items():
+                m = {k: round(x, 4) for k, x in v.items() if isinstance(x, float) and any(s in k for s in ("acc", "exact_match", "pass@"))}
+                if m: print("   ", t, m)
+        except Exception as e:
+            print("   err", e)
+    PY
+    echo "=== [$(date)] hard eval sweep complete ==="
+kind: ConfigMap
+metadata:
+  name: muse-eval-hard-scripts
+  namespace: default
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-eval-hard-20260812
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 43200   # up to 12h overnight
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/eval-hard.sh"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: VLLM_PORT, value: "8000" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 32Gi }
+            requests: { cpu: "4", memory: 16Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-eval-hard-scripts, defaultMode: 0755 } }
