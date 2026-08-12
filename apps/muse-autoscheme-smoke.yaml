@@ -71,7 +71,7 @@ data:
         print("\n===== vLLM load test on SM120 =====", flush=True)
         try:
             from vllm import LLM, SamplingParams
-            llm = LLM(model=d, trust_remote_code=True, enforce_eager=True,
+            llm = LLM(model=str(d), trust_remote_code=True, enforce_eager=True,
                       max_model_len=2048, gpu_memory_utilization=0.35, dtype="auto")
             txt = llm.generate(["The capital of France is"], SamplingParams(max_tokens=16, temperature=0))[0].outputs[0].text
             result["serve"] = "OK"; result["sample"] = txt
@@ -88,7 +88,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-smoke-v2-20260812
+  name: muse-autoscheme-smoke-v3-20260812
   namespace: default
 spec:
   backoffLimit: 1
