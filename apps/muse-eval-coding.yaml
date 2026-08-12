@@ -27,10 +27,12 @@ data:
     echo "=== [$(date)] pip install lm-eval ==="
     "$PY" -m pip install --no-cache-dir "lm-eval[api]" 2>&1 | tail -3
 
-    echo "=== [$(date)] serving $MODEL with muse_glimmer reasoning parser ==="
+    # PARSERS="" => plain serve (isolate whether muse_glimmer reasoning/tool parsers empty the content).
+    PARSERS="${PARSERS:-}"
+    echo "=== [$(date)] serving $MODEL (parsers='$PARSERS') ==="
     vllm serve "$MODEL" --served-model-name "$SERVED" --port 8000 \
       --max-model-len 8192 --gpu-memory-utilization 0.9 --enforce-eager --trust-remote-code \
-      --reasoning-parser muse_glimmer --tool-call-parser muse_glimmer --enable-auto-tool-choice \
+      $PARSERS \
       > /workspace/eval/coding/serve-$SERVED.log 2>&1 &
     SRV=$!
     echo "serve pid $SRV; waiting for /health ..."
@@ -46,7 +48,7 @@ data:
       \"model\": \"$SERVED\",
       \"messages\": [{\"role\":\"user\",\"content\":\"Complete this Python function. Return only code.\\n\\ndef add(a, b):\\n    \\\"\\\"\\\"Return a plus b.\\\"\\\"\\\"\\n\"}],
       \"max_tokens\": 2048, \"temperature\": 0
-    }" | "$PY" -c "import sys,json; d=json.load(sys.stdin); m=d['choices'][0]['message']; print('--- content ---'); print(repr(m.get('content'))[:800]); print('--- reasoning_content ---'); print(repr(m.get('reasoning_content'))[:800]); print('--- finish_reason ---', d['choices'][0].get('finish_reason'))" 2>&1 | head -30
+    }" | "$PY" -c "import sys,json; d=json.load(sys.stdin); c=d['choices'][0]; m=c['message']; print('--- content ---'); print(repr(m.get('content'))[:800]); print('--- reasoning_content ---'); print(repr(m.get('reasoning_content'))[:800]); print('--- tool_calls ---', m.get('tool_calls')); print('--- finish_reason ---', c.get('finish_reason')); print('--- usage ---', d.get('usage'))" 2>&1 | head -30
 
     echo "=== [$(date)] humaneval via local-chat-completions (limit=$LIMIT, max_tok=$MAXTOK) ==="
     "$PY" -m lm_eval --model local-chat-completions \
@@ -73,7 +75,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-eval-coding-smoke3-20260812
+  name: muse-eval-coding-smoke4-20260812
   namespace: default
 spec:
   backoffLimit: 1
