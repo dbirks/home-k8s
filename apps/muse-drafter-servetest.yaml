@@ -1,0 +1,103 @@
+# Serve-test the FP8 DFlash drafter via RUNTIME OVERLAY (no image build — workstation disk was full).
+# Base vllm/vllm-openai:muse-glimmer already has #51655 (Muse). At startup we download #51684's 4
+# merged Python files from the pushed fork branch (dbirks/vllm@muse-glimmer-fp8) over site-packages,
+# then run an offline spec-decode test: Muse-Glimmer-30B target + the FP8 drafter, print accept length.
+#
+# This answers: does the quantized drafter LOAD (past the #51581 bug) and produce ACCEPTED tokens on SM120
+# (the cutlass-fp8 SCALED_MM path the fix added, never before run on Blackwell)?
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-drafter-servetest-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    PY="$(command -v python3 || command -v python)"
+    export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+    export VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
+    echo "=== [$(date)] overlay: download #51684 merged files over site-packages ==="
+    "$PY" /scripts/overlay.py
+    echo "=== [$(date)] run spec-decode serve test ==="
+    "$PY" /scripts/servetest.py
+  overlay.py: |
+    #!/usr/bin/env python3
+    import urllib.request, os, vllm.model_executor.models as m
+    BR = "muse-glimmer-fp8"
+    RAW = f"https://raw.githubusercontent.com/dbirks/vllm/{BR}/vllm/model_executor/models"
+    d = os.path.dirname(m.__file__)
+    for f in ["qwen3_dflash.py", "laguna_dflash.py", "gemma4_dspark.py", "qwen3_dspark.py"]:
+        urllib.request.urlretrieve(f"{RAW}/{f}", os.path.join(d, f))
+        print("overlaid", f, "->", os.path.join(d, f), flush=True)
+    src = open(os.path.join(d, "qwen3_dflash.py")).read()
+    assert "ContextKVStrategy" in src and "quant_method" in src, "FIX MISSING in overlaid qwen3_dflash.py!"
+    print("fix present: ContextKVStrategy + quant_method routing OK", flush=True)
+  servetest.py: |
+    #!/usr/bin/env python3
+    import os
+    if __name__ == "__main__":   # guard: vLLM spawns workers; avoid re-import recursion
+        TARGET = os.environ.get("TARGET", "meta-models/Muse-Glimmer-30B")
+        DRAFTER = os.environ.get("DRAFTER", "/workspace/runs/Muse-Glimmer-30B-assistant-FP8-dynamic")
+        NSPEC = int(os.environ.get("NUM_SPEC", "16"))
+        from vllm import LLM, SamplingParams
+        print(f"=== target={TARGET} drafter={DRAFTER} num_spec={NSPEC} ===", flush=True)
+        llm = LLM(
+            model=TARGET,
+            speculative_config={"method": "dflash", "model": DRAFTER, "num_speculative_tokens": NSPEC},
+            trust_remote_code=True, max_model_len=4096, gpu_memory_utilization=0.92,
+            enforce_eager=True, disable_log_stats=False,
+        )
+        prompts = [
+            "Write a Python function that returns the nth Fibonacci number.",
+            "Explain in two sentences why the sky is blue.",
+            "List three prime numbers greater than 100.",
+        ]
+        outs = llm.generate(prompts, SamplingParams(max_tokens=128, temperature=0))
+        for i, o in enumerate(outs):
+            print(f"\n--- prompt {i} ---\n{o.outputs[0].text[:300]}", flush=True)
+        # spec-decode acceptance metrics (v1 exposes them on the engine)
+        try:
+            m = llm.llm_engine.get_metrics() if hasattr(llm, "llm_engine") else None
+            print("\nMETRICS:", m, flush=True)
+        except Exception as e:
+            print("metrics fetch err:", repr(e), flush=True)
+        print("\n=== SERVE TEST DONE — check log above for 'Speculative metrics' / acceptance length ===", flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-drafter-servetest-20260812
+  namespace: default
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels: { app: muse-drafter-servetest }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: servetest
+          image: vllm/vllm-openai:muse-glimmer
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-drafter-servetest-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
