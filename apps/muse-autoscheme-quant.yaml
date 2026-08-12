@@ -39,6 +39,14 @@ data:
     print(f"=== AutoScheme avg_bits={AVG} iters={ITERS} nsamples={NSAMP} -> {OUT} ===", flush=True)
 
     import torch  # noqa
+    # AutoScheme scoring runs forward+backward with gradient checkpointing; on Muse the recompute
+    # metadata mismatches (CheckpointError). Make checkpoint a pass-through (no recompute) — block-wise
+    # scoring at batch=1 keeps activation memory bounded on the 96GB card.
+    import torch.utils.checkpoint as _ckpt
+    def _no_ckpt(function, *args, use_reentrant=None, **kwargs):
+        return function(*args, **kwargs)
+    _ckpt.checkpoint = _no_ckpt
+    torch.utils.checkpoint.checkpoint = _no_ckpt
     # AutoScheme RELOADS weights per candidate scheme and can't resolve a bare HF repo id at
     # that point (FileNotFoundError on 'meta-models/...'). Resolve to the cached local snapshot
     # dir up front (snapshot_download returns the cache path with no re-download when present).
@@ -103,7 +111,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-avg475-smoke3-20260812
+  name: muse-autoscheme-avg475-smoke4-20260812
   namespace: default
 spec:
   backoffLimit: 0
