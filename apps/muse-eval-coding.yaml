@@ -54,7 +54,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-eval-coding-smoke-20260812
+  name: muse-eval-coding-smoke2-20260812
   namespace: default
 spec:
   backoffLimit: 1
@@ -76,7 +76,10 @@ spec:
           command: ["/bin/bash", "/scripts/run.sh"]
           env:
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
-            - { name: MODEL, value: "meta-models/Muse-Glimmer-30B" }
+            # int4 W4A16 (~20GB) fits the node's limited host RAM; BF16 (55GB) OOM'd the load. This both
+            # validates the reasoning-parser coding harness AND yields real coding pass@1 for our best quant.
+            - { name: MODEL, value: "/workspace/runs/Muse-Glimmer-30B-W4A16-AutoRound-default/Muse-Glimmer-30B-w4g128" }
+            - { name: SERVED, value: "muse-int4" }
             - { name: LIMIT, value: "20" }
           resources:
             limits:
