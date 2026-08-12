@@ -41,20 +41,39 @@ data:
     done
     curl -sf http://localhost:8000/health >/dev/null 2>&1 || { echo "server never became ready"; tail -30 /workspace/eval/coding/serve-$SERVED.log; kill $SRV; exit 1; }
 
+    echo "=== [$(date)] DIAGNOSTIC: raw endpoint response (content vs reasoning_content) ==="
+    curl -sf http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d "{
+      \"model\": \"$SERVED\",
+      \"messages\": [{\"role\":\"user\",\"content\":\"Complete this Python function. Return only code.\\n\\ndef add(a, b):\\n    \\\"\\\"\\\"Return a plus b.\\\"\\\"\\\"\\n\"}],
+      \"max_tokens\": 2048, \"temperature\": 0
+    }" | "$PY" -c "import sys,json; d=json.load(sys.stdin); m=d['choices'][0]['message']; print('--- content ---'); print(repr(m.get('content'))[:800]); print('--- reasoning_content ---'); print(repr(m.get('reasoning_content'))[:800]); print('--- finish_reason ---', d['choices'][0].get('finish_reason'))" 2>&1 | head -30
+
     echo "=== [$(date)] humaneval via local-chat-completions (limit=$LIMIT, max_tok=$MAXTOK) ==="
     "$PY" -m lm_eval --model local-chat-completions \
       --model_args "model=$SERVED,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=8,max_retries=3,tokenized_requests=False" \
-      --tasks humaneval --limit "$LIMIT" --apply_chat_template \
+      --tasks humaneval --limit "$LIMIT" --apply_chat_template --log_samples \
       --gen_kwargs "max_gen_toks=$MAXTOK" --confirm_run_unsafe_code \
       --output_path /workspace/eval/coding/$SERVED 2>&1 | tee /workspace/eval/coding/$SERVED-eval.log | tail -25
+    echo "=== [$(date)] SAMPLE dump (what lm-eval actually scored) ==="
+    "$PY" /scripts/dump.py
     echo "=== [$(date)] done; stopping server ==="
     kill $SRV 2>/dev/null || true
     echo "SMOKE RESULT:"; grep -iE "humaneval|pass@1" /workspace/eval/coding/$SERVED-eval.log | tail -5
+  dump.py: |
+    #!/usr/bin/env python3
+    import glob, json
+    fs = sorted(glob.glob("/workspace/eval/coding/**/samples_humaneval*.jsonl", recursive=True))
+    if not fs:
+        print("no samples file found"); raise SystemExit
+    for line in list(open(fs[-1]))[:2]:
+        r = json.loads(line)
+        resp = (r.get("resps") or r.get("filtered_resps") or [["?"]])[0]
+        print("RESP:", repr(resp)[:700]); print("---")
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-eval-coding-smoke2-20260812
+  name: muse-eval-coding-smoke3-20260812
   namespace: default
 spec:
   backoffLimit: 1
