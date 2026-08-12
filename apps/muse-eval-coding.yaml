@@ -1,0 +1,91 @@
+# Coding eval done RIGHT for a reasoning model. The overnight hard-eval scored HumanEval 0.0 for ALL
+# models because max_gen_toks=1024 truncated mid-reasoning (before any code) and the offline path
+# didn't strip the chain-of-thought. Fix: serve each model with the muse_glimmer REASONING PARSER
+# (so the API returns clean post-reasoning `content`) and eval via lm-eval `local-chat-completions`
+# with a big generation budget.
+#
+# SMOKE-FIRST: this job runs BF16 at limit=20 to prove the harness yields pass@1 > 0 before we spend
+# GPU-hours on the full 4-model sweep. Uses vllm/vllm-openai:muse-glimmer (has the reasoning parser).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-eval-coding-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    PY="$(command -v python3 || command -v python)"
+    export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false HF_ALLOW_CODE_EVAL=1
+    export VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
+    MODEL="${MODEL:-meta-models/Muse-Glimmer-30B}"
+    SERVED="${SERVED:-muse-eval}"
+    LIMIT="${LIMIT:-20}"
+    MAXTOK="${MAXTOK:-4096}"
+    mkdir -p /workspace/eval/coding
+    echo "=== [$(date)] pip install lm-eval ==="
+    "$PY" -m pip install --no-cache-dir "lm-eval[api]" 2>&1 | tail -3
+
+    echo "=== [$(date)] serving $MODEL with muse_glimmer reasoning parser ==="
+    vllm serve "$MODEL" --served-model-name "$SERVED" --port 8000 \
+      --max-model-len 8192 --gpu-memory-utilization 0.9 --enforce-eager --trust-remote-code \
+      --reasoning-parser muse_glimmer --tool-call-parser muse_glimmer --enable-auto-tool-choice \
+      > /workspace/eval/coding/serve-$SERVED.log 2>&1 &
+    SRV=$!
+    echo "serve pid $SRV; waiting for /health ..."
+    for i in $(seq 1 120); do
+      curl -sf http://localhost:8000/health >/dev/null 2>&1 && { echo "ready after ${i}0s"; break; }
+      kill -0 $SRV 2>/dev/null || { echo "SERVER DIED — tail:"; tail -30 /workspace/eval/coding/serve-$SERVED.log; exit 1; }
+      sleep 10
+    done
+    curl -sf http://localhost:8000/health >/dev/null 2>&1 || { echo "server never became ready"; tail -30 /workspace/eval/coding/serve-$SERVED.log; kill $SRV; exit 1; }
+
+    echo "=== [$(date)] humaneval via local-chat-completions (limit=$LIMIT, max_tok=$MAXTOK) ==="
+    "$PY" -m lm_eval --model local-chat-completions \
+      --model_args "model=$SERVED,base_url=http://localhost:8000/v1/chat/completions,num_concurrent=8,max_retries=3,tokenized_requests=False" \
+      --tasks humaneval --limit "$LIMIT" --apply_chat_template \
+      --gen_kwargs "max_gen_toks=$MAXTOK" --confirm_run_unsafe_code \
+      --output_path /workspace/eval/coding/$SERVED 2>&1 | tee /workspace/eval/coding/$SERVED-eval.log | tail -25
+    echo "=== [$(date)] done; stopping server ==="
+    kill $SRV 2>/dev/null || true
+    echo "SMOKE RESULT:"; grep -iE "humaneval|pass@1" /workspace/eval/coding/$SERVED-eval.log | tail -5
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-eval-coding-smoke-20260812
+  namespace: default
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels: { app: muse-eval-coding }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:muse-glimmer
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: MODEL, value: "meta-models/Muse-Glimmer-30B" }
+            - { name: LIMIT, value: "20" }
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-eval-coding-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
