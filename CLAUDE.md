@@ -75,7 +75,7 @@ kubectl create secret generic sops-age --namespace=flux-system \
 
 ## Pitfalls learned the hard way
 
-- NVFP4 on SM120 (Blackwell) has known vLLM kernel bugs with MoE models — dense models work fine
+- NVFP4 on SM120 (Blackwell): dense models always work. MoE was broken but is now LARGELY FIXED (mid-2026) — **W4A4** NVFP4 MoE serves natively via FlashInfer b12x/CUTLASS on SM120 (vLLM PR #40082 merged 2026-05, flashinfer ≥0.6.13), needs a recent vLLM (~v0.24+) and may need `VLLM_USE_FLASHINFER_MOE_FP4` until auto-select (vLLM PR #47577) merges. Caveat: weight-only **W4A16**-NVFP4 MoE exports still fall back to Marlin (#47749) — export W4A4 for MoE. AutoRound can produce MoE-NVFP4 today.
 - TurboQuant KV cache does NOT work with hybrid attention+Mamba/DeltaNet models (like Qwen3.6)
 - FP8 e4m3 KV cache works; e5m2 does NOT (incompatible with compressed-tensors)
 - `/var/mnt` is read-only on Talos — use `/var/lib/local-path-provisioner` for local storage
