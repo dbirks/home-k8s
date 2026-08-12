@@ -1,0 +1,98 @@
+# Can vLLM SERVE a mixed-precision AutoScheme export on SM120?
+#
+# The AutoScheme smoke proved auto-round EXPORTS a genuinely mixed config (format: "mixed-precision",
+# 2 groups: NVFP4 4-bit + an 8-bit group). But export != serve. This job loads both tiny (0.5B)
+# mixed checkpoints in vLLM on the RTX PRO 6000 and generates — the decisive gate before the 30B run.
+#
+# Tests both: nvfp4+mxfp8 and nvfp4+fp8static (FP8_STATIC serves more broadly in vLLM than MXFP8).
+# PASS = LLM() constructs + generates text. FAIL = vLLM rejects "mixed-precision" format / missing kernel.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-autoscheme-loadtest-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    PY="$(command -v python3 || command -v python)"
+    export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+    export VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
+    "$PY" /scripts/loadtest.py
+  loadtest.py: |
+    #!/usr/bin/env python3
+    import glob, json, os, traceback
+    from pathlib import Path
+    def resolve(base):
+        if (Path(base)/"config.json").is_file(): return base
+        c = sorted(glob.glob(f"{base}/**/config.json", recursive=True))
+        return str(Path(c[0]).parent) if c else None
+    CKPTS = {
+        "nvfp4+mxfp8":     "/workspace/runs/autoscheme-smoke-nvfp4+mxfp8",
+        "nvfp4+fp8static": "/workspace/runs/autoscheme-smoke-nvfp4+fp8static",
+    }
+    results = {}
+    for tag, base in CKPTS.items():
+        d = resolve(base)
+        print(f"\n===== [{tag}] resolve -> {d} =====", flush=True)
+        if d is None:
+            results[tag] = {"load": "NO_CKPT"}; print(tag, "NO CKPT"); continue
+        try:
+            fmt = (json.load(open(f"{d}/config.json")).get("quantization_config") or {}).get("format")
+            print(tag, "config format:", fmt, flush=True)
+        except Exception as e:
+            print(tag, "config read err", e, flush=True)
+        try:
+            from vllm import LLM, SamplingParams
+            llm = LLM(model=d, trust_remote_code=True, enforce_eager=True,
+                      max_model_len=2048, gpu_memory_utilization=0.35, dtype="auto")
+            out = llm.generate(["The capital of France is"], SamplingParams(max_tokens=16, temperature=0))
+            txt = out[0].outputs[0].text
+            results[tag] = {"load": "OK", "sample": txt}
+            print(tag, "LOAD OK ->", repr(txt), flush=True)
+            del llm
+            import gc, torch; gc.collect(); torch.cuda.empty_cache()
+        except Exception as e:
+            results[tag] = {"load": "ERROR", "error": repr(e)[:800]}
+            print(tag, "LOAD ERROR:", repr(e)[:800], flush=True); traceback.print_exc()
+    Path("/workspace/artifacts").mkdir(parents=True, exist_ok=True)
+    Path("/workspace/artifacts/autoscheme-loadtest-result.json").write_text(json.dumps(results, indent=2, default=str))
+    print("\n===== LOADTEST VERDICT =====", flush=True)
+    for tag, r in results.items(): print(tag, "->", r.get("load"), flush=True)
+    print("SERVES_ON_SM120:", any(r.get("load")=="OK" for r in results.values()), flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-autoscheme-loadtest-20260812
+  namespace: default
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels: { app: muse-autoscheme-loadtest }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: loadtest
+          image: vllm/vllm-openai:v0.26.0
+          command: ["/bin/bash", "/scripts/run.sh"]
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-autoscheme-loadtest-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }
