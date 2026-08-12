@@ -1,0 +1,149 @@
+# Muse-Glimmer-30B DFlash drafter  ->  FP8 E4M3 (W8A8 dynamic)  ->  compressed-tensors, for vLLM.
+#
+# WHY: the BF16 drafter (meta-models/Muse-Glimmer-30B-assistant, 0.77GB on disk) takes ~5GB resident
+# when served by vLLM (KV cache + CUDA graphs + block-diffusion buffers). FP8 E4M3 roughly halves that
+# with the lowest acceptance-rate risk of the quant options (precedent: amd/kimi-k2.5-eagle3-fp8).
+#
+# METHOD: llm-compressor QuantizationModifier scheme=FP8_DYNAMIC (per-channel weight fp8 + per-token
+# dynamic activation fp8). No calibration dataset needed -> fast (minutes). Serves via the SM120
+# cutlass_scaled_mm fp8 fast path.
+#
+# HARD GATE (step 0): the drafter's model_type is `muse_glimmer_assistant` with NO bundled remote-code.
+# The job first tries to instantiate it from transformers-from-source. If that fails, it exits 3 with a
+# clear diagnosis (the real blocker) BEFORE any quant work — nothing is wasted.
+#
+# SERVING NOTE (not a quant-time concern): a quantized DFlash drafter needs vLLM PR #51684 (fixes
+# #51581 F.linear-on-sliced-qkv bypassing quant) or drafts are silently wrong. Tracked in GH.
+#
+# STORAGE: reuses the muse-quant-workspace PVC (NVMe). Output ~0.4GB -> /workspace/runs.
+# GPU: nvidia.com/gpu:1 (keeps the card busy; the drafter is tiny so this is quick).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-drafter-quant-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    PY="$(command -v python3 || command -v python)"
+    export HF_HOME=/workspace/hf
+    export PYTHONUNBUFFERED=1
+    export TOKENIZERS_PARALLELISM=false
+    mkdir -p /workspace/artifacts /workspace/runs "$HF_HOME"
+    echo "=== [$(date)] ensuring git ==="
+    command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true
+    echo "=== [$(date)] installing transformers-from-source + llmcompressor + compressed-tensors ==="
+    "$PY" -m pip install --no-cache-dir --upgrade "git+https://github.com/huggingface/transformers.git" 2>&1 | tail -6
+    "$PY" -m pip install --no-cache-dir --upgrade llmcompressor compressed-tensors accelerate 2>&1 | tail -6
+    "$PY" -c "import transformers,llmcompressor; print('transformers',transformers.__version__,'llmcompressor',llmcompressor.__version__)"
+    "$PY" -m pip freeze 2>/dev/null > /workspace/artifacts/drafter-pip-freeze.txt || true
+    echo "=== [$(date)] running drafter quant ==="
+    "$PY" /scripts/quant_drafter.py
+  quant_drafter.py: |
+    #!/usr/bin/env python3
+    """FP8 E4M3 (W8A8 dynamic) quant of the Muse-Glimmer DFlash drafter via llm-compressor.
+    Step 0 is a hard load gate: if transformers can't instantiate muse_glimmer_assistant we exit 3."""
+    import json, os, sys, subprocess
+    from pathlib import Path
+
+    MODEL = os.environ.get("DRAFTER", "meta-models/Muse-Glimmer-30B-assistant")
+    OUT   = os.environ.get("OUT", "/workspace/runs/Muse-Glimmer-30B-assistant-FP8-dynamic")
+    ART   = Path("/workspace/artifacts"); ART.mkdir(parents=True, exist_ok=True)
+    Path(OUT).parent.mkdir(parents=True, exist_ok=True)
+
+    import torch
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoModel
+    print("torch", torch.__version__, "cuda?", torch.cuda.is_available(), flush=True)
+
+    # --- Step 0: config recognized? ---
+    try:
+        cfg = AutoConfig.from_pretrained(MODEL, trust_remote_code=True)
+        print("config OK: model_type=%r arch=%r auto_map=%r"
+              % (getattr(cfg,"model_type",None), getattr(cfg,"architectures",None), getattr(cfg,"auto_map",None)), flush=True)
+    except Exception as e:
+        print("BLOCKED: AutoConfig cannot parse the drafter:", repr(e), flush=True)
+        # Diagnostic: does this transformers build know muse_glimmer_assistant at all?
+        try:
+            from transformers.models import auto as _a
+            keys = [k for k in _a.configuration_auto.CONFIG_MAPPING_NAMES if "muse" in k.lower()]
+            print("transformers muse_* config keys:", keys, flush=True)
+        except Exception as e2:
+            print("could not introspect CONFIG_MAPPING:", repr(e2), flush=True)
+        sys.exit(3)
+
+    # --- Load the model (try CausalLM head, then bare AutoModel) ---
+    model = None
+    for loader in (AutoModelForCausalLM, AutoModel):
+        try:
+            model = loader.from_pretrained(MODEL, torch_dtype="auto", trust_remote_code=True)
+            print("loaded via", loader.__name__, "->", type(model).__name__, flush=True)
+            break
+        except Exception as e:
+            print(loader.__name__, "failed:", repr(e), flush=True)
+    if model is None:
+        print("BLOCKED: config parsed but no AutoModel* could instantiate the drafter.", flush=True)
+        sys.exit(3)
+
+    nparams = sum(p.numel() for p in model.parameters())
+    print(f"params: {nparams/1e9:.4f}B  ({nparams:,})", flush=True)
+
+    # --- FP8 E4M3 dynamic quant (weight fp8 per-channel + dynamic per-token act fp8) ---
+    from llmcompressor import oneshot
+    from llmcompressor.modifiers.quantization import QuantizationModifier
+    recipe = QuantizationModifier(targets="Linear", scheme="FP8_DYNAMIC", ignore=["lm_head"])
+    oneshot(model=model, recipe=recipe, output_dir=OUT)
+    print("saved FP8 drafter to", OUT, flush=True)
+
+    # --- Report sizes + surface the quant config for review ---
+    def dirsize(p):
+        return sum(f.stat().st_size for f in Path(p).rglob("*") if f.is_file())
+    out_bytes = dirsize(OUT)
+    summary = {"model": MODEL, "out": OUT, "params_billion": round(nparams/1e9, 4),
+               "out_size_gb": round(out_bytes/1024**3, 3),
+               "loaded_class": type(model).__name__}
+    cj = Path(OUT) / "config.json"
+    if cj.exists():
+        c = json.load(open(cj))
+        summary["quantization_config"] = c.get("quantization_config")
+    (ART / "drafter-fp8-summary.json").write_text(json.dumps(summary, indent=2))
+    print("SUMMARY", json.dumps(summary, indent=2), flush=True)
+    print("=== drafter FP8 quant complete ===", flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-drafter-fp8-20260812
+  namespace: default
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels: { app: muse-drafter-quant }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: quant
+          image: vllm/vllm-openai:v0.26.0
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-drafter-quant-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }
