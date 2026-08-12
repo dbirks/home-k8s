@@ -65,7 +65,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-eval-leaderboard-20260812
+  name: muse-eval-leaderboard-20260812b
   namespace: default
 spec:
   backoffLimit: 1
@@ -83,7 +83,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: eval
-          image: vllm/vllm-openai:v0.26.0
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130   # native muse_glimmer (#51655); v0.26.0 stock transformers can't load the arch
           command: ["/bin/bash", "/scripts/run.sh"]
           env:
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
