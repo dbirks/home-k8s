@@ -1,0 +1,100 @@
+# Next eval round for the NVFP4 AutoRound quant: OpenLLM-v2 leaderboard MCQ tasks we haven't run yet —
+# BBH + MuSR (loglikelihood, no chat template = reliable for this reasoning model; the same offline
+# --model vllm path that gave clean MMLU-Pro numbers). GPQA is gated (skip); MATH/IFEval are generative
+# and risk the muse_glimmer Harmony-channel issue that broke the coding eval, so they're deferred.
+#
+# Models: BF16 base (recovery baseline) + our AutoRound NVFP4 + RedHat NVFP4 (head-to-head).
+# Disk-safe: RedHat is downloaded, evaluated, then its HF cache is freed.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-eval-leaderboard-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/workspace/hf VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
+    export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
+    PY="$(command -v python3 || command -v python)"
+    mkdir -p /workspace/eval/leaderboard
+    echo "=== [$(date)] installing lm-eval ==="
+    "$PY" -m pip install --no-cache-dir lm-eval 2>&1 | tail -3
+    "$PY" -c "import lm_eval; print('lm-eval', lm_eval.__version__)"
+
+    TASKS="${TASKS:-leaderboard_bbh,leaderboard_musr}"
+    LIMIT="${LIMIT:-}"                         # empty = full task (BBH ~6.5k, MuSR ~0.76k — feasible)
+    TIMEOUT="${TIMEOUT:-14400}"                # 4h/model cap
+    ARGS="dtype=auto,max_model_len=8192,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True"
+    LIM_ARG=""; [ -n "$LIMIT" ] && LIM_ARG="--limit $LIMIT"
+
+    resolve () { local M="$1"; if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then M=$(dirname "$(find "$M" -name config.json 2>/dev/null | head -1)"); fi; echo "$M"; }
+    eval_model () {
+      local key="$1"; local M0="$2"; local cache_glob="$3"
+      local M; M=$(resolve "$M0")
+      echo "=== [$(date)] LEADERBOARD $key :: $M ($TASKS) ==="
+      timeout "$TIMEOUT" "$PY" -m lm_eval --model vllm --model_args "pretrained=$M,$ARGS" \
+        --tasks "$TASKS" $LIM_ARG --batch_size auto \
+        --output_path "/workspace/eval/leaderboard/$key" 2>&1 | tee "/workspace/eval/leaderboard/$key.log" | tail -25
+      echo "=== [$(date)] done $key ==="
+      if [ -n "$cache_glob" ]; then rm -rf $cache_glob 2>/dev/null && echo "freed cache: $cache_glob"; fi
+      df -h /workspace | tail -1
+    }
+
+    eval_model bf16-base       "meta-models/Muse-Glimmer-30B"              ""
+    eval_model autoround-nvfp4 "dbirks/Muse-Glimmer-30B-NVFP4-AutoRound"   "/workspace/hf/hub/models--dbirks--Muse-Glimmer-30B-NVFP4-AutoRound"
+    eval_model redhat-nvfp4    "RedHatAI/Muse-Glimmer-30B-NVFP4"           "/workspace/hf/hub/models--RedHatAI--Muse-Glimmer-30B-NVFP4"
+
+    echo "=== [$(date)] ALL LEADERBOARD EVALS DONE — summary ==="
+    "$PY" /scripts/summ.py
+    echo "=== [$(date)] leaderboard sweep complete ==="
+  summ.py: |
+    #!/usr/bin/env python3
+    import json, glob
+    for f in sorted(glob.glob("/workspace/eval/leaderboard/**/results_*.json", recursive=True)):
+        try:
+            d = json.load(open(f)); r = d.get("results", {})
+            print("==", f)
+            for t, v in r.items():
+                m = {k: round(x, 4) for k, x in v.items() if isinstance(x, float) and any(s in k for s in ("acc", "exact_match"))}
+                if m: print("   ", t, m)
+        except Exception as e:
+            print("   err", e)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-eval-leaderboard-20260812
+  namespace: default
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 259200
+  template:
+    metadata:
+      labels: { app: muse-eval-leaderboard }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:v0.26.0
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-eval-leaderboard-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
