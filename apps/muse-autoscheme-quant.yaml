@@ -38,6 +38,13 @@ data:
     print(f"=== AutoScheme avg_bits={AVG} iters={ITERS} nsamples={NSAMP} -> {OUT} ===", flush=True)
 
     import torch  # noqa
+    # AutoScheme RELOADS weights per candidate scheme and can't resolve a bare HF repo id at
+    # that point (FileNotFoundError on 'meta-models/...'). Resolve to the cached local snapshot
+    # dir up front (snapshot_download returns the cache path with no re-download when present).
+    if not os.path.isdir(MODEL):
+        from huggingface_hub import snapshot_download
+        MODEL = snapshot_download(MODEL)
+        print("resolved local model path:", MODEL, flush=True)
     from auto_round import AutoRound, AutoScheme
     from transformers import AutoConfig
     cfg = AutoConfig.from_pretrained(MODEL, trust_remote_code=True)
@@ -92,7 +99,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-avg475-smoke-20260812
+  name: muse-autoscheme-avg475-smoke2-20260812
   namespace: default
 spec:
   backoffLimit: 0
