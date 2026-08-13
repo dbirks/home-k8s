@@ -19,6 +19,9 @@ data:
     export AR_ENABLE_AUTO_SCHEME_PARALLEL=0        # serial scoring (parallel forks fail in-container)
     export AR_AUTO_SCHEME_BATCH_SIZE=1
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    export AR_DISK_STREAM_MODEL=1                  # THE memory lever (PR #2105: 71GB->9.5GB host RAM) —
+                                                   # meta skeleton + stream decoder blocks from the on-disk
+                                                   # checkpoint; requires model passed as a PATH (we resolve to the snapshot)
     mkdir -p /workspace/artifacts /workspace/runs "$HF_HOME"
     command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true
     echo "=== [$(date)] installing auto-round fork + transformers-from-source ==="
@@ -123,7 +126,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-2pass-avg475-20260812
+  name: muse-autoscheme-2pass-avg475b-20260812
   namespace: default
 spec:
   backoffLimit: 0
