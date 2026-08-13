@@ -1,9 +1,9 @@
-# Node swap via a swap FILE (both disks are full XFS — no room for a Talos SwapVolumeConfig partition,
-# and XFS can't shrink). Kubelet already patched with failSwapOn:false + memorySwap:LimitedSwap (via
-# talosctl). This privileged DaemonSet creates an 80GB swap file on the HDD (u-hdd-storage, ~3.6TB free)
-# and swapon's it — on the HDD (not NVMe) to avoid DiskPressure (an 80GB NVMe file would drop free space
-# under the ~10% eviction threshold) and NVMe wear. Re-runs on reboot (persistence). Reversible: delete
-# this DS + `swapoff`. Lets Burstable pods (AutoScheme pack, DeepSeek-V4 transform) spill instead of OOM.
+# Node swap via a swap FILE on the NVMe (fast — HDD swap thrashed the node to a hang under a big ML spill).
+# Both disks are full XFS (no room for a Talos SwapVolumeConfig partition, XFS can't shrink), so a file it is.
+# Freed ~210GB on the NVMe (deleted laguna-models-nvme PVC) so an 80GB swapfile stays well above DiskPressure.
+# Kubelet already patched failSwapOn:false + memorySwap:LimitedSwap. This privileged DaemonSet disables any
+# old swap, creates an 80GB swapfile on the NVMe EPHEMERAL (/var/lib) and swapon's it. Re-runs on reboot.
+# Also removes the orphaned HDD swapfile from the earlier attempt. Lets Burstable pods spill instead of OOM.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -18,42 +18,49 @@ spec:
     spec:
       hostPID: true
       tolerations:
-        - operator: Exists           # run on the control-plane / any taint
+        - operator: Exists
       containers:
         - name: swapfile
           image: debian:bookworm-slim
           securityContext:
             privileged: true
-            seccompProfile: { type: Unconfined }   # swapon syscall isn't in the default seccomp allowlist
+            seccompProfile: { type: Unconfined }
           env:
-            - { name: SWAP_DIR, value: "/hosthdd/_swap" }   # on the HDD user volume (/var/mnt/hdd-storage)
+            - { name: SWAP_DIR, value: "/hostnvme/_swap" }   # on the NVMe EPHEMERAL (/var/lib)
             - { name: SIZE_GB, value: "80" }
           command: ["/bin/bash","-c"]
           args:
             - |
               set -uo pipefail
+              # 1) disable any existing swap (idle HDD swap from the earlier attempt) + remove the orphaned HDD file
+              swapoff -a 2>/dev/null || true
+              rm -f /hosthdd/_swap/swapfile 2>/dev/null || true; rmdir /hosthdd/_swap 2>/dev/null || true
+              # 2) create + enable the NVMe swapfile
               SF="$SWAP_DIR/swapfile"
               SZ_MIB=$((SIZE_GB*1024))
               mkdir -p "$SWAP_DIR"
               cur_mib=$(( $(stat -c%s "$SF" 2>/dev/null || echo 0) / 1048576 ))
               if [ "$cur_mib" -lt "$SZ_MIB" ]; then
-                echo "[$(date)] creating ${SIZE_GB}GiB swapfile at $SF (current ${cur_mib}MiB) — dd, no holes for XFS"
+                echo "[$(date)] creating ${SIZE_GB}GiB swapfile at $SF on NVMe (dd oflag=direct, no page cache)"
                 swapoff "$SF" 2>/dev/null || true; rm -f "$SF"
                 dd if=/dev/zero of="$SF" bs=1M count="$SZ_MIB" oflag=direct status=progress
                 chmod 600 "$SF"; mkswap "$SF"
               else
-                echo "[$(date)] swapfile already sized ${cur_mib}MiB >= ${SZ_MIB}MiB"
+                echo "[$(date)] swapfile already ${cur_mib}MiB >= ${SZ_MIB}MiB"
               fi
               swapon "$SF" 2>&1 || echo "(swapon note: likely already active)"
               echo "=== /proc/swaps ==="; cat /proc/swaps
-              echo "=== SwapTotal ==="; grep -iE "SwapTotal|MemTotal" /proc/meminfo
-              echo "[$(date)] swap active; holding (re-runs on reboot)"
+              echo "=== SwapTotal/MemTotal ==="; grep -iE "SwapTotal|MemTotal" /proc/meminfo
+              echo "[$(date)] NVMe swap active; holding (re-runs on reboot)"
               sleep infinity
           resources:
             requests: { cpu: "50m", memory: 64Mi }
-            limits: { cpu: "1" }
+            limits: { cpu: "1" }   # no memory limit — dd write must not be cgroup-OOM'd
           volumeMounts:
+            - { name: nvme, mountPath: /hostnvme }
             - { name: hdd, mountPath: /hosthdd }
       volumes:
+        - name: nvme
+          hostPath: { path: /var/lib, type: Directory }          # NVMe EPHEMERAL
         - name: hdd
-          hostPath: { path: /var/mnt/hdd-storage, type: Directory }
+          hostPath: { path: /var/mnt/hdd-storage, type: Directory }   # HDD (to clean the orphaned swapfile)
