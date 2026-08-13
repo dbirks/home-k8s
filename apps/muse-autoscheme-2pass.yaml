@@ -67,25 +67,28 @@ data:
         pass
     # Patch configure_layer_config on whatever compressor class defines it; after it runs, self.layer_config
     # is the final AutoScheme assignment. Dump it + abort before the OOMing quantize/pack.
+    # Patch _gen_auto_scheme (returns the assignment) — one frame BEFORE configure_layer_config applies it
+    # and OOMs. Capture its return (or self.layer_config), abort before the apply.
+    TARGET = "_gen_auto_scheme"
     import auto_round.compressors.base as B
     Cls = next((getattr(B, n) for n in dir(B)
-                if isinstance(getattr(B, n), type) and "configure_layer_config" in getattr(B, n).__dict__), None)
+                if isinstance(getattr(B, n), type) and TARGET in getattr(B, n).__dict__), None)
     if Cls is None:
-        raise RuntimeError("could not find configure_layer_config to patch")
-    print("patching", Cls.__name__ + ".configure_layer_config", flush=True)
-    _orig_clc = Cls.configure_layer_config
+        raise RuntimeError(f"could not find {TARGET} to patch")
+    print("patching", Cls.__name__ + "." + TARGET, flush=True)
+    _orig_gas = getattr(Cls, TARGET)
     def _cap(self, *a, **k):
-        r = _orig_clc(self, *a, **k)
-        lc = getattr(self, "layer_config", None)
+        ret = _orig_gas(self, *a, **k)
+        lc = ret if (isinstance(ret, dict) and ret) else getattr(self, "layer_config", None)
         if lc and isinstance(lc, dict):
             pickle.dump(lc, open(C.PKL, "wb"))
             from collections import Counter
             dts = Counter((v.get("data_type"), v.get("bits")) for v in lc.values() if isinstance(v, dict))
             print("PASS1 layer_config captured ->", C.PKL, "| scheme counts:", dict(dts), flush=True)
             raise _Captured()
-        print("WARN: configure_layer_config ran but no self.layer_config dict; continuing", flush=True)
-        return r
-    Cls.configure_layer_config = _cap
+        print("WARN: _gen_auto_scheme returned no layer_config dict; continuing", flush=True)
+        return ret
+    setattr(Cls, TARGET, _cap)
 
     from auto_round import AutoRound, AutoScheme
     from transformers import AutoConfig
@@ -149,7 +152,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-2pass-avg475d-20260812
+  name: muse-autoscheme-2pass-avg475e-20260812
   namespace: default
 spec:
   backoffLimit: 0
