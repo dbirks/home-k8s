@@ -300,3 +300,42 @@ spec:
       volumes:
         - { name: workspace, persistentVolumeClaim: { claimName: qwen36-quant-workspace } }
         - { name: scripts, configMap: { name: qwen36-quant-scripts, defaultMode: 0755 } }
+---
+# C1-Pile SCREEN (iters=200, "regular auto-round") — first evaluable artifact. Reuses the cached
+# 55GB base (no re-download). Smoke proved the recipe: 20.59GB, nvfp4-pack, a/b protected, peak_ram
+# 20.6GB. Only delta vs kaitchup = layer policy (both Pile calib). Screen first, best on the winner.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen36-nvfp4-c1pile-screen-20260813
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 43200   # up to 12h (iters=200 tuning across 64 layers)
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: quantize
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "screen"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: QUANT_MODEL, value: "Qwen/Qwen3.6-27B" }
+            - { name: QUANT_SCHEME, value: "NVFP4" }
+            - { name: RUN_TAG, value: "-c1pile" }
+            - { name: IGNORE_LAYERS, value: "in_proj_a,in_proj_b,mtp" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 42Gi }
+            requests: { cpu: "4", memory: 24Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen36-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen36-quant-scripts, defaultMode: 0755 } }
