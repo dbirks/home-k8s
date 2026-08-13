@@ -79,7 +79,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen36-eval-r1-20260813
+  name: qwen36-eval-r1b-20260813
   namespace: default
 spec:
   backoffLimit: 0
@@ -104,7 +104,7 @@ spec:
             - { name: LIMIT, value: "800" }                    # round-1 screening; full on the winner
             - name: MODELS
               value: |
-                c1pile|/workspace/runs/Qwen3.6-27B-NVFP4-c1pile-screen|
+                c1v2|/workspace/runs/Qwen3.6-27B-NVFP4-c1v2-screen|
                 kaitchup|kaitchup/Qwen3.6-27B-autoround-nvfp4-linearattn-mtp-BF16|/workspace/hf/hub/models--kaitchup--Qwen3.6-27B-autoround-nvfp4-linearattn-mtp-BF16
                 bf16|Qwen/Qwen3.6-27B|
           resources:
