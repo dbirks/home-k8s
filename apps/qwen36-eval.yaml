@@ -1,11 +1,10 @@
-# Qwen3.6-27B NVFP4 eval matrix (home-k8s #87). Serves each model offline via lm-eval --model vllm
-# (same path that gave clean muse MMLU-Pro numbers). Reuses qwen36-quant-workspace PVC so the BF16
-# base + our local quant dirs are already on disk (no re-download of the 55GB base).
-#
-# Models (MODELS env, "key=path" space-separated): BF16 control, kaitchup control, our C1 variants.
-# Tasks: MMLU-Pro + BBH (loglikelihood, reliable) + GSM8K + IFEval (generative, chat template) +
-# HumanEval (coding, unsafe-code). Frees each HF-downloaded control's cache after eval (disk-safe).
-# NOT perplexity-only, per AutoRound best-practices.
+# Qwen3.6-27B NVFP4 eval matrix (home-k8s #87), round 2 — reliable quant comparison.
+# LESSON from round 1: Qwen3.6 is a REASONING model; generative tasks (gsm8k/humaneval) break under
+# lm-eval defaults — thinking emits "\n\n" which trips gsm8k's until-stop, truncating before the
+# answer (exact_match ~0). So the primary comparison uses LOGLIKELIHOOD MCQ (no generation, no
+# thinking, no stop-seq issues) — the same path that gave clean muse numbers. Plus a /no_think
+# HumanEval attempt for the coding dimension (the model's strength).
+# Reuses qwen36-quant-workspace PVC (BF16 base + local c1v2 already on disk).
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -19,38 +18,37 @@ data:
     export HF_HOME=/workspace/hf VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
     export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1 HF_ALLOW_CODE_EVAL=1
     PY="$(command -v python3 || command -v python)"
-    mkdir -p /workspace/eval/qwen36
+    mkdir -p /workspace/eval/qwen36r2
     echo "=== [$(date)] installing lm-eval ==="
     "$PY" -m pip install --no-cache-dir "lm-eval[ifeval]" 2>&1 | tail -3
     "$PY" -c "import lm_eval; print('lm-eval', lm_eval.__version__)"
 
-    LL_TASKS="${LL_TASKS:-mmlu_pro,leaderboard_bbh}"       # loglikelihood, no chat template
-    GEN_TASKS="${GEN_TASKS:-gsm8k,leaderboard_ifeval}"     # generative, chat template
-    CODE_TASKS="${CODE_TASKS:-humaneval}"                  # generative + unsafe code
-    LIMIT="${LIMIT:-}"; LIM_ARG=""; [ -n "$LIMIT" ] && LIM_ARG="--limit $LIMIT"
+    LL_TASKS="${LL_TASKS:-mmlu_pro,arc_challenge,hellaswag,winogrande}"   # loglikelihood MCQ — reliable
+    LL_LIMIT="${LL_LIMIT:-1000}"
+    CODE_TASKS="${CODE_TASKS:-humaneval}"                                # generative; /no_think
+    CODE_LIMIT="${CODE_LIMIT:-}"                                         # empty = full (164)
     TIMEOUT="${TIMEOUT:-18000}"
     BASE="dtype=auto,max_model_len=8192,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True"
 
     resolve () { local M="$1"; if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then M=$(dirname "$(find "$M" -name config.json 2>/dev/null | head -1)"); fi; echo "$M"; }
-    run_tasks () { # key model tasks extra_args
-      local key="$1" M="$2" tasks="$3" extra="$4"
+    run_tasks () { # key model tasks limit extra_args
+      local key="$1" M="$2" tasks="$3" lim="$4" extra="$5"
       [ -z "$tasks" ] && return 0
-      echo "=== [$(date)] $key :: $tasks ==="
+      local la=""; [ -n "$lim" ] && la="--limit $lim"
+      echo "=== [$(date)] $key :: $tasks (limit=${lim:-full}) ==="
       timeout "$TIMEOUT" "$PY" -m lm_eval --model vllm --model_args "pretrained=$M,$BASE" \
-        --tasks "$tasks" $LIM_ARG --batch_size auto $extra \
-        --output_path "/workspace/eval/qwen36/$key" 2>&1 | tee -a "/workspace/eval/qwen36/$key.log" | tail -20
+        --tasks "$tasks" $la --batch_size auto $extra \
+        --output_path "/workspace/eval/qwen36r2/$key" 2>&1 | tee -a "/workspace/eval/qwen36r2/$key.log" | tail -18
     }
     eval_model () { # key path cache_glob
       local key="$1"; local M; M=$(resolve "$2"); local cache="$3"
       echo "########## [$(date)] MODEL $key :: $M ##########"
-      run_tasks "$key-ll"   "$M" "$LL_TASKS"   ""
-      run_tasks "$key-gen"  "$M" "$GEN_TASKS"  "--apply_chat_template --fewshot_as_multiturn"
-      run_tasks "$key-code" "$M" "$CODE_TASKS" "--apply_chat_template --confirm_run_unsafe_code"
+      run_tasks "$key-ll"   "$M" "$LL_TASKS"   "$LL_LIMIT"   ""
+      run_tasks "$key-code" "$M" "$CODE_TASKS" "$CODE_LIMIT" "--apply_chat_template --system_instruction /no_think --confirm_run_unsafe_code --gen_kwargs max_gen_toks=1024"
       [ -n "$cache" ] && { rm -rf $cache 2>/dev/null && echo "freed $cache"; }
       df -h /workspace | tail -1
     }
 
-    # MODELS: newline "key|path|cache_glob". Empty cache_glob = keep (our local artifacts).
     printf '%s\n' "$MODELS" | while IFS='|' read -r key path cache; do
       [ -z "$key" ] && continue
       eval_model "$key" "$path" "$cache"
@@ -61,25 +59,25 @@ data:
     #!/usr/bin/env python3
     import json, glob
     rows = {}
-    for f in sorted(glob.glob("/workspace/eval/qwen36/**/results_*.json", recursive=True)):
+    for f in sorted(glob.glob("/workspace/eval/qwen36r2/**/results_*.json", recursive=True)):
         try:
             d = json.load(open(f)); r = d.get("results", {})
-            key = f.split("/workspace/eval/qwen36/")[1].split("/")[0]
+            key = f.split("/workspace/eval/qwen36r2/")[1].split("/")[0]
             for t, v in r.items():
                 for k, x in v.items():
-                    if isinstance(x, float) and any(s in k for s in ("acc", "exact_match", "pass", "prompt_level", "inst_level")) and "stderr" not in k:
+                    if isinstance(x, float) and any(s in k for s in ("acc", "exact_match", "pass")) and "stderr" not in k:
                         rows.setdefault(key, {})[f"{t}/{k.split(',')[0]}"] = round(x, 4)
         except Exception as e:
             print("err", f, e)
     for key in sorted(rows):
         print("==", key)
         for m, val in sorted(rows[key].items()):
-            print(f"    {m:45s} {val}")
+            print(f"    {m:42s} {val}")
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen36-eval-r1b-20260813
+  name: qwen36-eval-r2-20260813
   namespace: default
 spec:
   backoffLimit: 0
@@ -98,10 +96,6 @@ spec:
           command: ["/bin/bash", "/scripts/run.sh"]
           env:
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
-            - { name: LL_TASKS, value: "mmlu_pro" }            # +leaderboard_bbh in the full round
-            - { name: GEN_TASKS, value: "gsm8k,leaderboard_ifeval" }
-            - { name: CODE_TASKS, value: "humaneval" }
-            - { name: LIMIT, value: "800" }                    # round-1 screening; full on the winner
             - name: MODELS
               value: |
                 c1v2|/workspace/runs/Qwen3.6-27B-NVFP4-c1v2-screen|
