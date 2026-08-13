@@ -44,6 +44,16 @@ data:
     _oc = _ckpt.checkpoint
     def _re(fn, *a, use_reentrant=None, **k): return _oc(fn, *a, use_reentrant=True, **k)
     _ckpt.checkpoint = _re; torch.utils.checkpoint.checkpoint = _re
+    # low-GPU scoring offloads embed_tokens to CPU but feeds cuda input_ids -> device mismatch on Muse.
+    # Move the (small, CPU-materialized) embed weight to the index's device for the op. Fixes the catch-22
+    # that forced low_gpu_mem_usage=False (which disabled the RAM streaming).
+    import torch.nn.functional as _F
+    _oe = _F.embedding
+    def _emb(inp, weight, *a, **k):
+        if weight.device.type != "meta" and inp.device != weight.device:
+            weight = weight.to(inp.device)
+        return _oe(inp, weight, *a, **k)
+    _F.embedding = _emb
     MODEL = os.environ.get("MUSE_MODEL", "meta-models/Muse-Glimmer-30B")
     if not os.path.isdir(MODEL):
         from huggingface_hub import snapshot_download
@@ -93,7 +103,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-rank1-avg475-20260813
+  name: muse-autoscheme-rank1-avg475b-20260813
   namespace: default
 spec:
   backoffLimit: 0
