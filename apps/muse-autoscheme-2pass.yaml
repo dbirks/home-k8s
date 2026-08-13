@@ -19,9 +19,8 @@ data:
     export AR_ENABLE_AUTO_SCHEME_PARALLEL=0        # serial scoring (parallel forks fail in-container)
     export AR_AUTO_SCHEME_BATCH_SIZE=1
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    export AR_DISK_STREAM_MODEL=1                  # THE memory lever (PR #2105: 71GB->9.5GB host RAM) —
-                                                   # meta skeleton + stream decoder blocks from the on-disk
-                                                   # checkpoint; requires model passed as a PATH (we resolve to the snapshot)
+    # NOTE: AR_DISK_STREAM_MODEL=1 conflicts with low_gpu_mem_usage=False (meta-tensor .to()). Instead,
+    # Pass 1 INTERCEPTS AutoScheme's get_layer_config return and aborts before the OOMing quantize/pack.
     mkdir -p /workspace/artifacts /workspace/runs "$HF_HOME"
     command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true
     echo "=== [$(date)] installing auto-round fork + transformers-from-source ==="
@@ -56,11 +55,27 @@ data:
         _ckpt.checkpoint = _re; torch.utils.checkpoint.checkpoint = _re
   pass1.py: |
     #!/usr/bin/env python3
-    import pickle, sys, json
+    # Capture AutoScheme's chosen layer_config by INTERCEPTING get_layer_config (which runs during scoring,
+    # and completes fine — the OOM is only in the downstream quantize/pack). Dump it and abort before the pack.
+    import pickle, sys, importlib
     sys.path.insert(0, "/scripts"); import common as C
     C.patch_reentrant_checkpoint()
     import torch  # noqa
     MODEL = C.resolve_model()
+
+    class _Captured(BaseException):   # BaseException so the MLLM `except Exception` can't swallow it
+        pass
+    import auto_round.auto_scheme.gen_auto_scheme as G
+    _orig_glc = G.get_layer_config
+    def _cap(*a, **k):
+        lc = _orig_glc(*a, **k)
+        pickle.dump(lc, open(C.PKL, "wb"))
+        from collections import Counter
+        dts = Counter((v.get("data_type"), v.get("bits")) for v in lc.values() if isinstance(v, dict))
+        print("PASS1 layer_config captured ->", C.PKL, "| scheme counts:", dict(dts), flush=True)
+        raise _Captured()
+    G.get_layer_config = _cap
+
     from auto_round import AutoRound, AutoScheme
     from transformers import AutoConfig
     cfg = AutoConfig.from_pretrained(MODEL, trust_remote_code=True)
@@ -71,26 +86,23 @@ data:
         return AutoRound(MODEL, scheme=scheme, dataset=C.CALIB, nsamples=C.NSAMP, seqlen=C.SEQLEN,
                          iters=C.ITERS, batch_size=4, device_map=0, trust_remote_code=True,
                          quant_nontext_module=False, seed=42)
-    import importlib
+    def run():
+        try:
+            ar = make()
+        except Exception as e:            # MLLM template registration (won't catch _Captured — it's BaseException)
+            print("MLLM template register:", repr(e)[:200], flush=True)
+            for tmod, pmod in [("auto_round.mllm.template","auto_round.mllm.processor"),
+                               ("auto_round.compressors.mllm.template","auto_round.compressors.mllm.processor")]:
+                try:
+                    importlib.import_module(tmod)._register_template(model_type=cfg.model_type, default_dataset=C.CALIB,
+                        processor=importlib.import_module(pmod).PROCESSORS["hf"]); break
+                except Exception: continue
+            ar = make()
+        ar.quantize()   # triggers scoring -> get_layer_config -> capture -> _Captured
     try:
-        ar = make()
-    except Exception as e:
-        print("MLLM template register:", repr(e)[:200], flush=True)
-        for tmod, pmod in [("auto_round.mllm.template","auto_round.mllm.processor"),
-                           ("auto_round.compressors.mllm.template","auto_round.compressors.mllm.processor")]:
-            try:
-                importlib.import_module(tmod)._register_template(model_type=cfg.model_type, default_dataset=C.CALIB,
-                    processor=importlib.import_module(pmod).PROCESSORS["hf"]); break
-            except Exception: continue
-        ar = make()
-    model, layer_config = ar.quantize()            # scoring + RTN, NO save -> no host-RAM OOM
-    pickle.dump(layer_config, open(C.PKL, "wb"))
-    # summarize the assignment
-    from collections import Counter
-    dts = Counter((v.get("data_type"), v.get("bits")) for v in layer_config.values() if isinstance(v, dict))
-    print("PASS1 layer_config dumped ->", C.PKL, flush=True)
-    print("PASS1 scheme counts:", dict(dts), flush=True)
-    print("PASS1 DONE", flush=True)
+        run()
+    except _Captured:
+        print("PASS1 DONE (captured layer_config, aborted before pack)", flush=True)
   pass2.py: |
     #!/usr/bin/env python3
     import pickle, json, sys
@@ -126,7 +138,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: muse-autoscheme-2pass-avg475b-20260812
+  name: muse-autoscheme-2pass-avg475c-20260812
   namespace: default
 spec:
   backoffLimit: 0
