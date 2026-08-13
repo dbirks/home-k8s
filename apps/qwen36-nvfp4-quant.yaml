@@ -339,3 +339,43 @@ spec:
       volumes:
         - { name: workspace, persistentVolumeClaim: { claimName: qwen36-quant-workspace } }
         - { name: scripts, configMap: { name: qwen36-quant-scripts, defaultMode: 0755 } }
+---
+# C1v2 SMOKE — FIX the vision-tower bug: c1pile NVFP4'd visual.* which vLLM's Qwen3_VisionTransformer
+# can't load (expects .weight, got weight_packed). quant_nontext_module=False did NOT prevent it for
+# this arch, so explicitly ignore "visual" (~304 vision Linears -> BF16). iters=0 validates the fix
+# SERVES before committing to a full run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen36-nvfp4-c1v2-smoke-20260813
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: quantize
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "smoke"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: QUANT_MODEL, value: "Qwen/Qwen3.6-27B" }
+            - { name: QUANT_SCHEME, value: "NVFP4" }
+            - { name: RUN_TAG, value: "-c1v2" }
+            - { name: IGNORE_LAYERS, value: "in_proj_a,in_proj_b,mtp,visual" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 42Gi }
+            requests: { cpu: "4", memory: 24Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen36-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen36-quant-scripts, defaultMode: 0755 } }
