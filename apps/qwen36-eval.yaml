@@ -1,0 +1,120 @@
+# Qwen3.6-27B NVFP4 eval matrix (home-k8s #87). Serves each model offline via lm-eval --model vllm
+# (same path that gave clean muse MMLU-Pro numbers). Reuses qwen36-quant-workspace PVC so the BF16
+# base + our local quant dirs are already on disk (no re-download of the 55GB base).
+#
+# Models (MODELS env, "key=path" space-separated): BF16 control, kaitchup control, our C1 variants.
+# Tasks: MMLU-Pro + BBH (loglikelihood, reliable) + GSM8K + IFEval (generative, chat template) +
+# HumanEval (coding, unsafe-code). Frees each HF-downloaded control's cache after eval (disk-safe).
+# NOT perplexity-only, per AutoRound best-practices.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen36-eval-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/workspace/hf VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
+    export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1 HF_ALLOW_CODE_EVAL=1
+    PY="$(command -v python3 || command -v python)"
+    mkdir -p /workspace/eval/qwen36
+    echo "=== [$(date)] installing lm-eval ==="
+    "$PY" -m pip install --no-cache-dir "lm-eval[ifeval]" 2>&1 | tail -3
+    "$PY" -c "import lm_eval; print('lm-eval', lm_eval.__version__)"
+
+    LL_TASKS="${LL_TASKS:-mmlu_pro,leaderboard_bbh}"       # loglikelihood, no chat template
+    GEN_TASKS="${GEN_TASKS:-gsm8k,leaderboard_ifeval}"     # generative, chat template
+    CODE_TASKS="${CODE_TASKS:-humaneval}"                  # generative + unsafe code
+    LIMIT="${LIMIT:-}"; LIM_ARG=""; [ -n "$LIMIT" ] && LIM_ARG="--limit $LIMIT"
+    TIMEOUT="${TIMEOUT:-18000}"
+    BASE="dtype=auto,max_model_len=8192,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True"
+
+    resolve () { local M="$1"; if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then M=$(dirname "$(find "$M" -name config.json 2>/dev/null | head -1)"); fi; echo "$M"; }
+    run_tasks () { # key model tasks extra_args
+      local key="$1" M="$2" tasks="$3" extra="$4"
+      [ -z "$tasks" ] && return 0
+      echo "=== [$(date)] $key :: $tasks ==="
+      timeout "$TIMEOUT" "$PY" -m lm_eval --model vllm --model_args "pretrained=$M,$BASE" \
+        --tasks "$tasks" $LIM_ARG --batch_size auto $extra \
+        --output_path "/workspace/eval/qwen36/$key" 2>&1 | tee -a "/workspace/eval/qwen36/$key.log" | tail -20
+    }
+    eval_model () { # key path cache_glob
+      local key="$1"; local M; M=$(resolve "$2"); local cache="$3"
+      echo "########## [$(date)] MODEL $key :: $M ##########"
+      run_tasks "$key-ll"   "$M" "$LL_TASKS"   ""
+      run_tasks "$key-gen"  "$M" "$GEN_TASKS"  "--apply_chat_template --fewshot_as_multiturn"
+      run_tasks "$key-code" "$M" "$CODE_TASKS" "--apply_chat_template --confirm_run_unsafe_code"
+      [ -n "$cache" ] && { rm -rf $cache 2>/dev/null && echo "freed $cache"; }
+      df -h /workspace | tail -1
+    }
+
+    # MODELS: newline "key|path|cache_glob". Empty cache_glob = keep (our local artifacts).
+    printf '%s\n' "$MODELS" | while IFS='|' read -r key path cache; do
+      [ -z "$key" ] && continue
+      eval_model "$key" "$path" "$cache"
+    done
+    echo "=== [$(date)] ALL DONE — summary ==="
+    "$PY" /scripts/summ.py
+  summ.py: |
+    #!/usr/bin/env python3
+    import json, glob
+    rows = {}
+    for f in sorted(glob.glob("/workspace/eval/qwen36/**/results_*.json", recursive=True)):
+        try:
+            d = json.load(open(f)); r = d.get("results", {})
+            key = f.split("/workspace/eval/qwen36/")[1].split("/")[0]
+            for t, v in r.items():
+                for k, x in v.items():
+                    if isinstance(x, float) and any(s in k for s in ("acc", "exact_match", "pass", "prompt_level", "inst_level")) and "stderr" not in k:
+                        rows.setdefault(key, {})[f"{t}/{k.split(',')[0]}"] = round(x, 4)
+        except Exception as e:
+            print("err", f, e)
+    for key in sorted(rows):
+        print("==", key)
+        for m, val in sorted(rows[key].items()):
+            print(f"    {m:45s} {val}")
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen36-eval-r1-20260813
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 72000
+  template:
+    metadata:
+      labels: { app: qwen36-eval }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: LL_TASKS, value: "mmlu_pro" }            # +leaderboard_bbh in the full round
+            - { name: GEN_TASKS, value: "gsm8k,leaderboard_ifeval" }
+            - { name: CODE_TASKS, value: "humaneval" }
+            - { name: LIMIT, value: "800" }                    # round-1 screening; full on the winner
+            - name: MODELS
+              value: |
+                c1pile|/workspace/runs/Qwen3.6-27B-NVFP4-c1pile-screen|
+                kaitchup|kaitchup/Qwen3.6-27B-autoround-nvfp4-linearattn-mtp-BF16|/workspace/hf/hub/models--kaitchup--Qwen3.6-27B-autoround-nvfp4-linearattn-mtp-BF16
+                bf16|Qwen/Qwen3.6-27B|
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
+            requests: { cpu: "4", memory: 20Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen36-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen36-eval-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
