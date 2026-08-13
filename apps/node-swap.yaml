@@ -39,7 +39,7 @@ spec:
               if [ "$cur_mib" -lt "$SZ_MIB" ]; then
                 echo "[$(date)] creating ${SIZE_GB}GiB swapfile at $SF (current ${cur_mib}MiB) — dd, no holes for XFS"
                 swapoff "$SF" 2>/dev/null || true; rm -f "$SF"
-                dd if=/dev/zero of="$SF" bs=1M count="$SZ_MIB" status=progress
+                dd if=/dev/zero of="$SF" bs=1M count="$SZ_MIB" oflag=direct status=progress
                 chmod 600 "$SF"; mkswap "$SF"
               else
                 echo "[$(date)] swapfile already sized ${cur_mib}MiB >= ${SZ_MIB}MiB"
@@ -51,7 +51,7 @@ spec:
               sleep infinity
           resources:
             requests: { cpu: "50m", memory: 64Mi }
-            limits: { cpu: "500m", memory: 256Mi }
+            limits: { cpu: "1" }
           volumeMounts:
             - { name: hdd, mountPath: /hosthdd }
       volumes:
