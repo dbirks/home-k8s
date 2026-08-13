@@ -1,0 +1,142 @@
+# AutoScheme mixed-NVFP4 for Muse-Glimmer-30B — CORRECT low-RAM flag combo (NO publish yet).
+# Prior failures root cause (research on the dbirks/auto-round fork): low_gpu_mem_usage=False opted OUT of
+# every RAM-saving path (per-block materialize/free is gated on low_gpu=True + AR_DISK_STREAM_MODEL=1;
+# immediate ShardWriter save is gated on low_cpu_mem_usage=True + output_dir). The meta-tensor crash was the
+# disk-stream skeleton meeting the low_gpu=False `.to()` path. Correct combo below streams block-by-block so
+# the 57GB model is never resident in the 48GB host RAM.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: muse-autoscheme-swaprun-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    PY="$(command -v python3 || command -v python)"
+    export HF_HOME=/workspace/hf PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+    export AR_ENABLE_AUTO_SCHEME_PARALLEL=0          # serial scoring (parallel could exhaust host RAM)
+    export AR_AUTO_SCHEME_CACHE=/workspace/artifacts/as_cache      # persist scores across a crash
+    export AR_RESUME_DIR=/workspace/artifacts/as_resume            # per-block quantize checkpoint/resume
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    mkdir -p /workspace/artifacts /workspace/runs "$HF_HOME" "$AR_AUTO_SCHEME_CACHE" "$AR_RESUME_DIR"
+    command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true
+    echo "=== [$(date)] installing auto-round fork + transformers-from-source ==="
+    "$PY" -m pip install --no-cache-dir "auto-round @ git+https://github.com/dbirks/auto-round.git@main" datasets accelerate 2>&1 | tail -6
+    "$PY" -m pip install --no-cache-dir --upgrade "git+https://github.com/huggingface/transformers.git" 2>&1 | tail -4
+    "$PY" -c "import auto_round,transformers; print('auto_round',auto_round.__version__,'transformers',transformers.__version__)"
+    "$PY" /scripts/quant.py
+  quant.py: |
+    #!/usr/bin/env python3
+    import json, os, importlib
+    from pathlib import Path
+    AVG   = float(os.environ.get("AVG_BITS", "4.75"))
+    NSAMP = int(os.environ.get("NSAMPLES", "8"))
+    SEQLEN = int(os.environ.get("SEQLEN", "512"))
+    CALIB = "NeelNanda/pile-10k"
+    OUT = f"/workspace/runs/muse-autoscheme-avg{AVG}"
+    SHARED = [["q_proj", "k_proj", "v_proj"], ["gate_proj", "up_proj"]]
+    print(f"=== SWAPRUN AutoScheme avg_bits={AVG} seqlen={SEQLEN} -> {OUT} ===", flush=True)
+    # reentrant checkpoint insurance (Muse non-reentrant recompute mismatch)
+    import torch, torch.utils.checkpoint as _ckpt
+    _oc = _ckpt.checkpoint
+    def _re(fn, *a, use_reentrant=None, **k): return _oc(fn, *a, use_reentrant=True, **k)
+    _ckpt.checkpoint = _re; torch.utils.checkpoint.checkpoint = _re
+    # low-GPU scoring offloads embed_tokens to CPU but feeds cuda input_ids -> device mismatch on Muse.
+    # Move the (small, CPU-materialized) embed weight to the index's device for the op. Fixes the catch-22
+    # that forced low_gpu_mem_usage=False (which disabled the RAM streaming).
+    import torch.nn.functional as _F
+    _oe = _F.embedding
+    def _emb(inp, weight, *a, **k):
+        if weight.device.type != "meta" and inp.device != weight.device:
+            weight = weight.to(inp.device)
+        return _oe(inp, weight, *a, **k)
+    _F.embedding = _emb
+    MODEL = os.environ.get("MUSE_MODEL", "meta-models/Muse-Glimmer-30B")
+    if not os.path.isdir(MODEL):
+        from huggingface_hub import snapshot_download
+        MODEL = snapshot_download(MODEL)     # disk-stream needs a PATH
+        print("local model:", MODEL, flush=True)
+    from auto_round import AutoRound, AutoScheme
+    from transformers import AutoConfig
+    cfg = AutoConfig.from_pretrained(MODEL, trust_remote_code=True)
+    print("model_type:", getattr(cfg, "model_type", None), flush=True)
+    def make():
+        scheme = AutoScheme(avg_bits=AVG, options=("NVFP4", "MXFP8"), shared_layers=SHARED,
+                            nsamples=NSAMP, low_gpu_mem_usage=False, low_cpu_mem_usage=True)  # bug-free scoring + immediate-save pack
+        return AutoRound(MODEL, scheme=scheme, dataset=CALIB, nsamples=NSAMP, seqlen=SEQLEN,
+                         iters=0, batch_size=4, device_map=0, trust_remote_code=True,
+                         quant_nontext_module=False, seed=42,
+                         low_cpu_mem_usage=True, output_dir=OUT)   # low_cpu + output_dir -> ShardWriter immediate save
+    try:
+        ar = make()
+    except Exception as e:
+        print("MLLM template register:", repr(e)[:200], flush=True)
+        for tmod, pmod in [("auto_round.mllm.template","auto_round.mllm.processor"),
+                           ("auto_round.compressors.mllm.template","auto_round.compressors.mllm.processor")]:
+            try:
+                importlib.import_module(tmod)._register_template(model_type=cfg.model_type, default_dataset=CALIB,
+                    processor=importlib.import_module(pmod).PROCESSORS["hf"]); break
+            except Exception: continue
+        ar = make()
+    _, saved = ar.quantize_and_save(output_dir=OUT, format="llm_compressor")
+    def find_cfg(base):
+        base = Path(base)
+        if (base / "config.json").is_file(): return base
+        for p in sorted(base.rglob("config.json")): return p.parent
+        return None
+    cand = saved[0] if isinstance(saved, (list, tuple)) else saved
+    d = find_cfg(cand) or find_cfg(OUT)
+    c = json.loads((d / "config.json").read_text())
+    qc = c.get("quantization_config") or {}
+    groups = qc.get("config_groups") or {}
+    sizes = {f"{g}(w{ (v.get('weights') or {}).get('num_bits') })": len(v.get("targets") or []) for g,v in groups.items()}
+    total = sum(f.stat().st_size for f in Path(d).rglob("*") if f.is_file())
+    summ = {"avg_bits": AVG, "out": str(d), "format": qc.get("format"), "n_groups": len(groups),
+            "group_sizes": sizes, "size_gb": round(total/1024**3, 2)}
+    Path(f"/workspace/artifacts/autoscheme-avg{AVG}-summary.json").write_text(json.dumps(summ, indent=2))
+    print("SUMMARY", json.dumps(summ, indent=2), flush=True)
+    print("=== SWAPRUN quant complete ===", flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-autoscheme-swaprun-avg475-20260813
+  namespace: default
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels: { app: muse-autoscheme-swaprun }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: quant
+          image: vllm/vllm-openai:v0.26.0
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: AVG_BITS, value: "4.75" }
+            - { name: NSAMPLES, value: "8" }
+            - { name: SEQLEN, value: "512" }
+          resources:
+            requests:
+              memory: 30Gi          # Burstable QoS -> LimitedSwap gives ~(30/48)*80 = 50GiB swap
+            limits:
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: muse-quant-workspace } }
+        - { name: scripts, configMap: { name: muse-autoscheme-swaprun-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }
