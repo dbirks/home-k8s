@@ -144,18 +144,45 @@ data:
     print("model_type:", getattr(cfg, "model_type", None), "arch:", getattr(cfg, "architectures", None), flush=True)
 
     _sig = set(inspect.signature(AutoRound).parameters)
-    print("AutoRound accepts fp_layers?", "fp_layers" in _sig, " enable_alg_ext?", "enable_alg_ext" in _sig, flush=True)
+    print("AutoRound has fp_layers?", "fp_layers" in _sig, " layer_config?", "layer_config" in _sig,
+          " enable_alg_ext?", "enable_alg_ext" in _sig, flush=True)
+
+    # This fork's AutoRound (0.15.0) has NO fp_layers kwarg. Build a precise BF16 layer_config from
+    # the ACTUAL meta-device module names (no weights/GPU/RAM). Substring layer_config keys risk
+    # silently matching 0 modules -> would quantize in_proj_a/b (the exact failure we're guarding
+    # against), so resolve to exact names and HARD-ABORT if any substring matches nothing.
+    layer_config = {}
+    if IGNORE:
+        subs = [s.strip() for s in IGNORE.split(",") if s.strip()]
+        import transformers as _tf, torch as _t
+        from accelerate import init_empty_weights
+        _mdl = None
+        for _n in ["AutoModelForImageTextToText","AutoModelForVision2Seq","AutoModelForCausalLM"]:
+            if hasattr(_tf, _n):
+                try:
+                    with init_empty_weights():
+                        _mdl = getattr(_tf, _n).from_config(cfg, trust_remote_code=True)
+                    print("meta model via", _n, flush=True); break
+                except Exception as _e:
+                    print(_n, "meta failed:", repr(_e)[:140], flush=True)
+        if _mdl is None: raise SystemExit("cannot build meta model to resolve IGNORE names")
+        _lin = [nm for nm, m in _mdl.named_modules() if isinstance(m, _t.nn.Linear)]
+        print(f"total Linear modules: {len(_lin)}", flush=True)
+        for nm in _lin:
+            if any(s in nm for s in subs):
+                layer_config[nm] = {"bits": 16, "act_bits": 16}
+        hits = {s: sum(1 for nm in layer_config if s in nm) for s in subs}
+        print(f"IGNORE subs={subs} -> {len(layer_config)} BF16 modules; per-sub hits={hits}", flush=True)
+        (ART / f"ignore-map-{SCHEME}{RUN_TAG}-{MODE}.json").write_text(json.dumps(sorted(layer_config), indent=1))
+        if any(v == 0 for v in hits.values()):
+            raise SystemExit(f"IGNORE substring matched 0 modules for some sub: {hits} — aborting")
+        del _mdl
 
     def make(**extra):
         kw = dict(scheme=SCHEME, dataset=CALIB, device_map=0, trust_remote_code=True,
                   quant_nontext_module=False, seed=42, **P, **extra)
-        if IGNORE:
-            if "fp_layers" in _sig:
-                kw["fp_layers"] = IGNORE
-            else:  # older API: build a bits=16 layer_config by substring later is hard w/o model; warn
-                raise SystemExit("this auto-round lacks fp_layers; cannot honor IGNORE_LAYERS safely")
-        if ALGEXT and "enable_alg_ext" in _sig:
-            kw["enable_alg_ext"] = True
+        if layer_config:
+            kw["layer_config"] = layer_config
         return AutoRound(MODEL, **kw)
 
     try:
@@ -207,6 +234,12 @@ data:
     fmt = (qc or {}).get("format")
     wbits = (((qc or {}).get("config_groups", {}).get("group_0", {}) or {}).get("weights", {}) or {}).get("num_bits")
     print(f"format={fmt} weight_bits={wbits}", flush=True)
+    _ign = (qc or {}).get("ignore") or []
+    _ab = [x for x in _ign if ("in_proj_a" in x or "in_proj_b" in x)]
+    _mtp = [x for x in _ign if "mtp" in x]
+    print(f"exported ignore: {len(_ign)} entries; in_proj_a/b={len(_ab)} mtp={len(_mtp)}; sample_ab={_ab[:2]}", flush=True)
+    if IGNORE and "in_proj_a" in IGNORE and len(_ab) == 0:
+        print("WARN: expected in_proj_a/b in exported ignore but found none — verify layer_config took effect", flush=True)
     if not qc or wbits != 4:
         raise SystemExit(f"FATAL: expected 4-bit weights, got num_bits={wbits} (format {fmt})")
     print(f"OK [{SCHEME}{RUN_TAG}/{MODE}]: {fmt} verified at {SAVED} ({gb:.2f} GB)", flush=True)
@@ -228,7 +261,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen36-nvfp4-c1-smoke-20260813
+  name: qwen36-nvfp4-c1-smoke-v2-20260813
   namespace: default
 spec:
   backoffLimit: 0
