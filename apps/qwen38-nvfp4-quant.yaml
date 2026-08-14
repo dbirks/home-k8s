@@ -48,3 +48,31 @@ spec:
       volumes:
         - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
         - { name: scripts, configMap: { name: qwen36-quant-scripts, defaultMode: 0755 } }
+---
+# Download Qwen3.8-27B weights to the PVC HF cache (NO GPU) — runs in parallel with the r5 eval.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-download-20260815
+  namespace: default
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 21600
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: download
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash","-lc","set -e; export HF_HOME=/workspace/hf; echo START $(date); python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.8-27B', ignore_patterns=['*.pth','original/*','consolidated*'])\"; echo DOWNLOAD_DONE $(date); du -sh /workspace/hf/hub/*Qwen3.8* 2>/dev/null"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+          resources:
+            limits: { cpu: "4", memory: 16Gi }
+            requests: { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
