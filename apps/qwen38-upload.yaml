@@ -62,6 +62,34 @@ data:
     vllm serve dbirks/Qwen3.8-27B-NVFP4-AutoRound --max-model-len 8192 --trust-remote-code
     ```
 
+    ### Example `compose.yaml`
+    ```yaml
+    services:
+      qwen38-nvfp4:
+        image: vllm/vllm-openai:latest   # any recent vLLM with Qwen3.8 (qwen3_5) + SM120 NVFP4 support
+        ports:
+          - "8000:8000"
+        ipc: host
+        environment:
+          # consumer Blackwell (SM120): use FlashInfer FP4 tensor-core kernels (not the Marlin fallback)
+          - VLLM_ATTENTION_BACKEND=FLASHINFER
+          - FLASHINFER_CUDA_ARCH_LIST=12.0f
+        volumes:
+          - ~/.cache/huggingface:/root/.cache/huggingface
+        command:
+          - "--model=dbirks/Qwen3.8-27B-NVFP4-AutoRound"
+          - "--served-model-name=qwen3.8-27b"
+          - "--max-model-len=8192"
+          - "--trust-remote-code"
+        deploy:
+          resources:
+            reservations:
+              devices:
+                - driver: nvidia
+                  count: all
+                  capabilities: [gpu]
+    ```
+
     ## Evaluation
     _Recovery numbers are being added — see the effort log at home-k8s #84. Preliminary read (from the
     architecturally-identical Qwen3.6-27B): W4A16 matches BF16 on coding and preserves reasoning; **W4A4
@@ -144,4 +172,32 @@ spec:
             - { name: scripts, mountPath: /scripts }
       volumes:
         - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen38-upload-scripts, defaultMode: 0755 } }
+---
+# README-only update — pushes the card (now with the compose.yaml example) to the live NVFP4 repo.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-nvfp4-readme-update-20260815
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: readme
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub && python3 -c \"import os; from huggingface_hub import HfApi; api=HfApi(token=os.environ['HF_TOKEN']); api.upload_file(path_or_fileobj='/scripts/README.md', path_in_repo='README.md', repo_id=os.environ['HF_REPO'], repo_type='model', commit_message='Add Docker Compose (compose.yaml) example to model card'); print('README updated:', os.environ['HF_REPO'])\""]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: HF_REPO, value: "dbirks/Qwen3.8-27B-NVFP4-AutoRound" }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "2", memory: 3Gi }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts }
+      volumes:
         - { name: scripts, configMap: { name: qwen38-upload-scripts, defaultMode: 0755 } }
