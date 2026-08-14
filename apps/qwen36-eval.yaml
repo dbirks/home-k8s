@@ -1,0 +1,87 @@
+# Qwen3.6-27B NVFP4 eval r4 (home-k8s #87) — LEAN + crash-cautious re-run after a GSP crash took the
+# node down mid-r3. c1v2's loglikelihood suite already landed (arc/hellaswag/winogrande/mmlu_pro);
+# this run gets only the MISSING discriminative metrics, completion-mode (no chat template):
+#   humaneval (coding, the headline) + gsm8k (math) + mmlu_pro (re-confirm, clean). Shorter = less
+#   sustained-inference crash exposure. c1v2 first (fast), then BF16 baseline.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen36-eval-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/workspace/hf VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
+    export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1 HF_ALLOW_CODE_EVAL=1
+    PY="$(command -v python3 || command -v python)"
+    OUT=/workspace/eval/qwen36r4; mkdir -p "$OUT"
+    "$PY" -m pip install --no-cache-dir lm-eval 2>&1 | tail -1
+    BASE="dtype=auto,max_model_len=8192,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True"
+    resolve () { local M="$1"; if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then M=$(dirname "$(find "$M" -name config.json 2>/dev/null | head -1)"); fi; echo "$M"; }
+    run () { local key="$1" M="$2" tasks="$3" lim="$4" extra="$5"; local la=""; [ -n "$lim" ] && la="--limit $lim"
+      echo "=== [$(date)] $key :: $tasks (limit=${lim:-full}) ==="
+      timeout 10800 "$PY" -m lm_eval --model vllm --model_args "pretrained=$M,$BASE" --tasks "$tasks" $la --batch_size auto $extra --output_path "$OUT/$key" 2>&1 | tee -a "$OUT/$key.log" | tail -12; }
+    eval_model () { local key="$1"; local M; M=$(resolve "$2"); local cache="$3"
+      echo "########## [$(date)] MODEL $key :: $M ##########"
+      run "$key-code" "$M" "humaneval" ""    "--confirm_run_unsafe_code --gen_kwargs max_gen_toks=768"
+      run "$key-math" "$M" "gsm8k"     "300" "--gen_kwargs max_gen_toks=512"
+      run "$key-know" "$M" "mmlu_pro"  "500" ""
+      [ -n "$cache" ] && { rm -rf $cache 2>/dev/null && echo "freed $cache"; }; df -h /workspace | tail -1; }
+    printf '%s\n' "$MODELS" | while IFS='|' read -r key path cache; do [ -z "$key" ] && continue; eval_model "$key" "$path" "$cache"; done
+    echo "=== [$(date)] ALL DONE — summary ==="; "$PY" /scripts/summ.py
+  summ.py: |
+    #!/usr/bin/env python3
+    import json, glob
+    rows = {}
+    for f in sorted(glob.glob("/workspace/eval/qwen36r4/**/results_*.json", recursive=True)):
+        try:
+            d = json.load(open(f)); r = d.get("results", {})
+            key = f.split("/workspace/eval/qwen36r4/")[1].split("/")[0]
+            for t, v in r.items():
+                for k, x in v.items():
+                    if isinstance(x, float) and any(s in k for s in ("acc","exact_match","pass")) and "stderr" not in k:
+                        rows.setdefault(key, {})[f"{t}/{k.split(',')[0]}"] = round(x, 4)
+        except Exception as e: print("err", f, e)
+    for key in sorted(rows):
+        print("==", key)
+        for m, val in sorted(rows[key].items()): print(f"    {m:40s} {val}")
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen36-eval-r4-20260814
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 43200
+  template:
+    metadata:
+      labels: { app: qwen36-eval }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - name: MODELS
+              value: |
+                c1v2|/workspace/runs/Qwen3.6-27B-NVFP4-c1v2-screen|
+                bf16|Qwen/Qwen3.6-27B|
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
+            requests: { cpu: "4", memory: 20Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen36-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen36-eval-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
