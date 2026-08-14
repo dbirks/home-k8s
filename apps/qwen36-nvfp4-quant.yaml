@@ -417,3 +417,42 @@ spec:
       volumes:
         - { name: workspace, persistentVolumeClaim: { claimName: qwen36-quant-workspace } }
         - { name: scripts, configMap: { name: qwen36-quant-scripts, defaultMode: 0755 } }
+---
+# W4A16 (int4 weight-only) screen — r4 showed c1v2 W4A4 collapses gsm8k (0.69->0.21). Weight-only
+# (activations stay BF16) should preserve generative reasoning far better. Same ignore policy.
+# Keeps the GPU busy pre-Qwen3.8-drop; kill this job if the drop fires.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen36-w4a16-c1-screen-20260814
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 43200
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: quantize
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "screen"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: QUANT_MODEL, value: "Qwen/Qwen3.6-27B" }
+            - { name: QUANT_SCHEME, value: "W4A16" }
+            - { name: RUN_TAG, value: "-c1w4a16" }
+            - { name: IGNORE_LAYERS, value: "in_proj_a,in_proj_b,mtp,visual" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 42Gi }
+            requests: { cpu: "4", memory: 24Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen36-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen36-quant-scripts, defaultMode: 0755 } }
