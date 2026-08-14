@@ -16,7 +16,7 @@ data:
     export HF_HOME=/workspace/hf VLLM_ATTENTION_BACKEND=FLASHINFER FLASHINFER_CUDA_ARCH_LIST=12.0f
     export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1 HF_ALLOW_CODE_EVAL=1
     PY="$(command -v python3 || command -v python)"
-    OUT=/workspace/eval/qwen36r4; mkdir -p "$OUT"
+    OUT=/workspace/eval/qwen36r5; mkdir -p "$OUT"
     "$PY" -m pip install --no-cache-dir lm-eval 2>&1 | tail -1
     BASE="dtype=auto,max_model_len=8192,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True"
     resolve () { local M="$1"; if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then M=$(dirname "$(find "$M" -name config.json 2>/dev/null | head -1)"); fi; echo "$M"; }
@@ -26,8 +26,8 @@ data:
     eval_model () { local key="$1"; local M; M=$(resolve "$2"); local cache="$3"
       echo "########## [$(date)] MODEL $key :: $M ##########"
       run "$key-code" "$M" "humaneval" ""    "--confirm_run_unsafe_code --gen_kwargs max_gen_toks=768"
-      run "$key-math" "$M" "gsm8k"     "300" "--gen_kwargs max_gen_toks=512"
-      run "$key-know" "$M" "mmlu_pro"  "500" ""
+      run "$key-math" "$M" "gsm8k"     "200" "--gen_kwargs max_gen_toks=512"
+      run "$key-know" "$M" "mmlu_pro"  "300" ""
       [ -n "$cache" ] && { rm -rf $cache 2>/dev/null && echo "freed $cache"; }; df -h /workspace | tail -1; }
     printf '%s\n' "$MODELS" | while IFS='|' read -r key path cache; do [ -z "$key" ] && continue; eval_model "$key" "$path" "$cache"; done
     echo "=== [$(date)] ALL DONE — summary ==="; "$PY" /scripts/summ.py
@@ -35,10 +35,10 @@ data:
     #!/usr/bin/env python3
     import json, glob
     rows = {}
-    for f in sorted(glob.glob("/workspace/eval/qwen36r4/**/results_*.json", recursive=True)):
+    for f in sorted(glob.glob("/workspace/eval/qwen36r5/**/results_*.json", recursive=True)):
         try:
             d = json.load(open(f)); r = d.get("results", {})
-            key = f.split("/workspace/eval/qwen36r4/")[1].split("/")[0]
+            key = f.split("/workspace/eval/qwen36r5/")[1].split("/")[0]
             for t, v in r.items():
                 for k, x in v.items():
                     if isinstance(x, float) and any(s in k for s in ("acc","exact_match","pass")) and "stderr" not in k:
@@ -51,7 +51,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen36-eval-r4-20260814
+  name: qwen36-eval-r5-20260814
   namespace: default
 spec:
   backoffLimit: 0
@@ -72,8 +72,7 @@ spec:
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
             - name: MODELS
               value: |
-                c1v2|/workspace/runs/Qwen3.6-27B-NVFP4-c1v2-screen|
-                bf16|Qwen/Qwen3.6-27B|
+                w4a16|/workspace/runs/Qwen3.6-27B-W4A16-c1w4a16-screen|
           resources:
             limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
             requests: { cpu: "4", memory: 20Gi }
