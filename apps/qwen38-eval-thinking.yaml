@@ -1,0 +1,312 @@
+# Qwen3.8-27B eval — THINKING MODE (corrected recipe, see #84 audit). PARKED (.hold) pending review.
+#
+# WHY THIS REPLACES THE COMPLETION-MODE MATRIX (apps/qwen38-eval.yaml):
+#   Qwen3.8/3.6-27B are reasoning models: chat_template.jinja PREFILLS "<think>\n" on
+#   add_generation_prompt, and generation_config.json asks for do_sample=true / temp=1.0 /
+#   top_p=0.95 / top_k=20. The old matrix evaluated them in raw-completion mode with GREEDY
+#   decoding, which (a) measures a mode we do not ship, (b) is specifically biased against W4A4
+#   (activation-quant error with no CoT to self-correct), and (c) overrides the model publisher's
+#   own sampling config with a mode Qwen warns causes degeneration.
+#
+# WHAT THE OLD RUNS ACTUALLY SHOWED (read off the PVC, qwen38-eval-r1):
+#   humaneval  bf16 0.768 / nvfp4 0.787 / w4a16 0.787   <- all within noise (stderr 0.032)
+#   gsm8k(300) bf16 0.907 / nvfp4 0.880 / w4a16 0.893   <- W4A4 does NOT collapse (cf. Qwen3.6 0.207)
+#   mmlu_pro   nvfp4 0.718 / w4a16 0.222(corrupt)       <- corruption tracks the RUN, not the variant
+#   The "corrupt mmlu_pro" hit BF16 on Qwen3.6 and W4A16 on Qwen3.8. Not a quant property.
+#   Diagnosis was blocked because --log_samples was never set. It is set everywhere below.
+#
+# THE KEY MECHANIC: lm-eval's vLLM backend, given enable_thinking=True + think_end_token=</think>,
+#   deliberately WITHHOLDS the task's `until` strings from vLLM (passes EOS only), then strips
+#   through the LAST </think> and applies the task stops to the post-think answer only
+#   (vllm_causallms.py:615 + models/utils.py::postprocess_generated_text). That is exactly the
+#   until-override we needed; no task-YAML patching required.
+#
+# TRAPS ENCODED BELOW (each silently corrupts results if missed):
+#   - do_sample=True must be EXPLICIT. --gen_kwargs MERGES into the task YAML, which sets
+#     do_sample:false; passing temperature alone makes lm-eval reset temperature to 0.0.
+#   - enable_thinking must be TOP-LEVEL in --model_args. Passing it inside chat_template_args is
+#     silently dropped on the vLLM backend (self.enable_thinking is unconditionally reassigned).
+#   - max_model_len 8192 -> 40960. A truncated think trace makes split("</think>")[-1] return the
+#     RAW REASONING as the "answer" — silent garbage, not an error.
+#   - --limit is PER SUBTASK for mmlu_pro (14 subtasks => limit 100 = ~1400 docs). The group
+#     aggregate is weight_by_size:true, so a limited mmlu_pro score is NOT comparable to a full run.
+#   - gsm8k: report flexible-extract ONLY. strict-match wants "#### N" and reads ~0 in chat mode.
+#   - humaneval (raw {{prompt}} continuation) is a BASE-model task and returns 0.0 under a chat
+#     template. humaneval_instruct is the correct variant.
+#   - arc/hellaswag/winogrande are DROPPED: saturated, and lm-eval hard-errors on
+#     loglikelihood + enable_thinking=True.
+#   - lm-eval is PINNED. The old manifests did `pip install lm-eval` unpinned, so different runs
+#     could get different harness versions. Everything here was validated against 0.4.12.
+#   - NO VLLM_ATTENTION_BACKEND: it is not a vLLM env var and was a silent no-op in every old run.
+#   - enforce_eager=True kept for SM120/NVFP4 stability; dropping it roughly halves runtime.
+#
+# GATED: stage 1 runs every model at --limit 20 and asserts the thinking plumbing works
+# (traces terminate, extraction succeeds, humaneval emits a code fence). Stage 2 (the full run)
+# only executes if stage 1 prints SMOKE_OK for all models.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-eval-thinking-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/workspace/hf
+    export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1 HF_ALLOW_CODE_EVAL=1
+    PY="$(command -v python3 || command -v python)"
+    OUT=/workspace/eval/qwen38-thinking
+    mkdir -p "$OUT/smoke" "$OUT/full"
+
+    echo "=== [$(date)] installing pinned harness ==="
+    "$PY" -m pip install --no-cache-dir "lm-eval==0.4.12" 2>&1 | tail -2
+    "$PY" -c "import lm_eval; print('lm-eval', lm_eval.__version__)"
+
+    # --- thinking-mode model args (see header for why each field is here) ---
+    THINK="enable_thinking=True,think_end_token=</think>,max_gen_toks=32768"
+    BASE="dtype=auto,max_model_len=40960,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True,seed=1234,$THINK"
+    # model's own recommended sampling; do_sample=True is REQUIRED or temperature is reset to 0.0
+    SAMP="do_sample=True,temperature=1.0,top_p=0.95,top_k=20,max_gen_toks=32768"
+    COMMON="--apply_chat_template --fewshot_as_multiturn --log_samples --batch_size auto"
+
+    resolve () { local M="$1"
+      if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then
+        M=$(dirname "$(find "$M" -name config.json 2>/dev/null | sort | head -1)")
+      fi; echo "$M"; }
+
+    # run <outdir> <key> <model> <tasks> <limit> <num_fewshot> <extra>
+    run () {
+      local dir="$1" key="$2" M="$3" tasks="$4" lim="$5" nfs="$6" extra="$7"
+      local la=""; [ -n "$lim" ] && la="--limit $lim"
+      local na=""; [ -n "$nfs" ] && na="--num_fewshot $nfs"
+      echo "=== [$(date)] $dir/$key :: $tasks (limit=${lim:-full} nfs=${nfs:-task-default}) ==="
+      timeout 28800 "$PY" -m lm_eval --model vllm \
+        --model_args "pretrained=$M,$BASE" \
+        --tasks "$tasks" $la $na $COMMON $extra \
+        --gen_kwargs "$SAMP" \
+        --output_path "$OUT/$dir/$key" 2>&1 | tee -a "$OUT/$dir/$key.log" | tail -15
+    }
+
+    # eval_all <smoke|full> <mathlimit> <knowlimit> <codelimit>
+    eval_all () {
+      local dir="$1" mlim="$2" klim="$3" clim="$4"
+      printf '%s\n' "$MODELS" | while IFS='|' read -r key path; do
+        [ -z "$key" ] && continue
+        local M; M=$(resolve "$path")
+        echo "########## [$(date)] $dir MODEL $key :: $M ##########"
+        # MATH: 0-shot thinking, full 1319 split in the full stage. Report flexible-extract.
+        run "$dir" "$key-math" "$M" "gsm8k"              "$mlim" "0" ""
+        # KNOWLEDGE: mmlu_pro keeps its 5-shot CoT default. limit is PER SUBTASK (x14).
+        run "$dir" "$key-know" "$M" "mmlu_pro"           "$klim" ""  ""
+        # CODE: instruct variant + unsafe-code confirmation (hard raise without it).
+        run "$dir" "$key-code" "$M" "humaneval_instruct" "$clim" ""  "--confirm_run_unsafe_code"
+        df -h /workspace | tail -1
+      done
+    }
+
+    ############ STAGE 1 — SMOKE GATE ############
+    echo "########## [$(date)] STAGE 1: SMOKE (limit 20; mmlu_pro => 20x14=280 docs) ##########"
+    eval_all smoke 20 20 20
+    echo "=== [$(date)] evaluating smoke gate ==="
+    if ! "$PY" /scripts/check_smoke.py "$OUT/smoke"; then
+      echo "########## [$(date)] SMOKE_FAIL — NOT running the full matrix. ##########"
+      echo "Inspect $OUT/smoke/*/**/samples_*.jsonl to see the actual generations."
+      exit 1
+    fi
+
+    ############ STAGE 2 — FULL MATRIX (opt-in: RUN_FULL=1) ############
+    if [ "${RUN_FULL:-0}" = "1" ]; then
+      echo "########## [$(date)] STAGE 2: FULL (gsm8k ${GSM8K_LIMIT:-1319} / mmlu_pro ${MMLU_LIMIT:-100}-per-subtask / humaneval 164) ##########"
+      eval_all full "${GSM8K_LIMIT:-}" "${MMLU_LIMIT:-100}" ""
+      echo "=== [$(date)] ALL DONE ==="
+      "$PY" /scripts/summ.py "$OUT/full"
+    else
+      echo "########## [$(date)] RUN_FULL!=1 — SMOKE-ONLY run complete. Set RUN_FULL=1 to run the full matrix. ##########"
+      "$PY" /scripts/summ.py "$OUT/smoke" || true
+    fi
+  check_smoke.py: |
+    #!/usr/bin/env python3
+    """Thinking-mode plumbing gate.
+
+    We are NOT testing accuracy here, we are testing that the reasoning path works end to end:
+      * traces actually TERMINATE (an unterminated <think> makes split("</think>")[-1] return the
+        whole raw trace, which shows up as very long responses + failed extraction)
+      * the answer extractor fires (filtered_resps != "[invalid]")
+      * humaneval_instruct re-emits a ``` code fence AFTER </think>, so build_predictions_instruct
+        has something to cut on (its gen_prefix lands INSIDE the prefilled think block and is
+        discarded by the strip, so this is the one genuinely uncertain interaction)
+
+    NOTE: samples' `resps` are already POST-strip (the vLLM backend calls
+    postprocess_generated_text before logging), so we cannot grep for "</think>" directly.
+    A surviving raw trace instead shows up as an over-long response -> that is what LONG measures.
+    """
+    import glob, json, os, re, sys
+
+    ROOT = sys.argv[1] if len(sys.argv) > 1 else "/workspace/eval/qwen38-thinking/smoke"
+
+    MAX_EMPTY, MAX_INVALID, MAX_LONG, MIN_FENCE, LONG_CHARS = 0.10, 0.20, 0.50, 0.50, 6000
+    MIN_METRIC = {"gsm8k": 0.60, "mmlu_pro": 0.40, "humaneval_instruct": 0.40}
+    METRIC_KEY = {
+        "gsm8k": "exact_match,flexible-extract",
+        "mmlu_pro": "exact_match,custom-extract",
+        "humaneval_instruct": "pass@1,create_test",
+    }
+
+    def family(task):
+        if task.startswith("mmlu_pro"): return "mmlu_pro"
+        if task.startswith("humaneval"): return "humaneval_instruct"
+        if task.startswith("gsm8k"): return "gsm8k"
+        return task
+
+    def task_of(path):
+        b = re.sub(r"^samples_", "", os.path.basename(path))
+        return re.sub(r"_\d{4}-\d{2}-\d{2}T[\d\-.]+\.jsonl$", "", b)
+
+    def first(x):
+        while isinstance(x, list):
+            if not x: return ""
+            x = x[0]
+        return x if isinstance(x, str) else str(x)
+
+    failures, lines = [], []
+    run_dirs = sorted(d for d in glob.glob(os.path.join(ROOT, "*")) if os.path.isdir(d))
+    if not run_dirs:
+        print(f"SMOKE_FAIL: no run directories under {ROOT}"); sys.exit(1)
+
+    for rd in run_dirs:
+        run = os.path.basename(rd)
+        agg = {}
+        for f in glob.glob(os.path.join(rd, "**", "samples_*.jsonl"), recursive=True):
+            fam = family(task_of(f))
+            a = agg.setdefault(fam, {"n": 0, "empty": 0, "invalid": 0, "long": 0, "fence": 0})
+            with open(f) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line: continue
+                    try: row = json.loads(line)
+                    except Exception: continue
+                    raw, filt = first(row.get("resps")), first(row.get("filtered_resps"))
+                    a["n"] += 1
+                    if not raw.strip(): a["empty"] += 1
+                    if len(raw) > LONG_CHARS: a["long"] += 1
+                    if filt.strip() == "[invalid]": a["invalid"] += 1
+                    if "```" in raw: a["fence"] += 1
+
+        metrics = {}
+        for f in glob.glob(os.path.join(rd, "**", "results_*.json"), recursive=True):
+            try: res = json.load(open(f)).get("results", {})
+            except Exception: continue
+            for t, v in res.items():
+                fam = family(t)
+                mk = METRIC_KEY.get(fam)
+                if mk and isinstance(v.get(mk), float):
+                    metrics.setdefault(fam, []).append(v[mk])
+
+        if not agg:
+            failures.append(f"{run}: no samples_*.jsonl found (did --log_samples run?)")
+            continue
+
+        for fam, a in sorted(agg.items()):
+            n = max(a["n"], 1)
+            er, ir, lr, fr = a["empty"]/n, a["invalid"]/n, a["long"]/n, a["fence"]/n
+            ms = metrics.get(fam, [])
+            m = sum(ms)/len(ms) if ms else float("nan")
+            bad = []
+            if er > MAX_EMPTY:   bad.append(f"empty={er:.2f}>{MAX_EMPTY}")
+            if lr > MAX_LONG:    bad.append(f"long={lr:.2f}>{MAX_LONG} (traces likely unterminated)")
+            if fam in ("gsm8k", "mmlu_pro") and ir > MAX_INVALID:
+                bad.append(f"invalid={ir:.2f}>{MAX_INVALID} (extractor never fired)")
+            if fam == "humaneval_instruct" and fr < MIN_FENCE:
+                bad.append(f"fence={fr:.2f}<{MIN_FENCE} (no ``` after </think>)")
+            if ms and m < MIN_METRIC.get(fam, 0.0):
+                bad.append(f"metric={m:.3f}<{MIN_METRIC[fam]}")
+            lines.append(f"  {run:18s} {fam:20s} n={n:5d} empty={er:.2f} long={lr:.2f} "
+                         f"invalid={ir:.2f} fence={fr:.2f} metric={m:.3f} "
+                         f"{'OK' if not bad else 'FAIL: ' + '; '.join(bad)}")
+            if bad: failures.append(f"{run}/{fam}: " + "; ".join(bad))
+
+    print("\n=== SMOKE GATE ===")
+    for l in lines: print(l)
+    if failures:
+        print("\nSMOKE_FAIL")
+        for f in failures: print("  !", f)
+        sys.exit(1)
+    print("\nSMOKE_OK — thinking plumbing verified; proceeding to the full matrix.")
+    sys.exit(0)
+  summ.py: |
+    #!/usr/bin/env python3
+    """Summary. FIXED vs the old summ.py: keeps the FULL metric key including the filter name, so
+    exact_match,strict-match and exact_match,flexible-extract no longer collapse into one entry
+    (the old `k.split(',')[0]` silently let the last filter overwrite the first). Also prints
+    stderr and a 95% CI, because every quant-vs-quant gap we have seen so far is inside noise."""
+    import glob, json, sys
+
+    ROOT = sys.argv[1] if len(sys.argv) > 1 else "/workspace/eval/qwen38-thinking/full"
+    KEEP = ("acc", "exact_match", "pass@")
+
+    rows = {}
+    for f in sorted(glob.glob(f"{ROOT}/**/results_*.json", recursive=True)):
+        try:
+            d = json.load(open(f))
+        except Exception as e:
+            print("err", f, e); continue
+        run = f.split(ROOT.rstrip("/") + "/")[1].split("/")[0]
+        for t, v in d.get("results", {}).items():
+            for k, x in v.items():
+                if not isinstance(x, float) or "stderr" in k: continue
+                if not any(s in k for s in KEEP): continue
+                se = v.get(k.replace(",", "_stderr,", 1) if "," in k else k + "_stderr")
+                rows.setdefault(run, {})[f"{t}/{k}"] = (x, se if isinstance(se, float) else None)
+
+    for run in sorted(rows):
+        print("==", run)
+        for m, (val, se) in sorted(rows[run].items()):
+            ci = f"  ±{1.96*se:.4f} (95%)" if se else ""
+            print(f"    {m:52s} {val:.4f}{ci}")
+    print("\nNOTE: report gsm8k flexible-extract (strict-match wants '#### N' and is ~0 in chat mode).")
+    print("NOTE: mmlu_pro here is --limit 100 PER SUBTASK and weight_by_size=true — NOT comparable")
+    print("      to a full-split mmlu_pro number from anywhere else.")
+    print("NOTE: overlapping CIs => no defensible per-variant claim. Prefer paired McNemar over the")
+    print("      per-item samples_*.jsonl, since all variants see identical items.")
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-eval-thinking-r1-20260815
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 108000   # 30h: thinking traces are ~20-30x the completion-mode token count
+  template:
+    metadata:
+      labels: { app: qwen38-eval-thinking }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            # NOTE: nvfp4 lives under a Qwen3.6-prefixed dir because the qwen38 NVFP4 job omitted
+            # QUANT_OUT. Contents ARE Qwen3.8 (config verified). Fix QUANT_OUT on the next quant.
+            - name: MODELS
+              value: |
+                w4a16|/workspace/runs/Qwen3.8-27B-W4A16-c1w4a16-screen/Qwen3.8-27B-w4g128
+                nvfp4|/workspace/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16
+                bf16|Qwen/Qwen3.8-27B
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
+            requests: { cpu: "4", memory: 20Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen38-eval-thinking-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
