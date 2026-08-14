@@ -1,0 +1,50 @@
+# Qwen/Qwen3.8-27B -> AutoRound NVFP4 (W4A4) — PRE-STAGED, waiting for the Aug 15 drop (see #84).
+# Reuses the proven `qwen36-quant-scripts` ConfigMap (model-agnostic, parameterized by QUANT_MODEL).
+# ON DROP: git mv this to .yaml, reconcile -> the inventory job downloads config + confirms the arch
+# + module names (in_proj_a/b, visual, mtp) match the c1v2 recipe. THEN append smoke/screen quant
+# jobs (same pattern as apps/qwen36-nvfp4-quant.yaml) with IGNORE_LAYERS="in_proj_a,in_proj_b,mtp,visual".
+# Recipe + full plan: #84. If Qwen3.8 uses a NEW vLLM arch class, pin a newer vLLM image first (#84 P1).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen38-quant-workspace
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path   # NVMe; thin. ~55GB base + ~20GB per quant. Disk mgmt per #84 if tight.
+  resources:
+    requests:
+      storage: 260Gi
+---
+# Inventory (meta-device, NO GPU, no big download) — confirms arch + that our ignore substrings hit
+# the right modules before committing to a full quant. Run FIRST on drop.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-inventory-20260815
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: inventory
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "inventory"]
+          env:
+            - { name: HF_HOME, value: /workspace/hf }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: QUANT_MODEL, value: "Qwen/Qwen3.8-27B" }
+          resources:
+            limits: { cpu: "4", memory: 20Gi }
+            requests: { cpu: "2", memory: 8Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen36-quant-scripts, defaultMode: 0755 } }
