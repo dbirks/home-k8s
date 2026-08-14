@@ -1,0 +1,161 @@
+# PUBLIC HF upload of the Qwen3.8-27B AutoRound W4A16 (int4 weight-only) artifact + model card (#84).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-w4a16-upload-scripts
+  namespace: default
+data:
+  README.md: |
+    ---
+    base_model: Qwen/Qwen3.8-27B
+    base_model_relation: quantized
+    pipeline_tag: image-text-to-text
+    library_name: transformers
+    license: apache-2.0
+    language:
+      - en
+    tags:
+      - int4
+      - w4a16
+      - gptq
+      - compressed-tensors
+      - auto-round
+      - vllm
+      - quantized
+      - qwen3
+    ---
+
+    # Qwen3.8-27B-W4A16-AutoRound
+
+    > **int4 weight-only (W4A16) quantization of [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B),
+    > produced with [Intel AutoRound](https://github.com/intel/auto-round) and packaged in
+    > [compressed-tensors](https://github.com/neuralmagic/compressed-tensors) for vLLM.**
+    > **~19.5 GB on disk** (vs ~52 GB BF16). Runs on **any Ampere-or-newer NVIDIA GPU** via the Marlin int4 kernel — no Blackwell required.
+
+    > ✅ **Recommended variant.** Weights are int4, **activations stay BF16**, so accuracy is **near-lossless**
+    > — on the architecturally-identical Qwen3.6-27B this recipe matched BF16 on coding and preserved
+    > generative math/reasoning that the [NVFP4 (W4A4) sibling](https://huggingface.co/dbirks/Qwen3.8-27B-NVFP4-AutoRound)
+    > degrades. Choose the NVFP4 sibling only if you specifically want Blackwell FP4-tensor-core throughput and can accept some reasoning-accuracy cost.
+
+    ## Model overview
+    - **Base model:** [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) — a hybrid **GatedDeltaNet (linear-attention) + full-attention** multimodal decoder (64 layers: 48 linear-attn + 16 full-attn) with a vision tower; 262K context.
+    - **Quantization:** int4 **W4A16** (weight-only, group size 128) on the language-decoder `Linear` layers, **except** the two tiny per-layer recurrence-control projections (`in_proj_a`, `in_proj_b`) which stay BF16.
+    - **Kept BF16:** `linear_attn.in_proj_a` / `in_proj_b`, the entire `visual.*` vision tower, the `mtp` head, and `lm_head`.
+    - **Format:** compressed-tensors (`pack-quantized`), auto-detected by vLLM (Marlin int4).
+    - **Quantizer:** Intel AutoRound (arXiv:2309.05516), SignRound block reconstruction.
+
+    ## Quantization recipe
+    - **Scheme:** `W4A16` — 4-bit weights, group size 128, symmetric; activations stay BF16.
+    - **Quantized:** the 48 GatedDeltaNet layers' `in_proj_qkv` / `in_proj_z` / `out_proj` + all MLP `gate/up/down` + the 16 full-attention layers' `q/k/v/o` projections.
+    - **Kept BF16:** `in_proj_a`, `in_proj_b`, `visual.*`, `mtp`, `lm_head`.
+    - **Calibration:** `NeelNanda/pile-10k`, 128 samples, seqlen 2048, 200 tuning iters (screen recipe).
+    - **Cost:** ~35 minutes on a single 96 GB Blackwell GPU; peak ~24 GB VRAM, ~26 GB host RAM.
+
+    ## Deployment (vLLM)
+    vLLM auto-detects the int4 scheme from `config.json` — no quantization flag needed. Serves as `Qwen3_5ForConditionalGeneration`.
+    ```bash
+    vllm serve dbirks/Qwen3.8-27B-W4A16-AutoRound --max-model-len 8192 --trust-remote-code
+    ```
+
+    ### Example `compose.yaml`
+    ```yaml
+    services:
+      qwen38-w4a16:
+        image: vllm/vllm-openai:latest   # any recent vLLM with Qwen3.8 (qwen3_5) support; Marlin int4 runs on any Ampere+ GPU
+        ports:
+          - "8000:8000"
+        ipc: host
+        volumes:
+          - ~/.cache/huggingface:/root/.cache/huggingface
+        command:
+          - "--model=dbirks/Qwen3.8-27B-W4A16-AutoRound"
+          - "--served-model-name=qwen3.8-27b"
+          - "--max-model-len=8192"
+          - "--trust-remote-code"
+        deploy:
+          resources:
+            reservations:
+              devices:
+                - driver: nvidia
+                  count: all
+                  capabilities: [gpu]
+    ```
+
+    ## Evaluation
+    _Recovery numbers are being added — see the effort log at home-k8s #84. Preliminary (architecturally-identical
+    Qwen3.6-27B, same recipe): **W4A16 matched BF16 on HumanEval (0.86) and preserved generative math**
+    (gsm8k 0.855) where the NVFP4 W4A4 sibling collapsed (0.207). This is the highest-accuracy 4-bit option here._
+
+    ## Hardware & format notes
+    - Runs on **any Ampere-or-newer NVIDIA GPU** via the Marlin int4 kernel — no Blackwell required.
+    - Weight-only (W4A16): activations stay BF16 → maximal accuracy + compatibility, but no activation-quant speedup. For Blackwell FP4 (W4A4) throughput, use the [NVFP4 sibling](https://huggingface.co/dbirks/Qwen3.8-27B-NVFP4-AutoRound).
+    - Only the language decoder is quantized; the vision tower stays BF16 (intentional; vLLM requires it).
+
+    ## Reproducibility
+    ```python
+    from auto_round import AutoRound
+    # keep in_proj_a/b + visual + mtp in BF16 via a bits=16 layer_config (built from module names)
+    ar = AutoRound("Qwen/Qwen3.8-27B", scheme="W4A16", dataset="NeelNanda/pile-10k",
+                   nsamples=128, seqlen=2048, batch_size=4, iters=200,
+                   device_map=0, trust_remote_code=True, quant_nontext_module=False, seed=42,
+                   layer_config=BF16_FOR_IN_PROJ_AB_VISUAL_MTP)
+    ar.quantize_and_save(output_dir="Qwen3.8-27B-W4A16-AutoRound", format="llm_compressor")
+    ```
+    Toolchain: auto-round 0.15.0, transformers-from-source (qwen3_5 arch), compressed-tensors, torch 2.13+cu130.
+    Full effort log: home-k8s #84 (+ #87 for the Qwen3.6 recipe this is based on).
+
+    ## Citation
+    ```bibtex
+    @article{cheng2023optimize, title={Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLMs}, author={Cheng, Wenhua and others}, journal={arXiv:2309.05516}, year={2023}}
+    ```
+  upload.py: |
+    #!/usr/bin/env python3
+    import os, shutil
+    from huggingface_hub import HfApi
+    api = HfApi(token=os.environ["HF_TOKEN"])
+    REPO = os.environ["HF_REPO"]; MODEL_DIR = os.environ["MODEL_DIR"]
+    PRIVATE = os.environ.get("PRIVATE","false").lower() in ("1","true","yes")
+    print(f"account={api.whoami().get('name')} repo={REPO} private={PRIVATE}", flush=True)
+    if os.path.isfile("/scripts/README.md"):
+        shutil.copy("/scripts/README.md", os.path.join(MODEL_DIR,"README.md")); print("staged README.md", flush=True)
+    api.create_repo(REPO, repo_type="model", private=PRIVATE, exist_ok=True)
+    print(f"uploading {MODEL_DIR} ...", flush=True)
+    try:
+        api.upload_large_folder(repo_id=REPO, folder_path=MODEL_DIR, repo_type="model")
+    except (AttributeError, TypeError) as e:
+        print("fallback:", repr(e), flush=True)
+        api.upload_folder(repo_id=REPO, folder_path=MODEL_DIR, repo_type="model", commit_message="AutoRound int4 W4A16 + model card")
+    info = api.model_info(REPO)
+    print(f"UPLOAD DONE: https://huggingface.co/{REPO}  private={info.private}  files={len(info.siblings)}", flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-w4a16-upload-20260815
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 14400
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: upload
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub hf_transfer && HF_HUB_ENABLE_HF_TRANSFER=1 python3 /scripts/upload.py"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: HF_REPO, value: "dbirks/Qwen3.8-27B-W4A16-AutoRound" }
+            - { name: PRIVATE, value: "false" }
+            - { name: MODEL_DIR, value: "/workspace/runs/Qwen3.8-27B-W4A16-c1w4a16-screen/Qwen3.8-27B-w4g128" }
+            - { name: HF_HOME, value: "/workspace/hf" }
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits: { cpu: "4", memory: 8Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen38-w4a16-upload-scripts, defaultMode: 0755 } }
