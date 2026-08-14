@@ -1,0 +1,51 @@
+# README-only updates to pull the unsupported W4A4-reasoning disclaimer from both LIVE public repos
+# (EvalAuditor found it isn't supported — Qwen3.8 W4A4 gsm8k 0.880, within noise). Reuses each repo's
+# upload ConfigMap (Flux refreshes the README content from apps/qwen38-*upload.yaml).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-nvfp4-readme-fix-20260815
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: readme
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub && python3 -c \"import os; from huggingface_hub import HfApi; HfApi(token=os.environ['HF_TOKEN']).upload_file(path_or_fileobj='/scripts/README.md', path_in_repo='README.md', repo_id=os.environ['HF_REPO'], repo_type='model', commit_message='Pull unsupported W4A4-reasoning disclaimer; evals in progress (thinking mode)'); print('updated', os.environ['HF_REPO'])\""]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: HF_REPO, value: "dbirks/Qwen3.8-27B-NVFP4-AutoRound" }
+          resources: { requests: { cpu: "1", memory: 1Gi }, limits: { cpu: "2", memory: 3Gi } }
+          volumeMounts: [{ name: scripts, mountPath: /scripts }]
+      volumes:
+        - { name: scripts, configMap: { name: qwen38-upload-scripts, defaultMode: 0755 } }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-w4a16-readme-fix-20260815
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: readme
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub && python3 -c \"import os; from huggingface_hub import HfApi; HfApi(token=os.environ['HF_TOKEN']).upload_file(path_or_fileobj='/scripts/README.md', path_in_repo='README.md', repo_id=os.environ['HF_REPO'], repo_type='model', commit_message='Reframe as weight-only variant; evals in progress (thinking mode)'); print('updated', os.environ['HF_REPO'])\""]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: HF_REPO, value: "dbirks/Qwen3.8-27B-W4A16-AutoRound" }
+          resources: { requests: { cpu: "1", memory: 1Gi }, limits: { cpu: "2", memory: 3Gi } }
+          volumeMounts: [{ name: scripts, mountPath: /scripts }]
+      volumes:
+        - { name: scripts, configMap: { name: qwen38-w4a16-upload-scripts, defaultMode: 0755 } }

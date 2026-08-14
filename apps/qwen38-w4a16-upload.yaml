@@ -32,10 +32,10 @@ data:
     > [compressed-tensors](https://github.com/neuralmagic/compressed-tensors) for vLLM.**
     > **~19.5 GB on disk** (vs ~52 GB BF16). Runs on **any Ampere-or-newer NVIDIA GPU** via the Marlin int4 kernel — no Blackwell required.
 
-    > ✅ **Recommended variant.** Weights are int4, **activations stay BF16**, so accuracy is **near-lossless**
-    > — on the architecturally-identical Qwen3.6-27B this recipe matched BF16 on coding and preserved
-    > generative math/reasoning that the [NVFP4 (W4A4) sibling](https://huggingface.co/dbirks/Qwen3.8-27B-NVFP4-AutoRound)
-    > degrades. Choose the NVFP4 sibling only if you specifically want Blackwell FP4-tensor-core throughput and can accept some reasoning-accuracy cost.
+    > **Weight-only (W4A16).** Weights are int4, **activations stay BF16**, and it runs on **any Ampere-or-newer
+    > GPU** via the Marlin int4 kernel — no Blackwell required. The [NVFP4 (W4A4) sibling](https://huggingface.co/dbirks/Qwen3.8-27B-NVFP4-AutoRound)
+    > targets Blackwell FP4-tensor-core throughput. Accuracy evaluation across both, in the model's default
+    > **thinking mode**, is in progress — see the Evaluation section.
 
     ## Model overview
     - **Base model:** [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) — a hybrid **GatedDeltaNet (linear-attention) + full-attention** multimodal decoder (64 layers: 48 linear-attn + 16 full-attn) with a vision tower; 262K context.
@@ -82,9 +82,9 @@ data:
     ```
 
     ## Evaluation
-    _Recovery numbers are being added — see the effort log at home-k8s #84. Preliminary (architecturally-identical
-    Qwen3.6-27B, same recipe): **W4A16 matched BF16 on HumanEval (0.86) and preserved generative math**
-    (gsm8k 0.855) where the NVFP4 W4A4 sibling collapsed (0.207). This is the highest-accuracy 4-bit option here._
+    _Accuracy evaluation is in progress in the model's default **thinking mode** (effort log: home-k8s #84).
+    Preliminary screening shows this build **within statistical noise of the BF16 base** on GSM8K and HumanEval.
+    Full per-task scores (thinking mode, the model's recommended sampling, with confidence intervals) will be added here._
 
     ## Hardware & format notes
     - Runs on **any Ampere-or-newer NVIDIA GPU** via the Marlin int4 kernel — no Blackwell required.
