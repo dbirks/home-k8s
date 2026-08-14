@@ -53,7 +53,7 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-download-20260815
+  name: qwen38-download-v2-20260815
   namespace: default
 spec:
   backoffLimit: 3
@@ -65,7 +65,7 @@ spec:
       containers:
         - name: download
           image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
-          command: ["/bin/bash","-lc","set -e; export HF_HOME=/workspace/hf; echo START $(date); python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.8-27B', ignore_patterns=['*.pth','original/*','consolidated*'])\"; echo DOWNLOAD_DONE $(date); du -sh /workspace/hf/hub/*Qwen3.8* 2>/dev/null"]
+          command: ["/bin/bash","-lc","set -e; export HF_HOME=/workspace/hf HF_HUB_DISABLE_XET=1; echo START $(date); python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.8-27B', ignore_patterns=['*.pth','original/*','consolidated*'])\"; echo DOWNLOAD_DONE $(date); du -sh /workspace/hf/hub/*Qwen3.8* 2>/dev/null"]
           env:
             - { name: HF_HOME, value: /workspace/hf }
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
