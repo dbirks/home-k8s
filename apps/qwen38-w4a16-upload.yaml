@@ -91,6 +91,28 @@ data:
     - Weight-only (W4A16): activations stay BF16 → maximal accuracy + compatibility, but no activation-quant speedup. For Blackwell FP4 (W4A4) throughput, use the [NVFP4 sibling](https://huggingface.co/dbirks/Qwen3.8-27B-NVFP4-AutoRound).
     - Only the language decoder is quantized; the vision tower stays BF16 (intentional; vLLM requires it).
 
+    ## FAQ
+
+    **Q: Why is this W4A16 build (~19.5 GB) *smaller* than the [NVFP4 (W4A4) sibling](https://huggingface.co/dbirks/Qwen3.8-27B-NVFP4-AutoRound) (~20.6 GB)? W4A16 keeps activations at 16-bit, so shouldn't it be bigger?**
+
+    Activations are **never stored in the file** — they're intermediate values computed at runtime and thrown away, so "A16 vs A4" has **zero** effect on file size. Both files store only 4-bit *weights*. The difference is **scale metadata (group size)**:
+
+    | | weight bits | scale | group size | effective bits/weight |
+    |---|---|---|---|---|
+    | NVFP4 (W4A4) | 4 | FP8 (1 byte) | **16** | **~4.5** |
+    | **this int4 (W4A16)** | 4 | FP16 (2 bytes) | **128** | **~4.125** |
+
+    NVFP4 puts a scale every **16** weights (finer → better FP4 accuracy, but more metadata); int4 puts one every **128** (coarser → less metadata). That ~0.4 bits/weight × ~24 B quantized weights ≈ the ~1 GB gap. **NVFP4 is bigger because of accuracy metadata, not activations.**
+
+    **Q: Hugging Face shows ~6 B parameters for this model — is it really a 6 B model?**
+
+    No — it's the full **27.78 B** model (same as [the base](https://huggingface.co/Qwen/Qwen3.8-27B)). Quantization changes *precision*, never the *number* of parameters. HF's params widget sums stored tensor *elements*, and int4 weights are **packed 8-per-int32**, so ~24 B logical weights are stored as ~3 B int32 elements → it undercounts. Read the `by dtype` breakdown instead (24.33 B in the 4-bit tensors + 3.45 B BF16 = 27.78 B). This quirk affects every quantized model.
+
+    **Q: Which variant should I use — this W4A16 or the NVFP4 sibling?**
+
+    - **Blackwell GPU** (RTX 50-series, B200/B300, DGX Spark) → use the **[NVFP4 (W4A4) sibling](https://huggingface.co/dbirks/Qwen3.8-27B-NVFP4-AutoRound)**: it runs on the FP4 tensor cores (faster compute).
+    - **Anything older** (Ampere/Ada/Hopper, e.g. A100/L40S/RTX 40-series) → use **this W4A16**: int4 weights run via the Marlin kernel on any modern GPU, and those cards have no FP4 cores. The ~1 GB size difference is negligible; choose by whether your GPU has FP4 tensor cores.
+
     ## Reproducibility
     ```python
     from auto_round import AutoRound

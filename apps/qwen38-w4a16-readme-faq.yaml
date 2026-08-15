@@ -1,0 +1,25 @@
+# Push the updated W4A16 README (now with the FAQ: why it's smaller than NVFP4, HF param quirk,
+# which variant to use) to the live public repo. Reuses the w4a16 upload ConfigMap (Flux refreshes it).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-w4a16-readme-faq-20260815
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: readme
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub && python3 -c \"import os; from huggingface_hub import HfApi; HfApi(token=os.environ['HF_TOKEN']).upload_file(path_or_fileobj='/scripts/README.md', path_in_repo='README.md', repo_id=os.environ['HF_REPO'], repo_type='model', commit_message='Add FAQ: why W4A16 is smaller than NVFP4, HF param-count quirk, which variant to use'); print('updated', os.environ['HF_REPO'])\""]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: HF_REPO, value: "dbirks/Qwen3.8-27B-W4A16-AutoRound" }
+          resources: { requests: { cpu: "1", memory: 1Gi }, limits: { cpu: "2", memory: 3Gi } }
+          volumeMounts: [{ name: scripts, mountPath: /scripts }]
+      volumes:
+        - { name: scripts, configMap: { name: qwen38-w4a16-upload-scripts, defaultMode: 0755 } }
