@@ -27,17 +27,16 @@ data:
 
     # Qwen3.8-27B-NVFP4-AutoRound
 
-    > **NVFP4 (4-bit W4A4) quantization of [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B),
-    > produced with [Intel AutoRound](https://github.com/intel/auto-round) and packaged in
-    > [compressed-tensors](https://github.com/neuralmagic/compressed-tensors) for vLLM on NVIDIA Blackwell (FP4 tensor cores).**
-    > Text-only quant: the language decoder's high-volume projections are NVFP4; the GatedDeltaNet
-    > recurrence-control projections, the vision tower, the MTP head, and `lm_head` stay BF16.
-    > **~20.6 GB on disk** (vs ~52 GB BF16).
+    An NVFP4 (4-bit, W4A4) quantization of [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), made with
+    [Intel AutoRound](https://github.com/intel/auto-round) and packaged in
+    [compressed-tensors](https://github.com/neuralmagic/compressed-tensors) for vLLM. It's a text-only quant: the
+    language decoder's high-volume projections are NVFP4, while the GatedDeltaNet recurrence-control projections
+    (`in_proj_a` / `in_proj_b`), the vision tower, the MTP head, and `lm_head` stay in BF16. It's about 20.6 GB on
+    disk, down from roughly 52 GB at BF16.
 
-    > **Two variants published.** This **NVFP4 (W4A4)** build targets **Blackwell FP4 tensor-core throughput**.
-    > A weight-only **[`Qwen3.8-27B-W4A16-AutoRound`](https://huggingface.co/dbirks/Qwen3.8-27B-W4A16-AutoRound)**
-    > sibling (int4 weights, BF16 activations) runs on **any Ampere-or-newer GPU** via Marlin. Accuracy evaluation
-    > across both — in the model's default **thinking mode** — is in progress; see the Evaluation section.
+    This build is aimed at NVIDIA Blackwell, where the FP4 tensor cores run W4A4 natively. On an older GPU, the
+    weight-only [Qwen3.8-27B-W4A16-AutoRound](https://huggingface.co/dbirks/Qwen3.8-27B-W4A16-AutoRound) sibling is
+    the better fit. Accuracy notes are in the Evaluation section below.
 
     ## Model overview
     - **Base model:** [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) — a hybrid **GatedDeltaNet (linear-attention) + full-attention** multimodal decoder (64 layers: 48 linear-attn + 16 full-attn) with a vision tower; 262K context.
@@ -90,11 +89,16 @@ data:
     ```
 
     ## Evaluation
-    _Accuracy evaluation is in progress in the model's default **thinking mode** (effort log: home-k8s #84).
-    Preliminary screening shows this NVFP4 build **within statistical noise of the BF16 base** on GSM8K and
-    HumanEval — no meaningful accuracy gap has been established. Full per-task scores (thinking mode, the model's
-    recommended sampling, with confidence intervals) will be added here. Earlier no-CoT screening numbers were
-    withdrawn as an eval-methodology artifact, not a property of this quant._
+
+    Measured in the model's default thinking mode with its recommended sampling (temperature 1.0, top-p 0.95,
+    top-k 20), using EleutherAI lm-evaluation-harness. Effort log: home-k8s #84.
+
+    | Task | BF16 base | This (NVFP4 W4A4) |
+    |---|---|---|
+    | GSM8K (full 1319, thinking) | 0.911 ±0.015 | 0.905 ±0.016 |
+
+    On GSM8K the quant lands inside the BF16 base's confidence interval, so there's no measurable accuracy loss.
+    HumanEval and MMLU-Pro are still running and will be added here.
 
     ## Limitations
     - W4A4 quantizes activations as well as weights. If you want weight-only (BF16 activations) or need a non-Blackwell GPU, use the [W4A16 sibling](https://huggingface.co/dbirks/Qwen3.8-27B-W4A16-AutoRound). Accuracy differences between the two are being measured (see Evaluation) and are not yet established.
