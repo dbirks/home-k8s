@@ -1,0 +1,45 @@
+# Patch config.json on both live repos: add the 8 mtp.* Linear modules to quantization_config.ignore
+# so vLLM builds the MTP head as BF16 (matching the checkpoint's fc.weight) and --speculative-config
+# mtp loads. Metadata-only (no re-quant). Root cause: MTP spec-decode failed with "no fc.weight ...
+# available fc.weight_packed" because mtp wasn't marked unquantized. See user-reported error + #84.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-mtp-ignore-patch-20260815
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: patch
+          image: python:3.12-slim
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              pip install --no-cache-dir -q huggingface_hub
+              python3 - <<'PY'
+              import os, json
+              from huggingface_hub import HfApi, hf_hub_download
+              api = HfApi(token=os.environ["HF_TOKEN"])
+              MTP = ["mtp.fc","mtp.layers.0.mlp.down_proj","mtp.layers.0.mlp.gate_proj","mtp.layers.0.mlp.up_proj",
+                     "mtp.layers.0.self_attn.k_proj","mtp.layers.0.self_attn.o_proj","mtp.layers.0.self_attn.q_proj","mtp.layers.0.self_attn.v_proj"]
+              for repo in ["dbirks/Qwen3.8-27B-NVFP4-AutoRound","dbirks/Qwen3.8-27B-W4A16-AutoRound"]:
+                  p = hf_hub_download(repo, "config.json", token=os.environ["HF_TOKEN"])
+                  c = json.load(open(p))
+                  qc = c.get("quantization_config") or c.get("text_config",{}).get("quantization_config")
+                  ign = qc.setdefault("ignore", [])
+                  added = [m for m in MTP if m not in ign]
+                  ign.extend(added)
+                  json.dump(c, open("config.json","w"), indent=2)
+                  api.upload_file(path_or_fileobj="config.json", path_in_repo="config.json", repo_id=repo, repo_type="model",
+                      commit_message="Add mtp.* to quantization_config.ignore — MTP head kept BF16 so --speculative-config mtp loads")
+                  print(f"PATCHED {repo}: added {len(added)} mtp modules, ignore now {len(ign)}", flush=True)
+              print("DONE")
+              PY
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+          resources: { requests: { cpu: "1", memory: 1Gi }, limits: { cpu: "2", memory: 3Gi } }
