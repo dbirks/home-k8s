@@ -1,0 +1,112 @@
+# Qwen3.8-27B thinking-mode eval — FULL run (corrected after the smoke gate, see #84).
+# Smoke validated the plumbing + gave a preliminary read (all variants ~equal: gsm8k thinking ~0.85,
+# mmlu_pro ~0.79). Two fixes applied here:
+#   (1) gsm8k: report flexible-extract (strict-match's [invalid] in chat mode was a false-alarm in the gate).
+#   (2) humaneval_instruct: run with enable_thinking=False — the instruct gen_prefix lands inside the
+#       prefilled <think> block and the code-extract fails in thinking mode (fence present, pass@1~0).
+# Task-outer ordering so the HEADLINE (full-split gsm8k, apples-to-apples w/ published NVFP4 numbers)
+# lands first for all 3 variants, then fast humaneval, then the slow mmlu_pro last. No smoke gate.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-eval-thinking-full-scripts
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/workspace/hf TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1 HF_ALLOW_CODE_EVAL=1
+    PY="$(command -v python3 || command -v python)"
+    OUT=/workspace/eval/qwen38-thinking/full2; mkdir -p "$OUT"
+    "$PY" -m pip install --no-cache-dir "lm-eval==0.4.12" 2>&1 | tail -1
+    "$PY" -c "import lm_eval; print('lm-eval', lm_eval.__version__)"
+
+    COMMON_BASE="dtype=auto,max_model_len=40960,gpu_memory_utilization=0.9,enforce_eager=True,trust_remote_code=True,seed=1234"
+    THINK_BASE="$COMMON_BASE,enable_thinking=True,think_end_token=</think>,max_gen_toks=32768"
+    NOTHINK_BASE="$COMMON_BASE,enable_thinking=False,max_gen_toks=4096"
+    SAMP="do_sample=True,temperature=1.0,top_p=0.95,top_k=20"
+    COMMON="--apply_chat_template --fewshot_as_multiturn --log_samples --batch_size auto"
+
+    resolve () { local M="$1"; if [ -d "$M" ] && [ ! -f "$M/config.json" ]; then M=$(dirname "$(find "$M" -name config.json 2>/dev/null | sort | head -1)"); fi; echo "$M"; }
+    run () { # key model base tasks limit nfs extra
+      local key="$1" M="$2" base="$3" tasks="$4" lim="$5" nfs="$6" extra="$7"
+      local la=""; [ -n "$lim" ] && la="--limit $lim"; local na=""; [ -n "$nfs" ] && na="--num_fewshot $nfs"
+      echo "=== [$(date)] $key :: $tasks (limit=${lim:-full} nfs=${nfs:-default}) ==="
+      timeout 36000 "$PY" -m lm_eval --model vllm --model_args "pretrained=$M,$base" \
+        --tasks "$tasks" $la $na $COMMON $extra --gen_kwargs "$SAMP,max_gen_toks=${MAXGEN:-32768}" \
+        --output_path "$OUT/$key" 2>&1 | tee -a "$OUT/$key.log" | tail -14
+    }
+
+    declare -A P
+    while IFS='|' read -r key path; do [ -z "$key" ] && continue; P[$key]="$(resolve "$path")"; done <<< "$MODELS"
+
+    echo "########## HEADLINE: gsm8k full 1319, thinking, 0-shot (flexible-extract) ##########"
+    for k in "${!P[@]}"; do MAXGEN=32768 run "$k-math" "${P[$k]}" "$THINK_BASE" "gsm8k" "" "0" ""; done
+    echo "########## CODE: humaneval_instruct, thinking OFF ##########"
+    for k in "${!P[@]}"; do MAXGEN=4096 run "$k-code" "${P[$k]}" "$NOTHINK_BASE" "humaneval_instruct" "" "" "--confirm_run_unsafe_code"; done
+    echo "########## KNOWLEDGE: mmlu_pro limit 100/subtask, thinking (slow, last) ##########"
+    for k in "${!P[@]}"; do MAXGEN=32768 run "$k-know" "${P[$k]}" "$THINK_BASE" "mmlu_pro" "100" "" ""; done
+
+    echo "=== [$(date)] ALL DONE ==="; "$PY" /scripts/summ.py "$OUT"
+  summ.py: |
+    #!/usr/bin/env python3
+    import glob, json, sys
+    ROOT = sys.argv[1] if len(sys.argv) > 1 else "/workspace/eval/qwen38-thinking/full2"
+    KEEP = ("acc", "exact_match", "pass@")
+    rows = {}
+    for f in sorted(glob.glob(f"{ROOT}/**/results_*.json", recursive=True)):
+        try: d = json.load(open(f))
+        except Exception as e: print("err", f, e); continue
+        run = f.split(ROOT.rstrip("/") + "/")[1].split("/")[0]
+        for t, v in d.get("results", {}).items():
+            for k, x in v.items():
+                if not isinstance(x, float) or "stderr" in k: continue
+                if not any(s in k for s in KEEP): continue
+                se = v.get(k.replace(",", "_stderr,", 1) if "," in k else k + "_stderr")
+                rows.setdefault(run, {})[f"{t}/{k}"] = (x, se if isinstance(se, float) else None)
+    for run in sorted(rows):
+        print("==", run)
+        for m, (val, se) in sorted(rows[run].items()):
+            ci = f"  ±{1.96*se:.4f}" if se else ""
+            print(f"    {m:52s} {val:.4f}{ci}")
+    print("\nNOTE: gsm8k -> flexible-extract. mmlu_pro is limit-100/subtask (weight_by_size) — not full-split comparable.")
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-eval-thinking-full2-20260815
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 108000
+  template:
+    metadata:
+      labels: { app: qwen38-eval-thinking }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: eval
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - name: MODELS
+              value: |
+                w4a16|/workspace/runs/Qwen3.8-27B-W4A16-c1w4a16-screen/Qwen3.8-27B-w4g128
+                nvfp4|/workspace/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16
+                bf16|Qwen/Qwen3.8-27B
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi }
+            requests: { cpu: "4", memory: 20Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen38-eval-thinking-full-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
