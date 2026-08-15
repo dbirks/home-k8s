@@ -84,7 +84,7 @@ data:
     ## Evaluation
 
     Measured in the model's default thinking mode with its recommended sampling (temperature 1.0, top-p 0.95,
-    top-k 20), using EleutherAI lm-evaluation-harness. Effort log: home-k8s #84.
+    top-k 20), using EleutherAI lm-evaluation-harness.
 
     | Task | BF16 base | This (int4 W4A16) |
     |---|---|---|
@@ -131,7 +131,6 @@ data:
     ar.quantize_and_save(output_dir="Qwen3.8-27B-W4A16-AutoRound", format="llm_compressor")
     ```
     Toolchain: auto-round 0.15.0, transformers-from-source (qwen3_5 arch), compressed-tensors, torch 2.13+cu130.
-    Full effort log: home-k8s #84 (+ #87 for the Qwen3.6 recipe this is based on).
 
     ## Citation
     ```bibtex
