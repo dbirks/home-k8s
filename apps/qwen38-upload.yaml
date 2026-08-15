@@ -96,9 +96,12 @@ data:
     | Task | BF16 base | This (NVFP4 W4A4) |
     |---|---|---|
     | GSM8K (full 1319, thinking) | 0.911 ±0.015 | 0.905 ±0.016 |
+    | HumanEval (pass@1, instruct) | 0.939 ±0.037 | 0.927 ±0.040 |
+    | MMLU-Pro (100/subject, thinking) | 0.819 ±0.020 | 0.796 ±0.021 |
 
-    On GSM8K the quant lands inside the BF16 base's confidence interval, so there's no measurable accuracy loss.
-    HumanEval and MMLU-Pro are still running and will be added here.
+    Across all three tasks the quant lands inside the BF16 base's confidence interval, so there's no measurable
+    accuracy loss from the NVFP4 quantization. (MMLU-Pro here is 100 questions per subject, so it's an internal
+    reference against our own BF16 baseline, not directly comparable to a full-split MMLU-Pro number elsewhere.)
 
     ## Limitations
     - W4A4 quantizes activations as well as weights. If you want weight-only (BF16 activations) or need a non-Blackwell GPU, use the [W4A16 sibling](https://huggingface.co/dbirks/Qwen3.8-27B-W4A16-AutoRound). Accuracy differences between the two are being measured (see Evaluation) and are not yet established.

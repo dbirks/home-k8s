@@ -89,9 +89,12 @@ data:
     | Task | BF16 base | This (int4 W4A16) |
     |---|---|---|
     | GSM8K (full 1319, thinking) | 0.911 ±0.015 | 0.917 ±0.015 |
+    | HumanEval (pass@1, instruct) | 0.939 ±0.037 | 0.957 ±0.031 |
+    | MMLU-Pro (100/subject, thinking) | 0.819 ±0.020 | 0.826 ±0.019 |
 
-    On GSM8K the quant matches the BF16 base within the confidence interval, so there's no measurable accuracy
-    loss. HumanEval and MMLU-Pro are still running and will be added here.
+    Across all three tasks the quant matches the BF16 base within the confidence interval, so there's no
+    measurable accuracy loss. (MMLU-Pro here is 100 questions per subject, so it's an internal reference against
+    our own BF16 baseline, not directly comparable to a full-split MMLU-Pro number elsewhere.)
 
     ## Hardware & format notes
     - Runs on **any Ampere-or-newer NVIDIA GPU** via the Marlin int4 kernel — no Blackwell required.
