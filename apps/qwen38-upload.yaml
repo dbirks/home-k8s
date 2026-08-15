@@ -50,7 +50,7 @@ data:
     - **Quantized:** the 48 GatedDeltaNet layers' `in_proj_qkv` / `in_proj_z` / `out_proj` + all MLP `gate/up/down` + the 16 full-attention layers' `q/k/v/o` projections.
     - **Kept BF16:** `in_proj_a`, `in_proj_b`, `visual.*`, `mtp`, `lm_head`.
     - **Calibration:** `NeelNanda/pile-10k`, 128 samples, seqlen 2048, 200 tuning iters (screen recipe).
-    - **Hardware:** single NVIDIA RTX PRO 6000 Blackwell 96 GB (SM120); peak ~42 GB VRAM, ~13.6 GB host RAM.
+    - **Hardware:** single NVIDIA RTX PRO 6000 Blackwell 96 GB (SM120); peak 42 GB VRAM, 13.6 GB host RAM.
 
     ## Deployment (vLLM)
     vLLM auto-detects the NVFP4 scheme from `config.json` — no quantization flag needed. Serves as
@@ -102,7 +102,7 @@ data:
 
     ## Limitations
     - W4A4 quantizes activations as well as weights. If you want weight-only (BF16 activations) or need a non-Blackwell GPU, use the [W4A16 sibling](https://huggingface.co/dbirks/Qwen3.8-27B-W4A16-AutoRound). Accuracy differences between the two are being measured (see Evaluation) and are not yet established.
-    - NVFP4 requires **NVIDIA Blackwell (SM100/SM120)** FP4 tensor cores; no speedup on Ada/Hopper (falls back to Marlin, ~2× slower).
+    - NVFP4 requires **NVIDIA Blackwell (SM100/SM120)** FP4 tensor cores; no speedup on Ada/Hopper (falls back to Marlin, about 2x slower).
     - Only the language decoder is quantized — vision tower is BF16 (intentional; vLLM requires it).
 
     ## Reproducibility

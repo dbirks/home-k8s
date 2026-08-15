@@ -49,7 +49,7 @@ data:
     - **Quantized:** the 48 GatedDeltaNet layers' `in_proj_qkv` / `in_proj_z` / `out_proj` + all MLP `gate/up/down` + the 16 full-attention layers' `q/k/v/o` projections.
     - **Kept BF16:** `in_proj_a`, `in_proj_b`, `visual.*`, `mtp`, `lm_head`.
     - **Calibration:** `NeelNanda/pile-10k`, 128 samples, seqlen 2048, 200 tuning iters (screen recipe).
-    - **Cost:** ~35 minutes on a single 96 GB Blackwell GPU; peak ~24 GB VRAM, ~26 GB host RAM.
+    - **Cost:** about 35 minutes on a single 96 GB Blackwell GPU; peak 24 GB VRAM, 26 GB host RAM.
 
     ## Deployment (vLLM)
     vLLM auto-detects the int4 scheme from `config.json` — no quantization flag needed. Serves as `Qwen3_5ForConditionalGeneration`.

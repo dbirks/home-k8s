@@ -3,7 +3,7 @@
 ---
 apiVersion: batch/v1
 kind: Job
-metadata: { name: qwen38-nvfp4-card-refresh-20260815, namespace: default }
+metadata: { name: qwen38-nvfp4-card-refresh-v2-20260815, namespace: default }
 spec:
   backoffLimit: 2
   activeDeadlineSeconds: 1800
@@ -24,7 +24,7 @@ spec:
 ---
 apiVersion: batch/v1
 kind: Job
-metadata: { name: qwen38-w4a16-card-refresh-20260815, namespace: default }
+metadata: { name: qwen38-w4a16-card-refresh-v2-20260815, namespace: default }
 spec:
   backoffLimit: 2
   activeDeadlineSeconds: 1800
