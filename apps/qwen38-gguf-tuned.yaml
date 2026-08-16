@@ -1,0 +1,96 @@
+# Phase Q finisher — the AutoRound-TUNED low-bit GGUFs (q3_k_m, q2_k_s) that the main job died on
+# (likely OOM during iters=200 tuning). Conservative memory: nsamples 64, seqlen 1024, 44Gi limit.
+# Reuses the MTP-stripped base + the already-built RTN ladder (rtn_* dirs). After tuning, collects
+# EVERYTHING into flat bartowski-style names + baseline + mmproj + RESULTS + quant.done (#89).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-gguf-tuned-script
+  namespace: default
+data:
+  tuned_export.py: |
+    #!/usr/bin/env python3
+    import sys, glob
+    fmt = sys.argv[1]; outdir = sys.argv[2]
+    from auto_round import AutoRound
+    ar = AutoRound(model="/dataset/base/Qwen3.8-27B-nomtp", scheme="W4A16", device_map=0,
+                   trust_remote_code=True, iters=200, dataset="NeelNanda/pile-10k",
+                   nsamples=64, seqlen=1024)
+    ar.quantize_and_save(output_dir=outdir, format="gguf:" + fmt)
+    g = glob.glob(outdir + "/**/*.gguf", recursive=True)
+    print("TUNED DONE", fmt, "->", g, flush=True)
+    if not g:
+        print("NO GGUF"); sys.exit(3)
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export TMPDIR=/dataset/tmp TMP=/dataset/tmp TEMP=/dataset/tmp XDG_CACHE_HOME=/dataset/tmp
+    mkdir -p /dataset/tmp
+    export HF_HOME=/data TOKENIZERS_PARALLELISM=false PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    OUT=/dataset/qwen38-gguf; RES=$OUT/RESULTS.md; MODELNAME=Qwen3.8-27B
+    pip install -q --root-user-action ignore auto-round gguf 2>&1 | tail -1
+    [ -f /dataset/base/Qwen3.8-27B-nomtp/config.json ] || { echo "no nomtp base"; exit 2; }
+
+    for f in q3_k_m q2_k_s; do
+      echo "=== [$(date)] TUNED iters=200 $f (nsamples=64 seqlen=1024) ==="
+      python3 /scripts/tuned_export.py "$f" "$OUT/tuned2_$f" 2>&1 | tee -a "$OUT/phaseQ_tuned.log" | tail -12
+    done
+    test -n "$(find "$OUT/tuned2_q3_k_m" -name '*Q3_K_M*.gguf' 2>/dev/null)" || { echo "!!! TUNED q3 FAILED"; exit 3; }
+
+    echo "=== [$(date)] collect full ladder -> flat names ==="
+    declare -A PICK
+    PICK[Q4_K_M]="$OUT/rtn_q4_k_m"; PICK[Q5_K_M]="$OUT/rtn_q5_k_m"; PICK[Q6_K]="$OUT/rtn_q6_k"
+    PICK[Q8_0]="$OUT/rtn_q8_0"; PICK[Q3_K_M]="$OUT/tuned2_q3_k_m"; PICK[Q2_K_S]="$OUT/tuned2_q2_k_s"
+    for q in "${!PICK[@]}"; do
+      src=$(find "${PICK[$q]}" -name "*${q}*.gguf" 2>/dev/null | head -1)
+      [ -n "$src" ] && cp -f "$src" "$OUT/${MODELNAME}-${q}.gguf" && echo "  $q <- $(basename "$src")"
+    done
+    b=$(find "$OUT/rtn_q3_k_m" -name '*Q3_K_M*.gguf' 2>/dev/null | head -1)
+    [ -n "$b" ] && cp -f "$b" "$OUT/_baseline-Q3_K_M-rtn.gguf"
+    mm=$(find "$OUT"/rtn_q4_k_m -name 'mmproj*.gguf' 2>/dev/null | head -1)
+    [ -n "$mm" ] && cp -f "$mm" "$OUT/mmproj-${MODELNAME}-f16.gguf" && echo "  mmproj <- $(basename "$mm")"
+    {
+      echo ""; echo "## GGUF sizes ($(date -u +%FT%TZ))"
+      echo "| file | size |"; echo "|---|---|"
+      for f in "$OUT"/${MODELNAME}-*.gguf "$OUT"/mmproj-*.gguf; do [ -f "$f" ] && printf "| %s | %s |\n" "$(basename "$f")" "$(du -h "$f"|cut -f1)"; done
+    } >> "$RES"
+    echo "=== RESULTS ==="; cat "$RES"
+    touch "$OUT/quant.done"
+    echo "=== [$(date)] Phase Q FINISHED (tuned + collect) ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-gguf-tuned-20260816
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 43200
+  template:
+    metadata:
+      labels: { app: qwen38-gguf-tuned }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: tuned
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: HF_HUB_DISABLE_XET, value: "1" }
+          resources:
+            limits: { nvidia.com/gpu: 1, memory: 44Gi }
+            requests: { cpu: "6", memory: 20Gi }
+          volumeMounts:
+            - { name: dataset, mountPath: /dataset }
+            - { name: models, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: dataset, persistentVolumeClaim: { claimName: dspark-dataset-hdd } }
+        - { name: models, persistentVolumeClaim: { claimName: vllm-models } }
+        - { name: scripts, configMap: { name: qwen38-gguf-tuned-script, defaultMode: 0755 } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }
