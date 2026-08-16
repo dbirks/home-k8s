@@ -1,0 +1,106 @@
+# PARKED (.hold) — end-to-end VISION smoke test of our Qwen3.8-27B NVFP4 AutoRound quant.
+# Launch (un-hold) only when the GPU is free (after GGUF Phase Q). Serves the LOCAL NVFP4 copy
+# already on the node (no download), generates a synthetic image (known shapes/colors), sends it
+# through the OpenAI vision API, and checks the model actually describes it — proving the vision
+# tower + processor load and run on this vLLM image (also validates the processor_config caveat).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-vision-test-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data TOKENIZERS_PARALLELISM=false
+    MODEL=/workspace/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16
+    [ -f "$MODEL/config.json" ] || { echo "NO LOCAL NVFP4 MODEL at $MODEL"; ls /workspace/runs 2>/dev/null; exit 2; }
+    pip install -q --root-user-action ignore pillow requests 2>&1 | tail -1
+
+    echo "=== [$(date)] serve NVFP4 (vision enabled) ==="
+    vllm serve "$MODEL" --served-model-name vtest --host 0.0.0.0 --port 8000 \
+        --trust-remote-code --max-model-len 8192 --kv-cache-dtype fp8_e4m3 \
+        --gpu-memory-utilization 0.90 --limit-mm-per-prompt '{"image":2}' \
+        --max-num-seqs 4 > /tmp/vllm.log 2>&1 &
+    VP=$!; trap 'kill $VP 2>/dev/null' EXIT
+    for i in $(seq 1 300); do
+        curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1 && { echo "healthy after $((i*10))s"; break; }
+        kill -0 $VP 2>/dev/null || { echo "vLLM DIED:"; tail -80 /tmp/vllm.log; exit 1; }
+        [ "$i" -eq 300 ] && { echo "serve timeout"; tail -60 /tmp/vllm.log; exit 1; }
+        sleep 10
+    done
+
+    echo "=== generate a synthetic test image (red square + blue circle on white, text 'K8S') ==="
+    python3 - <<'PY'
+    from PIL import Image, ImageDraw, ImageFont
+    import base64, io, json
+    img = Image.new("RGB",(512,512),"white")
+    d = ImageDraw.Draw(img)
+    d.rectangle([60,60,220,220], fill="red")           # red square top-left
+    d.ellipse([300,300,460,460], fill="blue")          # blue circle bottom-right
+    d.text((180,250), "K8S", fill="black")             # the text K8S in the middle
+    buf = io.BytesIO(); img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    open("/tmp/img.b64","w").write(b64)
+    print("image bytes:", buf.tell())
+    PY
+
+    echo "=== send image to the model ==="
+    python3 - <<'PY'
+    import json, requests
+    b64 = open("/tmp/img.b64").read()
+    payload = {
+      "model":"vtest","max_tokens":256,"temperature":0.2,
+      "messages":[{"role":"user","content":[
+        {"type":"text","text":"Look at this image. List every shape you see, its color, and read any text. Be specific."},
+        {"type":"image_url","image_url":{"url":f"data:image/png;base64,{b64}"}}
+      ]}]
+    }
+    r = requests.post("http://127.0.0.1:8000/v1/chat/completions", json=payload, timeout=180)
+    print("HTTP", r.status_code)
+    if r.status_code != 200:
+        print("ERROR BODY:", r.text[:1500]); raise SystemExit(3)
+    ans = r.json()["choices"][0]["message"]["content"]
+    print("=== MODEL ANSWER ===\n"+ans+"\n====================")
+    low = ans.lower()
+    hits = [w for w in ["red","blue","square","circle","k8s"] if w in low]
+    print("KEYWORD HITS:", hits, f"({len(hits)}/5)")
+    print("VISION TEST:", "PASS" if len(hits) >= 3 else "WEAK/FAIL")
+    PY
+    echo "=== [$(date)] vision test done ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-vision-test-20260816
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels: { app: qwen38-vision-test }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vtest
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+            - { name: VLLM_NVFP4_GEMM_BACKEND, value: "flashinfer-cutlass" }
+            - { name: PYTORCH_CUDA_ALLOC_CONF, value: "expandable_segments:True" }
+          resources:
+            limits: { nvidia.com/gpu: 1, memory: 32Gi }
+            requests: { cpu: "4", memory: 16Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: models, mountPath: /data }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: models, persistentVolumeClaim: { claimName: vllm-models } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }
