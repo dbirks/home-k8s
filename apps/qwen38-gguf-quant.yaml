@@ -98,30 +98,31 @@ data:
     python3 /scripts/build_nomtp.py 2>&1 | tee -a "$OUT/phaseQ.log"
     [ -f "$NOMTP/config.json" ] || { echo "nomtp build failed"; exit 2; }
 
-    run_export () { # iters outdir formatlist nsamples
-      echo "=== [$(date)] export iters=$1 -> $3 ==="
-      python3 /scripts/gexport.py "$1" "$2" "$3" "$4" "$NOMTP" 2>&1 | tee -a "$OUT/phaseQ.log" | tail -20
+    run_one () { # iters format nsamples outdir  (ONE format per call — multi-format packs identical/wrong)
+      echo "=== [$(date)] export iters=$1 gguf:$2 -> $4 ==="
+      python3 /scripts/gexport.py "$1" "$4" "gguf:$2" "$3" "$NOMTP" 2>&1 | tee -a "$OUT/phaseQ.log" | tail -15
     }
 
-    rm -rf "$OUT/_smoke"
-    run_export 0 "$OUT/_smoke" "gguf:q4_k_m" 2
-    test -n "$(find "$OUT/_smoke" -name '*.gguf' 2>/dev/null)" || { echo "!!! SMOKE FAILED"; exit 3; }
-    echo "SMOKE OK"
+    # RTN ladder — q4_k_m first (headline + validates the pipeline). Each is a separate call.
+    for f in q4_k_m q5_k_m q6_k q8_0 q3_k_m; do run_one 0 "$f" 2 "$OUT/rtn_$f"; done
+    test -n "$(find "$OUT/rtn_q4_k_m" -name '*Q4_K_M*.gguf' 2>/dev/null)" || { echo "!!! Q4_K_M FAILED"; exit 3; }
+    echo "RTN LADDER OK"
+    # TUNED low-bit — AutoRound's edge at 2-3 bit (iters=200)
+    for f in q3_k_m q2_k_s; do run_one 200 "$f" 128 "$OUT/tuned_$f"; done
 
-    run_export 0 "$OUT/ladder" "gguf:q4_k_m,gguf:q5_k_m,gguf:q6_k,gguf:q8_0" 2
-    run_export 0 "$OUT/rtn" "gguf:q3_k_m" 2
-    run_export 200 "$OUT/tuned" "gguf:q2_k_s,gguf:q3_k_m" 128
-
-    echo "=== [$(date)] collecting -> flat names ==="
-    declare -A SEEN
-    for src in $(find "$OUT/tuned" "$OUT/ladder" -name '*.gguf' 2>/dev/null); do
-      q=$(echo "$src" | grep -oiE "q[0-9]_k_[sml]|q[0-9]_k|q[0-9]_[01]|q8_0" | head -1 | tr 'a-z' 'A-Z')
-      [ -z "$q" ] && continue
-      [ -n "${SEEN[$q]:-}" ] && continue; SEEN[$q]=1
-      cp -f "$src" "$OUT/${MODELNAME}-${q}.gguf" && echo "  $q"
+    echo "=== [$(date)] collecting -> flat bartowski-style names ==="
+    declare -A PICK
+    PICK[Q4_K_M]="$OUT/rtn_q4_k_m"; PICK[Q5_K_M]="$OUT/rtn_q5_k_m"; PICK[Q6_K]="$OUT/rtn_q6_k"
+    PICK[Q8_0]="$OUT/rtn_q8_0"; PICK[Q3_K_M]="$OUT/tuned_q3_k_m"; PICK[Q2_K_S]="$OUT/tuned_q2_k_s"
+    for q in "${!PICK[@]}"; do
+      src=$(find "${PICK[$q]}" -name "*${q}*.gguf" 2>/dev/null | head -1)
+      [ -n "$src" ] && cp -f "$src" "$OUT/${MODELNAME}-${q}.gguf" && echo "  $q <- $(basename "$src")"
     done
-    rtnq3=$(find "$OUT/rtn" -name '*.gguf' 2>/dev/null | head -1)
-    [ -n "$rtnq3" ] && cp -f "$rtnq3" "$OUT/_baseline-Q3_K_M-rtn.gguf"
+    # perplexity-gate baseline (RTN q3) + one vision projector
+    b=$(find "$OUT/rtn_q3_k_m" -name '*Q3_K_M*.gguf' 2>/dev/null | head -1)
+    [ -n "$b" ] && cp -f "$b" "$OUT/_baseline-Q3_K_M-rtn.gguf"
+    mm=$(find "$OUT"/rtn_q4_k_m "$OUT"/rtn_q8_0 -name 'mmproj*.gguf' 2>/dev/null | head -1)
+    [ -n "$mm" ] && cp -f "$mm" "$OUT/mmproj-${MODELNAME}-f16.gguf" && echo "  mmproj <- $(basename "$mm")"
     {
       echo ""; echo "## GGUF sizes ($(date -u +%FT%TZ))"
       echo "| file | size |"; echo "|---|---|"
@@ -134,7 +135,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-gguf-quant-v5-20260816
+  name: qwen38-gguf-quant-v6-20260816
   namespace: default
 spec:
   backoffLimit: 1
