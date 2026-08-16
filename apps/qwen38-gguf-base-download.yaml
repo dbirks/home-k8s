@@ -1,0 +1,55 @@
+# CPU-only download of the Qwen3.8-27B BF16 base to the NVMe quant workspace, so the
+# GPU GGUF-quant job (apps/qwen38-gguf.yaml) doesn't sit idle downloading. Runs alongside
+# the drafter regen (no GPU). Xet disabled (DNS flakiness learned the hard way). Delete after.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-gguf-base-dl-script
+  namespace: default
+data:
+  dl.py: |
+    #!/usr/bin/env python3
+    import os
+    from huggingface_hub import snapshot_download
+    dest = "/workspace/base/Qwen3.8-27B"
+    os.makedirs(dest, exist_ok=True)
+    p = snapshot_download(
+        repo_id="Qwen/Qwen3.8-27B", local_dir=dest,
+        token=os.environ.get("HF_TOKEN"),
+        ignore_patterns=["*.pth", "original/*", "*.gguf"],
+    )
+    # sanity: list safetensors + config
+    import glob
+    st = glob.glob(dest + "/*.safetensors")
+    print(f"DOWNLOAD DONE: {p}  safetensors={len(st)}", flush=True)
+    print("has config.json:", os.path.isfile(dest + "/config.json"), flush=True)
+    print("has mmproj/visual keys (config):", flush=True)
+    print(open(dest + "/config.json").read()[:400], flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-gguf-base-dl-20260816
+  namespace: default
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 21600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub hf_transfer && HF_HUB_ENABLE_HF_TRANSFER=1 HF_HUB_DISABLE_XET=1 python3 /scripts/dl.py"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { cpu: "6", memory: 12Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: scripts, configMap: { name: qwen38-gguf-base-dl-script, defaultMode: 0755 } }
