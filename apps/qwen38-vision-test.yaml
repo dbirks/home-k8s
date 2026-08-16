@@ -73,7 +73,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-vision-test-20260816
+  name: qwen38-vision-test-v2-20260816
   namespace: default
 spec:
   backoffLimit: 1
@@ -99,8 +99,10 @@ spec:
           volumeMounts:
             - { name: workspace, mountPath: /workspace }
             - { name: models, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
             - { name: shm, mountPath: /dev/shm }
       volumes:
         - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
         - { name: models, persistentVolumeClaim: { claimName: vllm-models } }
+        - { name: scripts, configMap: { name: qwen38-vision-test-script, defaultMode: 0755 } }
         - { name: shm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }
