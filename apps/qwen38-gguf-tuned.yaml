@@ -14,9 +14,11 @@ data:
     import sys, glob
     fmt = sys.argv[1]; outdir = sys.argv[2]
     from auto_round import AutoRound
+    # node has NO swap + only ~46Gi RAM; iters=200 tuning OOM'd at nsamples64/seqlen1024.
+    # Minimal calibration to fit host RAM while keeping the tuning (still >> plain RTN).
     ar = AutoRound(model="/dataset/base/Qwen3.8-27B-nomtp", scheme="W4A16", device_map=0,
                    trust_remote_code=True, iters=200, dataset="NeelNanda/pile-10k",
-                   nsamples=64, seqlen=1024)
+                   nsamples=16, seqlen=512, batch_size=1)
     ar.quantize_and_save(output_dir=outdir, format="gguf:" + fmt)
     g = glob.glob(outdir + "/**/*.gguf", recursive=True)
     print("TUNED DONE", fmt, "->", g, flush=True)
@@ -62,7 +64,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-gguf-tuned-20260816
+  name: qwen38-gguf-tuned-v2-20260816
   namespace: default
 spec:
   backoffLimit: 1
@@ -82,7 +84,7 @@ spec:
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
             - { name: HF_HUB_DISABLE_XET, value: "1" }
           resources:
-            limits: { nvidia.com/gpu: 1, memory: 44Gi }
+            limits: { nvidia.com/gpu: 1, memory: 42Gi }
             requests: { cpu: "6", memory: 20Gi }
           volumeMounts:
             - { name: dataset, mountPath: /dataset }
