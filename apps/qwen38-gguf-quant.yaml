@@ -15,22 +15,30 @@ data:
     #!/usr/bin/env python3
     import sys, glob, inspect
     iters = int(sys.argv[1]); outdir = sys.argv[2]; fmt = sys.argv[3]; nsamples = int(sys.argv[4])
-    # --- skip unmappable MTP tensors during GGUF export (qwen3_5 eh_proj) ---
+    # --- skip unmappable MTP tensors during GGUF export (qwen3_5 'model.layers.64.eh_proj') ---
+    # modify_tensors is a GENERATOR (yield from super()); the ValueError raises during ITERATION
+    # (convert.py) and in base.map_tensor_name — so the wrapper MUST be generator-safe.
     from auto_round.export.export_to_gguf.conversion import qwen as QM
+    from auto_round.export.export_to_gguf.conversion import base as BM
     def make_patch(orig):
         def patched(self, *a, **k):
-            try:
-                return orig(self, *a, **k)
-            except ValueError as e:
-                if "Can not map tensor" in str(e):
-                    nm = a[1] if len(a) > 1 else "?"
-                    print("SKIP-MTP-TENSOR:", nm, flush=True); return []
-                raise
+            gen = orig(self, *a, **k)
+            while True:
+                try:
+                    item = next(gen)
+                except StopIteration:
+                    return
+                except ValueError as e:
+                    if "Can not map tensor" in str(e):
+                        print("SKIP-MTP-TENSOR:", a[1] if len(a) > 1 else "?", flush=True); return
+                    raise
+                yield item
         return patched
     npatch = 0
-    for _n, cls in inspect.getmembers(QM, inspect.isclass):
-        if "modify_tensors" in getattr(cls, "__dict__", {}):
-            cls.modify_tensors = make_patch(cls.__dict__["modify_tensors"]); npatch += 1
+    for _mod in (QM, BM):
+        for _n, cls in inspect.getmembers(_mod, inspect.isclass):
+            if "modify_tensors" in getattr(cls, "__dict__", {}):
+                cls.modify_tensors = make_patch(cls.__dict__["modify_tensors"]); npatch += 1
     print(f"patched modify_tensors on {npatch} converter class(es)", flush=True)
     from auto_round import AutoRound
     kw = dict(model="/dataset/base/Qwen3.8-27B", scheme="W4A16", device_map=0,
@@ -97,7 +105,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-gguf-quant-v2-20260816
+  name: qwen38-gguf-quant-v3-20260816
   namespace: default
 spec:
   backoffLimit: 1
