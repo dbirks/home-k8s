@@ -80,6 +80,10 @@ data:
   run.sh: |
     #!/bin/bash
     set -uo pipefail
+    # Keep ALL temp/cache off the NVMe (ephemeral) — the gguf export stages a ~q8-sized temp file
+    # that previously evicted the pod. Point everything at the 2TB HDD.
+    export TMPDIR=/dataset/tmp TMP=/dataset/tmp TEMP=/dataset/tmp XDG_CACHE_HOME=/dataset/tmp
+    mkdir -p /dataset/tmp
     export HF_HOME=/data TOKENIZERS_PARALLELISM=false PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     OUT=/dataset/qwen38-gguf
     RES=$OUT/RESULTS.md
@@ -130,7 +134,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-gguf-quant-v4-20260816
+  name: qwen38-gguf-quant-v5-20260816
   namespace: default
 spec:
   backoffLimit: 1
