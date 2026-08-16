@@ -1,0 +1,129 @@
+# PARKED (.hold) — Phase Q of the AutoRound k-quant GGUF for Qwen3.8-27B (#89).
+# Launch (un-hold) ONLY after: (a) base download done, (b) drafter regen paused (frees GPU).
+# vLLM image = torch + CUDA for AutoRound tuning. GGUF outputs -> HDD (/dataset, 2TB free).
+#
+# Strategy (from #89): AutoRound's iterative tuning only beats plain RTN at 2-3 bit, so we TUNE
+# q2_k_s + q3_k_m (iters=200) and RTN the rest (q4_k_m/q5_k_m/q6_k/q8_0). We also emit an RTN
+# q3_k_m as the apples-to-apples baseline for the perplexity gate (tuned-q3 must beat rtn-q3).
+# First step is a SMOKE test: does AutoRound's GGUF exporter handle the qwen3_5 hybrid arch at all?
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-gguf-quant-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    export HF_HOME=/data TOKENIZERS_PARALLELISM=false PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    BASE=/workspace/base/Qwen3.8-27B
+    OUT=/dataset/qwen38-gguf
+    RES=$OUT/RESULTS.md
+    MODELNAME=Qwen3.8-27B
+    mkdir -p "$OUT"
+
+    echo "=== [$(date)] deps ==="
+    (apt-get update -qq && apt-get install -y --no-install-recommends -qq git) 2>&1 | tail -1
+    pip install -q --root-user-action ignore auto-round gguf 2>&1 | tail -3
+    python3 -c "import auto_round,torch;print('auto_round',getattr(auto_round,'__version__','?'),'torch',torch.__version__,'cuda',torch.cuda.is_available())"
+    [ -f "$BASE/config.json" ] || { echo "NO BASE at $BASE"; exit 2; }
+    echo "base model_type: $(python3 -c "import json;print(json.load(open('$BASE/config.json')).get('model_type'))")"
+
+    # ---------- SMOKE: can AutoRound export a GGUF for qwen3_5 at all? ----------
+    echo "=== [$(date)] SMOKE gguf:q4_k_m (nsamples=2, iters=0) ==="
+    rm -rf "$OUT/_smoke"
+    python3 - <<PY 2>&1 | tail -40
+    from auto_round import AutoRound
+    ar = AutoRound(model="$BASE", scheme="W4A16", nsamples=2, seqlen=512, iters=0,
+                   device_map=0, trust_remote_code=True)
+    ar.quantize_and_save(output_dir="$OUT/_smoke", format="gguf:q4_k_m")
+    PY
+    SMOKE=$(ls -S "$OUT"/_smoke/*.gguf 2>/dev/null | head -1)
+    if [ -z "$SMOKE" ]; then echo "!!! SMOKE FAILED — AutoRound could not export a qwen3_5 GGUF. See trace above."; exit 3; fi
+    echo "SMOKE OK: $SMOKE ($(du -h "$SMOKE" | cut -f1))"
+
+    run_export () {  # $1=iters  $2=output_subdir  $3=format-list
+      python3 - "$1" "$2" "$3" <<'PY' 2>&1 | tail -30
+    import sys
+    from auto_round import AutoRound
+    iters, outdir, fmt = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+    kw = dict(model="/workspace/base/Qwen3.8-27B", scheme="W4A16",
+              device_map=0, trust_remote_code=True, iters=iters)
+    if iters > 0:
+        kw.update(dataset="NeelNanda/pile-10k", nsamples=512, seqlen=2048)
+    ar = AutoRound(**kw)
+    ar.quantize_and_save(output_dir=outdir, format=fmt)
+    print("EXPORT DONE", outdir, fmt)
+    PY
+    }
+
+    echo "=== [$(date)] TUNED (iters=200): q2_k_s + q3_k_m ==="
+    run_export 200 "$OUT/tuned" "gguf:q2_k_s,gguf:q3_k_m"
+    echo "=== [$(date)] RTN baseline (iters=0): q3_k_m (for the perplexity gate) ==="
+    run_export 0 "$OUT/rtn" "gguf:q3_k_m"
+    echo "=== [$(date)] RTN ladder (iters=0): q4_k_m,q5_k_m,q6_k,q8_0 ==="
+    run_export 0 "$OUT/ladder" "gguf:q4_k_m,gguf:q5_k_m,gguf:q6_k,gguf:q8_0"
+
+    # ---------- flatten to bartowski-style names + record sizes ----------
+    echo "=== [$(date)] collecting GGUFs -> flat names ==="
+    shopt -s nullglob
+    declare -A SEEN
+    for src in "$OUT"/tuned/*.gguf "$OUT"/ladder/*.gguf; do
+      q=$(echo "$src" | grep -oiE "q[0-9]_k(_[sml])?|q[0-9]_[01]|q8_0" | head -1 | tr 'a-z' 'A-Z')
+      [ -z "$q" ] && q=$(basename "$src" .gguf)
+      dst="$OUT/${MODELNAME}-${q}.gguf"
+      [ -n "${SEEN[$q]:-}" ] && continue; SEEN[$q]=1
+      cp -f "$src" "$dst" && echo "  $q -> $(basename "$dst")"
+    done
+    # keep the RTN baseline separately for the eval job
+    rtnq3=$(ls -S "$OUT"/rtn/*.gguf 2>/dev/null | head -1)
+    [ -n "$rtnq3" ] && cp -f "$rtnq3" "$OUT/_baseline-Q3_K_M-rtn.gguf"
+
+    {
+      echo ""; echo "## GGUF sizes ($(date -u +%FT%TZ))"
+      echo "| file | size |"; echo "|---|---|"
+      for f in "$OUT"/${MODELNAME}-*.gguf; do printf "| %s | %s |\n" "$(basename "$f")" "$(du -h "$f"|cut -f1)"; done
+    } >> "$RES"
+    echo "=== SIZES ==="; cat "$RES"
+    echo "=== [$(date)] Phase Q complete ==="
+    touch "$OUT/quant.done"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-gguf-quant-20260816
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 43200
+  template:
+    metadata:
+      labels: { app: qwen38-gguf-quant }
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: quant
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+            - { name: HF_HUB_DISABLE_XET, value: "1" }
+            - { name: HF_HUB_ENABLE_HF_TRANSFER, value: "1" }
+          resources:
+            limits: { nvidia.com/gpu: 1 }
+            requests: { cpu: "6", memory: 48Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: models, mountPath: /data }
+            - { name: dataset, mountPath: /dataset }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: models, persistentVolumeClaim: { claimName: vllm-models } }
+        - { name: dataset, persistentVolumeClaim: { claimName: dspark-dataset-hdd } }
+        - { name: scripts, configMap: { name: qwen38-gguf-quant-script, defaultMode: 0755 } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }

@@ -1,0 +1,97 @@
+# PARKED (.hold) — Phase E of the AutoRound k-quant GGUF for Qwen3.8-27B (#89).
+# Launch (un-hold) after Phase Q writes /dataset/qwen38-gguf/quant.done. Uses the official
+# llama.cpp CUDA image (has llama-perplexity, llama-quantize, convert_hf_to_gguf.py).
+# Does: (1) vision mmproj from the base, (2) the PERPLEXITY GATE — tuned Q3_K_M vs the RTN
+# Q3_K_M baseline on wikitext-2 (must be lower to justify publishing the low-bit tuned quants).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-gguf-eval-script
+  namespace: default
+data:
+  run.sh: |
+    #!/bin/bash
+    set -uo pipefail
+    BASE=/workspace/base/Qwen3.8-27B
+    OUT=/dataset/qwen38-gguf
+    RES=$OUT/RESULTS.md
+    MODELNAME=Qwen3.8-27B
+    CONV=$(find / -name convert_hf_to_gguf.py 2>/dev/null | head -1)
+    PPL=$(command -v llama-perplexity || echo /app/llama-perplexity)
+    echo "convert=$CONV  perplexity=$PPL"
+    [ -f "$OUT/quant.done" ] || { echo "Phase Q not done (no quant.done)"; exit 2; }
+
+    # ---------- vision projector (mmproj) ----------
+    echo "=== [$(date)] mmproj (vision) ==="
+    python3 "$CONV" "$BASE" --mmproj --outfile "$OUT/mmproj-${MODELNAME}-f16.gguf" 2>&1 | tail -15 || echo "mmproj export failed (non-fatal, logged)"
+    ls -lh "$OUT"/mmproj-*.gguf 2>/dev/null || echo "no mmproj produced"
+
+    # ---------- wikitext-2 test corpus ----------
+    echo "=== [$(date)] fetch wikitext-2-raw test ==="
+    pip install -q datasets 2>&1 | tail -1
+    python3 - <<'PY'
+    from datasets import load_dataset
+    ds = load_dataset("wikitext","wikitext-2-raw-v1",split="test")
+    open("/tmp/wiki.test.raw","w").write("\n".join(ds["text"]))
+    import os; print("wiki.test.raw bytes:", os.path.getsize("/tmp/wiki.test.raw"))
+    PY
+
+    ppl_of () {  # $1=gguf  -> echoes "final ppl"
+      local m="$1"; local log="/tmp/ppl_$(basename "$m").log"
+      "$PPL" -m "$m" -f /tmp/wiki.test.raw -ngl 99 --ctx-size 512 --chunks 80 > "$log" 2>&1
+      grep -oiE "Final estimate: PPL = [0-9.]+|^\[80\].*= *[0-9.]+" "$log" | tail -1
+      tail -2 "$log"
+    }
+
+    echo "=== [$(date)] PERPLEXITY GATE: tuned Q3_K_M vs RTN Q3_K_M (wikitext-2, 80 chunks) ==="
+    TUNED="$OUT/${MODELNAME}-Q3_K_M.gguf"
+    RTN="$OUT/_baseline-Q3_K_M-rtn.gguf"
+    echo "" >> "$RES"; echo "## Perplexity gate ($(date -u +%FT%TZ)) — wikitext-2-raw, ctx512, 80 chunks" >> "$RES"
+    for tag in "tuned:$TUNED" "rtn-baseline:$RTN"; do
+      name=${tag%%:*}; mdl=${tag##*:}
+      [ -f "$mdl" ] || { echo "MISSING $mdl"; continue; }
+      echo "--- $name: $mdl ---"
+      out=$(ppl_of "$mdl")
+      echo "$out"
+      val=$(echo "$out" | grep -oiE "PPL = [0-9.]+" | grep -oE "[0-9.]+" | tail -1)
+      echo "| $name Q3_K_M | PPL $val |" >> "$RES"
+    done
+    echo "=== RESULTS ==="; cat "$RES"
+    echo "=== [$(date)] Phase E complete ==="
+    touch "$OUT/eval.done"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-gguf-eval-20260816
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 21600
+  template:
+    metadata:
+      labels: { app: qwen38-gguf-eval }
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: eval
+          image: ghcr.io/ggml-org/llama.cpp:full-cuda
+          command: ["/bin/bash", "/scripts/run.sh"]
+          env:
+            - { name: PYTORCH_CUDA_ALLOC_CONF, value: "expandable_segments:True" }
+          resources:
+            limits: { nvidia.com/gpu: 1 }
+            requests: { cpu: "4", memory: 24Gi }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: dataset, mountPath: /dataset }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: dataset, persistentVolumeClaim: { claimName: dspark-dataset-hdd } }
+        - { name: scripts, configMap: { name: qwen38-gguf-eval-script, defaultMode: 0755 } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }

@@ -1,0 +1,172 @@
+# PARKED (.hold) — Phase U of the AutoRound k-quant GGUF for Qwen3.8-27B (#89).
+# Launch (un-hold) ONLY after the perplexity gate passes (tuned Q3_K_M < RTN Q3_K_M).
+# Creates a PRIVATE repo (user instruction) and uploads the flat GGUFs + mmproj + a model card.
+# upload.py fills real file sizes + parses the perplexity numbers from RESULTS.md into the card.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38-gguf-upload-scripts
+  namespace: default
+data:
+  upload.py: |
+    #!/usr/bin/env python3
+    import os, glob, re
+    from huggingface_hub import HfApi
+    OUT = "/dataset/qwen38-gguf"
+    REPO = os.environ["HF_REPO"]; MODELNAME = "Qwen3.8-27B"
+    PRIVATE = os.environ.get("PRIVATE","true").lower() in ("1","true","yes")
+    api = HfApi(token=os.environ["HF_TOKEN"])
+    print(f"account={api.whoami().get('name')} repo={REPO} private={PRIVATE}", flush=True)
+
+    # sizes of the flat quant files
+    files = sorted(glob.glob(f"{OUT}/{MODELNAME}-*.gguf"))
+    def human(n):
+        for u in ("B","KB","MB","GB","TB"):
+            if n < 1024: return f"{n:.1f} {u}"
+            n /= 1024
+        return f"{n:.1f} PB"
+    QNOTE = {
+      "Q2_K_S":"smallest, tuned (AutoRound) — for very tight VRAM",
+      "Q3_K_M":"tuned (AutoRound); best low-bit quality/size trade",
+      "Q4_K_M":"recommended — great size/quality balance",
+      "Q5_K_M":"higher quality, larger",
+      "Q6_K":"near-lossless",
+      "Q8_0":"effectively lossless reference",
+    }
+    rows = []
+    for f in files:
+        b = os.path.basename(f)
+        q = b.replace(f"{MODELNAME}-","").replace(".gguf","")
+        rows.append(f"| `{b}` | {q} | {human(os.path.getsize(f))} | {QNOTE.get(q,'')} |")
+    size_table = "\n".join(rows) if rows else "_(pending)_"
+
+    # perplexity numbers from RESULTS.md
+    ppl = {}
+    rp = f"{OUT}/RESULTS.md"
+    if os.path.isfile(rp):
+        for line in open(rp):
+            m = re.search(r"\|\s*(tuned|rtn-baseline)\s+Q3_K_M\s*\|\s*PPL\s*([0-9.]+)", line)
+            if m: ppl[m.group(1)] = m.group(2)
+    if ppl.get("tuned") and ppl.get("rtn-baseline"):
+        ppl_block = (
+          "Perplexity on wikitext-2-raw (ctx 512, 80 chunks), lower is better:\n\n"
+          "| Q3_K_M build | Perplexity |\n|---|---|\n"
+          f"| AutoRound-tuned (this repo) | {ppl['tuned']} |\n"
+          f"| plain RTN (same base, no tuning) | {ppl['rtn-baseline']} |\n\n"
+          "The AutoRound tuning is what lowers perplexity at 3-bit; the 4-bit-and-up variants are "
+          "produced with plain RTN because tuning gives no measurable benefit there.")
+    else:
+        ppl_block = "_Perplexity numbers are being finalized._"
+
+    readme = f"""---
+    base_model: Qwen/Qwen3.8-27B
+    base_model_relation: quantized
+    pipeline_tag: image-text-to-text
+    library_name: gguf
+    license: apache-2.0
+    language:
+      - en
+    tags:
+      - gguf
+      - llama.cpp
+      - auto-round
+      - k-quant
+      - quantized
+      - qwen3
+    ---
+
+    # Qwen3.8-27B-GGUF-AutoRound
+
+    GGUF k-quants of [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) for llama.cpp / Ollama /
+    LM Studio, with the low-bit variants tuned by [Intel AutoRound](https://github.com/intel/auto-round)
+    (SignRound block reconstruction) rather than plain round-to-nearest. AutoRound's tuning measurably helps
+    at 2-3 bit, where quality is usually hardest to hold; the 4-bit-and-up variants use plain RTN because the
+    tuning makes no measurable difference there.
+
+    This is the llama.cpp lane. For GPU serving with vLLM, see the NVFP4 (Blackwell) and W4A16 (older NVIDIA)
+    siblings.
+
+    ## Files
+
+    | file | quant | size | notes |
+    |---|---|---|---|
+    {size_table}
+
+    A vision projector (`mmproj-{MODELNAME}-f16.gguf`) is included — pair it with any quant above for image input.
+
+    **Don't know which to pick?** Grab `Q4_K_M` — the usual sweet spot of size and quality. On tight VRAM,
+    the AutoRound-tuned `Q3_K_M` (or `Q2_K_S`) is where this repo earns its keep.
+
+    ## Model overview
+    - **Base:** `Qwen/Qwen3.8-27B` — hybrid GatedDeltaNet (linear-attention) + full-attention multimodal decoder (64 layers) with a vision tower; 262K context.
+    - **Format:** GGUF k-quants for llama.cpp (and everything built on it).
+    - **MTP:** the Multi-Token-Prediction tensors are carried through for speculative decoding where supported.
+    - **Tuning:** AutoRound (arXiv:2309.05516) on the 2-3 bit variants; RTN for 4-bit and up.
+
+    ## Usage (llama.cpp)
+    ```bash
+    hf download {REPO} --include "{MODELNAME}-Q4_K_M.gguf" --local-dir ./
+    hf download {REPO} --include "mmproj-{MODELNAME}-f16.gguf" --local-dir ./   # for vision
+    llama-cli -m {MODELNAME}-Q4_K_M.gguf --mmproj mmproj-{MODELNAME}-f16.gguf -p "Describe this image" --image photo.jpg
+    ```
+    Ollama / LM Studio: point them at the downloaded `.gguf` (plus the mmproj for vision).
+
+    ## Evaluation
+    {ppl_block}
+
+    ## Reproducibility
+    ```python
+    from auto_round import AutoRound
+    # tuned low-bit (iters=200); RTN (iters=0) for q4_k_m and up
+    ar = AutoRound("Qwen/Qwen3.8-27B", scheme="W4A16", dataset="NeelNanda/pile-10k",
+                   nsamples=512, seqlen=2048, iters=200, device_map=0, trust_remote_code=True)
+    ar.quantize_and_save("out", format="gguf:q2_k_s,gguf:q3_k_m")
+    ```
+    Vision projector via llama.cpp: `convert_hf_to_gguf.py Qwen/Qwen3.8-27B --mmproj`.
+
+    ## Citation
+    ```bibtex
+    @article{{cheng2023optimize, title={{Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLMs}}, author={{Cheng, Wenhua and others}}, journal={{arXiv:2309.05516}}, year={{2023}}}}
+    ```
+    """
+    readme = "\n".join(l[4:] if l.startswith("    ") else l for l in readme.splitlines()) + "\n"
+    open(f"{OUT}/README.md","w").write(readme)
+    print("README rendered; files to upload:", [os.path.basename(x) for x in files], flush=True)
+
+    api.create_repo(REPO, repo_type="model", private=PRIVATE, exist_ok=True)
+    api.upload_folder(repo_id=REPO, folder_path=OUT, repo_type="model",
+        allow_patterns=[f"{MODELNAME}-*.gguf","mmproj-*.gguf","README.md"],
+        commit_message="AutoRound k-quant GGUF (tuned 2-3bit + RTN ladder) + mmproj + card")
+    info = api.model_info(REPO)
+    print(f"UPLOAD DONE: https://huggingface.co/{REPO}  private={info.private}  files={len(info.siblings)}", flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-gguf-upload-20260816
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 21600
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: upload
+          image: python:3.12-slim
+          command: ["/bin/sh","-c","pip install --no-cache-dir -q huggingface_hub hf_transfer && HF_HUB_ENABLE_HF_TRANSFER=1 python3 /scripts/upload.py"]
+          env:
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } } }
+            - { name: HF_REPO, value: "dbirks/Qwen3.8-27B-GGUF-AutoRound" }
+            - { name: PRIVATE, value: "true" }
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits: { cpu: "4", memory: 8Gi }
+          volumeMounts:
+            - { name: dataset, mountPath: /dataset }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: dataset, persistentVolumeClaim: { claimName: dspark-dataset-hdd } }
+        - { name: scripts, configMap: { name: qwen38-gguf-upload-scripts, defaultMode: 0755 } }
