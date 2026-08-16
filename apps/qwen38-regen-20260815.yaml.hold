@@ -34,7 +34,7 @@ data:
     mkdir -p "$DS" /output/logs
 
     echo "=== [$(date)] serve Qwen3.8-27B NVFP4 (target for on-policy regen) ==="
-    vllm serve "$MODEL" --served-model-name main --host 0.0.0.0 --port 8001 \
+    vllm serve "$MODEL" --served-model-name main "$MODEL" --host 0.0.0.0 --port 8001 \
         --gpu-memory-utilization 0.90 --max-model-len 12288 --dtype auto \
         --trust-remote-code --kv-cache-dtype fp8_e4m3 --max-num-seqs 32 \
         --max-num-batched-tokens 32768 --no-enable-prefix-caching \
@@ -54,9 +54,9 @@ data:
         echo "=== [$(date)] regen $ds (limit $lim) ==="
         python3 "$SCRIPTS/response_regeneration/script.py" \
             --dataset "$ds" --limit "$lim" \
-            --endpoint http://127.0.0.1:8001/v1/chat/completions --model main \
+            --endpoint http://127.0.0.1:8001/v1/chat/completions --model "$MODEL" \
             --max-tokens 8192 --concurrency 32 \
-            --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -4
+            --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -20
     done
     kill $VP 2>/dev/null; wait $VP 2>/dev/null || true; trap - EXIT
     cat "$DS"/regen_*.jsonl > "$DS/all.jsonl" 2>/dev/null || true
@@ -67,10 +67,10 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-regen-20260815
+  name: qwen38-regen-v2-20260815
   namespace: default
 spec:
-  backoffLimit: 50
+  backoffLimit: 4
   activeDeadlineSeconds: 86400
   template:
     metadata:
