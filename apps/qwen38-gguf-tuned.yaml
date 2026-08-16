@@ -11,13 +11,26 @@ metadata:
 data:
   tuned_export.py: |
     #!/usr/bin/env python3
-    import sys, glob
+    import sys, glob, torch, psutil, os
     fmt = sys.argv[1]; outdir = sys.argv[2]
+    base = "/dataset/base/Qwen3.8-27B-nomtp"
+    # OOM cause on this no-swap 46Gi node: transformers stages the 54GB model in HOST RAM before
+    # moving to GPU. Load DIRECTLY to the GPU (device_map={'':0} + low_cpu_mem_usage) to avoid the
+    # CPU peak. The 96GB card holds the bf16 model easily; tuning then runs on-GPU.
+    from transformers import AutoModelForImageTextToText, AutoModelForCausalLM, AutoModel, AutoTokenizer
+    model = None
+    for cls in (AutoModelForImageTextToText, AutoModelForCausalLM, AutoModel):
+        try:
+            model = cls.from_pretrained(base, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
+                                        device_map={"": 0}, trust_remote_code=True)
+            print("loaded via", cls.__name__, flush=True); break
+        except Exception as e:
+            print("load failed via", cls.__name__, ":", repr(e)[:200], flush=True)
+    assert model is not None, "could not load model to GPU"
+    print("host RAM after GPU load: %.1f GB" % (psutil.Process(os.getpid()).memory_info().rss/1e9), flush=True)
+    tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
     from auto_round import AutoRound
-    # node has NO swap + only ~46Gi RAM; iters=200 tuning OOM'd at nsamples64/seqlen1024.
-    # Minimal calibration to fit host RAM while keeping the tuning (still >> plain RTN).
-    ar = AutoRound(model="/dataset/base/Qwen3.8-27B-nomtp", scheme="W4A16", device_map=0,
-                   trust_remote_code=True, iters=200, dataset="NeelNanda/pile-10k",
+    ar = AutoRound(model, tok, scheme="W4A16", iters=200, dataset="NeelNanda/pile-10k",
                    nsamples=16, seqlen=512, batch_size=1)
     ar.quantize_and_save(output_dir=outdir, format="gguf:" + fmt)
     g = glob.glob(outdir + "/**/*.gguf", recursive=True)
@@ -31,7 +44,7 @@ data:
     mkdir -p /dataset/tmp
     export HF_HOME=/data TOKENIZERS_PARALLELISM=false PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     OUT=/dataset/qwen38-gguf; RES=$OUT/RESULTS.md; MODELNAME=Qwen3.8-27B
-    pip install -q --root-user-action ignore auto-round gguf 2>&1 | tail -1
+    pip install -q --root-user-action ignore auto-round gguf psutil 2>&1 | tail -1
     [ -f /dataset/base/Qwen3.8-27B-nomtp/config.json ] || { echo "no nomtp base"; exit 2; }
 
     for f in q3_k_m q2_k_s; do
@@ -64,7 +77,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-gguf-tuned-v2-20260816
+  name: qwen38-gguf-tuned-v3-20260816
   namespace: default
 spec:
   backoffLimit: 1
