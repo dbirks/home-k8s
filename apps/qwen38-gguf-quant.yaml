@@ -113,8 +113,8 @@ spec:
             - { name: HF_HUB_DISABLE_XET, value: "1" }
             - { name: HF_HUB_ENABLE_HF_TRANSFER, value: "1" }
           resources:
-            limits: { nvidia.com/gpu: 1 }
-            requests: { cpu: "6", memory: 48Gi }
+            limits: { nvidia.com/gpu: 1, memory: 40Gi }
+            requests: { cpu: "6", memory: 24Gi }
           volumeMounts:
             - { name: workspace, mountPath: /workspace }
             - { name: models, mountPath: /data }
