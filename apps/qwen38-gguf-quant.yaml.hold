@@ -17,7 +17,7 @@ data:
     #!/bin/bash
     set -uo pipefail
     export HF_HOME=/data TOKENIZERS_PARALLELISM=false PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-    BASE=/workspace/base/Qwen3.8-27B
+    BASE=/dataset/base/Qwen3.8-27B
     OUT=/dataset/qwen38-gguf
     RES=$OUT/RESULTS.md
     MODELNAME=Qwen3.8-27B
@@ -48,7 +48,7 @@ data:
     import sys
     from auto_round import AutoRound
     iters, outdir, fmt = int(sys.argv[1]), sys.argv[2], sys.argv[3]
-    kw = dict(model="/workspace/base/Qwen3.8-27B", scheme="W4A16",
+    kw = dict(model="/dataset/base/Qwen3.8-27B", scheme="W4A16",
               device_map=0, trust_remote_code=True, iters=iters)
     if iters > 0:
         kw.update(dataset="NeelNanda/pile-10k", nsamples=512, seqlen=2048)

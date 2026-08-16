@@ -1,6 +1,7 @@
-# CPU-only download of the Qwen3.8-27B BF16 base to the NVMe quant workspace, so the
-# GPU GGUF-quant job (apps/qwen38-gguf.yaml) doesn't sit idle downloading. Runs alongside
-# the drafter regen (no GPU). Xet disabled (DNS flakiness learned the hard way). Delete after.
+# CPU-only download of the Qwen3.8-27B BF16 base to the HDD (/dataset, 2TB free). Target the
+# HDD NOT the NVMe: the NVMe is chronically ~85% full and a 52GB write tips kubelet's
+# imagefs.available<15% eviction threshold -> DiskPressure -> node crash (learned the hard way,
+# 2026-08-16). Xet disabled (DNS flakiness). Delete after the GGUF quant reads it.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,7 +12,7 @@ data:
     #!/usr/bin/env python3
     import os
     from huggingface_hub import snapshot_download
-    dest = "/workspace/base/Qwen3.8-27B"
+    dest = "/dataset/base/Qwen3.8-27B"
     os.makedirs(dest, exist_ok=True)
     p = snapshot_download(
         repo_id="Qwen/Qwen3.8-27B", local_dir=dest,
@@ -29,7 +30,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-gguf-base-dl-20260816
+  name: qwen38-gguf-base-dl-hdd-20260816
   namespace: default
 spec:
   backoffLimit: 3
@@ -48,8 +49,8 @@ spec:
             requests: { cpu: "2", memory: 4Gi }
             limits: { cpu: "6", memory: 12Gi }
           volumeMounts:
-            - { name: workspace, mountPath: /workspace }
+            - { name: dataset, mountPath: /dataset }
             - { name: scripts, mountPath: /scripts }
       volumes:
-        - { name: workspace, persistentVolumeClaim: { claimName: qwen38-quant-workspace } }
+        - { name: dataset, persistentVolumeClaim: { claimName: dspark-dataset-hdd } }
         - { name: scripts, configMap: { name: qwen38-gguf-base-dl-script, defaultMode: 0755 } }

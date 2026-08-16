@@ -13,7 +13,7 @@ data:
   run.sh: |
     #!/bin/bash
     set -uo pipefail
-    BASE=/workspace/base/Qwen3.8-27B
+    BASE=/dataset/base/Qwen3.8-27B
     OUT=/dataset/qwen38-gguf
     RES=$OUT/RESULTS.md
     MODELNAME=Qwen3.8-27B
