@@ -29,9 +29,15 @@ data:
     assert model is not None, "could not load model to GPU"
     print("host RAM after GPU load: %.1f GB" % (psutil.Process(os.getpid()).memory_info().rss/1e9), flush=True)
     tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
+    # multimodal model -> AutoRound needs the processor (it auto-loaded one when given a path)
+    from transformers import AutoProcessor
+    try:
+        processor = AutoProcessor.from_pretrained(base, trust_remote_code=True)
+    except Exception as e:
+        print("processor load failed:", repr(e)[:200], flush=True); processor = None
     from auto_round import AutoRound
-    ar = AutoRound(model, tok, scheme="W4A16", iters=200, dataset="NeelNanda/pile-10k",
-                   nsamples=16, seqlen=512, batch_size=1)
+    ar = AutoRound(model, tok, processor=processor, scheme="W4A16", iters=200,
+                   dataset="NeelNanda/pile-10k", nsamples=16, seqlen=512, batch_size=1)
     ar.quantize_and_save(output_dir=outdir, format="gguf:" + fmt)
     g = glob.glob(outdir + "/**/*.gguf", recursive=True)
     print("TUNED DONE", fmt, "->", g, flush=True)
@@ -77,7 +83,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-gguf-tuned-v3-20260816
+  name: qwen38-gguf-tuned-v4-20260816
   namespace: default
 spec:
   backoffLimit: 1
