@@ -36,3 +36,11 @@ spec:
     kind: OCIRepository
     name: envoy-gateway
     namespace: flux-system
+  values:
+    # We already have Gateway API v1.6.1 CRDs (via kgateway); a safe-upgrades admission policy blocks
+    # installing the chart's older (v1.2) Gateway API CRDs. Skip them; keep Envoy Gateway's own CRDs.
+    crds:
+      gatewayAPI:
+        enabled: false
+      envoyGateway:
+        enabled: true
