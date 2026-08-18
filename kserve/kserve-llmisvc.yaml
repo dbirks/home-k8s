@@ -59,3 +59,35 @@ spec:
     kind: OCIRepository
     name: kserve-llmisvc-resources
     namespace: flux-system
+---
+# ---- LLMInferenceServiceConfig preset templates (scheduler/router/vLLM) ----
+# The controller combines these "well-known" presets (kserve-config-llm-scheduler, -router, etc.)
+# with each LLMInferenceService. Required even when the workload template is specified inline.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kserve-runtime-configs
+  namespace: flux-system
+spec:
+  interval: 30m0s
+  url: oci://ghcr.io/kserve/charts/kserve-runtime-configs
+  ref:
+    tag: "v0.20.0"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kserve-runtime-configs
+  namespace: kserve
+spec:
+  interval: 30m0s
+  dependsOn:
+    - name: kserve-llmisvc-crd
+  chartRef:
+    kind: OCIRepository
+    name: kserve-runtime-configs
+    namespace: flux-system
+  values:
+    kserve:
+      llmisvcConfigs:
+        enabled: true
