@@ -8,14 +8,15 @@
 #   - Same local-path PVC workaround: model.uri = PVC ROOT (no subPath), template points vLLM at the
 #     full in-PVC path.
 ---
-# A dedicated Gateway for LLM serving (kgateway class), separate from the llm.birks.dev portal gw.
+# A dedicated Gateway for LLM serving on the Envoy Gateway class. kgateway v2.4.2 watches the
+# InferencePool CRD but can't route to it as an HTTPRoute backend ("InvalidKind"); Envoy Gateway can.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: kserve-llm-gw
   namespace: default
 spec:
-  gatewayClassName: kgateway
+  gatewayClassName: envoy
   listeners:
     - name: http
       protocol: HTTP
