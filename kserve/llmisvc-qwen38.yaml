@@ -1,0 +1,67 @@
+# Step 3: the first LLMInferenceService (llm-d path) — Qwen3.8 NVFP4.
+# HOW THIS DIFFERS from the classic InferenceService we did before:
+#   - The `LLMInferenceService` controller turns THIS one CR into: a Deployment (the vLLM pod),
+#     an InferencePool (the routable group), an EPP (endpoint picker / smart scheduler), and an
+#     HTTPRoute on the gateway. Clients hit the gateway and are routed BY MODEL NAME.
+#   - `router.gateway.refs` = reuse the existing kgateway (v2.4.2 supports the Inference Extension),
+#     so no second gateway to install. `route:{}` + `scheduler:{}` = KServe manages the HTTPRoute + EPP.
+#   - Same local-path PVC workaround: model.uri = PVC ROOT (no subPath), template points vLLM at the
+#     full in-PVC path.
+---
+# A dedicated Gateway for LLM serving (kgateway class), separate from the llm.birks.dev portal gw.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: kserve-llm-gw
+  namespace: default
+spec:
+  gatewayClassName: kgateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata:
+  name: qwen38-llm
+  namespace: default
+spec:
+  model:
+    uri: pvc://qwen38-quant-workspace          # PVC ROOT (subPath mount is broken on local-path)
+    name: qwen3.8-nvfp4                          # the OpenAI `model` name clients route by
+  replicas: 1
+  template:                                      # PodSpec for the vLLM engine pod
+    runtimeClassName: nvidia
+    containers:
+      - name: main
+        image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+          - "--model=/mnt/models/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16"
+          - "--served-model-name=qwen3.8-nvfp4"
+          - "--port=8080"
+          - "--trust-remote-code"
+          - "--kv-cache-dtype=fp8_e4m3"
+          - "--gpu-memory-utilization=0.85"
+          - "--max-model-len=8192"
+        env:
+          - { name: VLLM_PORT, value: "8080" }
+          - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
+          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+          - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+        ports:
+          - containerPort: 8080
+        resources:
+          limits: { nvidia.com/gpu: "1", cpu: "8", memory: 40Gi }
+          requests: { cpu: "4", memory: 20Gi }
+  router:
+    gateway:
+      refs:
+        - name: kserve-llm-gw
+          namespace: default
+    route: {}
+    scheduler: {}
