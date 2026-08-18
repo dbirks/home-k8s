@@ -1,0 +1,85 @@
+# HAMi — hard, uneven single-GPU memory partitioning (ACTIVE as of 2026-08-18)
+#
+# Replaces the stock NVIDIA device plugin (prereqs/nvidia-device-plugin.yaml, removed in the same
+# commit). WHY: the stock plugin's time-slicing gives NO memory isolation — every pod sees the full
+# 96GB and one model can OOM the others. HAMi's libvgpu.so intercepts CUDA/NVML so each pod sees ONLY
+# its `nvidia.com/gpumem` quota as "total" VRAM -> arbitrary HARD per-pod memory caps, no retrain.
+# Proven on RTX PRO 6000 Blackwell + driver 580.167.08 + CUDA 13 (HAMi #2015 / #2641 ran on 580.x).
+#
+# TALOS-CRITICAL overrides (verified against talos-210-73x: Talos v1.13.6, k8s v1.36.2, driver
+# 580.167.08 open modules, cert-manager present, node label pci-10de.present=true):
+#   - /usr/local is READ-ONLY on Talos -> relocate the libvgpu hook dir under /var/lib/hami
+#     (global.gpuHookPath, devicePlugin.libPath, devicePlugin.monitor.ctrPath).
+#   - Bundled kube-scheduler image -> registry.k8s.io (Aliyun default lacks the tag); tag MUST equal
+#     the control-plane minor (v1.36.2) — BUMP THIS ON EVERY K8S UPGRADE or version-skew breaks it.
+#   - runtimeClassName nvidia (NVML reaches the driver via the nvidia runtime/CDI); createRuntimeClass
+#     false (the "nvidia" RuntimeClass already exists).
+#   - Webhook cert via cert-manager (present) — path is scheduler.certManager (NOT under admissionWebhook).
+#   - prometheus.enabled false: no prometheus-operator/ServiceMonitor CRD here (only Alloy+Grafana+Loki).
+#
+# THE TRAP (HAMi defaultMemory:0): a GPU pod that requests nvidia.com/gpu WITHOUT nvidia.com/gpumem
+# claims the ENTIRE 96GB in HAMi accounting -> nothing else co-schedules. EVERY model pod MUST set an
+# explicit nvidia.com/gpumem. Compute (gpucores) capping is UNRELIABLE on Blackwell -> never set it.
+# See memory project_gpu_sharing_hami_plan + HAMI-SWAP-RUNBOOK.md.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: hami
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://project-hami.github.io/HAMi/
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hami
+  namespace: kube-system
+spec:
+  interval: 5m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: hami
+      version: "2.9.0"          # chart 2.9.0 == app 2.9.0 (verified against the repo index)
+      sourceRef:
+        kind: HelmRepository
+        name: hami
+        namespace: flux-system
+      interval: 5m
+  values:
+    schedulerName: "hami-scheduler"
+
+    global:
+      # /usr/local is READ-ONLY on Talos -> move the libvgpu.so hook dir under /var.
+      gpuHookPath: /var/lib/hami
+
+    scheduler:
+      kubeScheduler:
+        enabled: true                    # bundled 2nd scheduler + extender
+        image:
+          registry: registry.k8s.io      # Aliyun default mirror lacks v1.36.2
+          repository: kube-scheduler
+          tag: "v1.36.2"                  # MUST equal the k8s control-plane minor
+      certManager:
+        enabled: true                     # cert-manager present; avoids the old certgen image
+
+    devicePlugin:
+      runtimeClassName: nvidia            # NVML init works under the nvidia runtime/CDI
+      createRuntimeClass: false           # RuntimeClass "nvidia" already exists
+      libPath: /var/lib/hami/vgpu         # must live under gpuHookPath (writable on Talos)
+      monitor:
+        ctrPath: /var/lib/hami/vgpu/containers
+      nvidiaNodeSelector:                 # reuse the existing GPU node label (no new label needed)
+        feature.node.kubernetes.io/pci-10de.present: "true"
+      deviceSplitCount: 10                # up to 10 pods share the card (we need ~4)
+      deviceMemoryScaling: 1              # NO oversubscription (46GB host RAM, no swap; pool = 96GB)
+
+    prometheus:
+      enabled: false                      # no ServiceMonitor CRD in this cluster
