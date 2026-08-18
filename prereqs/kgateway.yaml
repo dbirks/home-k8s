@@ -76,4 +76,10 @@ spec:
         name: kgateway
         namespace: flux-system
       interval: 1h
-  values: {}              # defaults; creates GatewayClass "kgateway"
+  values:
+    # Load the Gateway API Inference Extension plugin so kgateway recognizes InferencePool as an
+    # HTTPRoute backend kind (needed for the KServe LLMInferenceService / llm-d path). Off by default;
+    # requires the GIE CRDs (inference.networking.k8s.io) to be present, which kserve/gie-crds.yaml
+    # installs. Additive — the existing llm.birks.dev portal Gateway is unaffected.
+    inferenceExtension:
+      enabled: true
