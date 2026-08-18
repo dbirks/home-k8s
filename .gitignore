@@ -11,3 +11,4 @@ talos/clusterconfig/
 
 # Old pre-talhelper config dir
 _newconfig/
+build/vllm-dflash2/vllm-pr/

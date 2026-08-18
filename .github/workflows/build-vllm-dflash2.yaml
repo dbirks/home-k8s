@@ -27,6 +27,16 @@ jobs:
           sudo docker image prune --all --force || true
           df -h /
 
+      - name: Stage PR #52816 vLLM source into the build context
+        run: |
+          git clone --filter=blob:none https://github.com/vllm-project/vllm.git /tmp/vllm
+          cd /tmp/vllm
+          git fetch origin pull/52816/head
+          git checkout FETCH_HEAD
+          rm -rf "$GITHUB_WORKSPACE/build/vllm-dflash2/vllm-pr"
+          cp -r /tmp/vllm/vllm "$GITHUB_WORKSPACE/build/vllm-dflash2/vllm-pr"
+          echo "staged $(find "$GITHUB_WORKSPACE/build/vllm-dflash2/vllm-pr" -name '*.py' | wc -l) .py files"
+
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
