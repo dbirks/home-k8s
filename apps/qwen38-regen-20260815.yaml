@@ -34,10 +34,13 @@ data:
     mkdir -p "$DS" /output/logs
 
     echo "=== [$(date)] serve Qwen3.8-27B NVFP4 (target for on-policy regen) ==="
+    # HAMi co-residence: capped at nvidia.com/gpumem 48000 (serving model holds 44GB of the 96GB card),
+    # so --gpu-memory-utilization 0.88 is 0.88 of 48GB. Concurrency/batched-tokens trimmed from the
+    # full-card tuning (was 32 / 32768) to fit the slice; still plenty for overnight throughput.
     vllm serve "$MODEL" --served-model-name main "$MODEL" --host 0.0.0.0 --port 8001 \
-        --gpu-memory-utilization 0.90 --max-model-len 12288 --dtype auto \
-        --trust-remote-code --kv-cache-dtype fp8_e4m3 --max-num-seqs 32 \
-        --max-num-batched-tokens 32768 --no-enable-prefix-caching \
+        --gpu-memory-utilization 0.88 --max-model-len 12288 --dtype auto \
+        --trust-remote-code --kv-cache-dtype fp8_e4m3 --max-num-seqs 24 \
+        --max-num-batched-tokens 16384 --no-enable-prefix-caching \
         > /output/logs/qwen38_regen_vllm.log 2>&1 &
     VP=$!; trap 'kill $VP 2>/dev/null; wait $VP 2>/dev/null' EXIT
     for i in $(seq 1 300); do
@@ -88,10 +91,13 @@ spec:
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
             - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
             - { name: VLLM_NVFP4_GEMM_BACKEND, value: "flashinfer-cutlass" }
-            - { name: PYTORCH_CUDA_ALLOC_CONF, value: "expandable_segments:True" }
+            # NOTE: expandable_segments removed — it uses the CUDA VMM API (cuMemCreate) that HAMi-core
+            # intercepts; the default allocator is proven working under HAMi (the serving pod uses it).
           resources:
-            limits: { nvidia.com/gpu: 1 }
-            requests: { cpu: "4", memory: 24Gi }
+            # HAMi hard cap so it co-resides with the 44GB serving model (44+48=92 < 96GB physical).
+            # Host memory limited (no swap on the node) to avoid a host OOM under RAM pressure.
+            limits: { nvidia.com/gpu: 1, nvidia.com/gpumem: "48000", memory: 28Gi }
+            requests: { cpu: "4", memory: 12Gi }
           volumeMounts:
             - { name: workspace, mountPath: /workspace }
             - { name: models, mountPath: /data }
@@ -105,4 +111,4 @@ spec:
         - { name: dataset, persistentVolumeClaim: { claimName: dspark-dataset-hdd } }
         - { name: output, persistentVolumeClaim: { claimName: dspark-output-hdd-v2 } }
         - { name: scripts, configMap: { name: qwen38-regen-20260815-script, defaultMode: 0755 } }
-        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }   # memory-backed -> counts vs host RAM
