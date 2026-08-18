@@ -1,0 +1,61 @@
+# Step 2 of the llm-d layer: the KServe LLMInferenceService controller (v0.20.0).
+# Watches LLMInferenceService CRs and generates the Deployment + InferencePool + EPP (endpoint
+# picker) + HTTPRoutes. Same version as the base controller. Runtime-configs provides the
+# vLLM LLMInferenceServiceConfig templates.
+---
+# ---- LLMISVC CRD ----
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kserve-llmisvc-crd
+  namespace: flux-system
+spec:
+  interval: 30m0s
+  url: oci://ghcr.io/kserve/charts/kserve-llmisvc-crd
+  ref:
+    tag: "v0.20.0"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kserve-llmisvc-crd
+  namespace: kserve
+spec:
+  interval: 30m0s
+  dependsOn:
+    - name: kserve-crd
+  chartRef:
+    kind: OCIRepository
+    name: kserve-llmisvc-crd
+    namespace: flux-system
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+---
+# ---- LLMISVC controller ----
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kserve-llmisvc-resources
+  namespace: flux-system
+spec:
+  interval: 30m0s
+  url: oci://ghcr.io/kserve/charts/kserve-llmisvc-resources
+  ref:
+    tag: "v0.20.0"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kserve-llmisvc-resources
+  namespace: kserve
+spec:
+  interval: 30m0s
+  dependsOn:
+    - name: kserve-llmisvc-crd
+    - name: kserve-resources
+  chartRef:
+    kind: OCIRepository
+    name: kserve-llmisvc-resources
+    namespace: flux-system
