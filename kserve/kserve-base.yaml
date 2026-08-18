@@ -1,0 +1,67 @@
+# KServe base (v0.20.0) — Standard/RawDeployment mode (Knative-free). CRDs + controller.
+# Shared foundation for both classic InferenceService and the LLMInferenceService (llm-d) path.
+# Charts are OCI at ghcr.io/kserve/charts (Flux OCIRepository API v1 + HelmRelease chartRef).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kserve
+---
+# ---- KServe CRDs ----
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kserve-crd
+  namespace: flux-system
+spec:
+  interval: 30m0s
+  url: oci://ghcr.io/kserve/charts/kserve-crd
+  ref:
+    tag: "v0.20.0"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kserve-crd
+  namespace: kserve
+spec:
+  interval: 30m0s
+  chartRef:
+    kind: OCIRepository
+    name: kserve-crd
+    namespace: flux-system
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+---
+# ---- KServe controller (RawDeployment / Standard mode) ----
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kserve-resources
+  namespace: flux-system
+spec:
+  interval: 30m0s
+  url: oci://ghcr.io/kserve/charts/kserve-resources
+  ref:
+    tag: "v0.20.0"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kserve-resources
+  namespace: kserve
+spec:
+  interval: 30m0s
+  dependsOn:
+    - name: kserve-crd
+  chartRef:
+    kind: OCIRepository
+    name: kserve-resources
+    namespace: flux-system
+  values:
+    kserve:
+      controller:
+        # Knative-free: raw K8s Deployments. KServe recommends this for GenAI.
+        deploymentMode: "RawDeployment"

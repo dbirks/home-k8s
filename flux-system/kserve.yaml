@@ -1,0 +1,18 @@
+# Isolated Flux Kustomization for the KServe / llm-d LLM serving control plane (#92, #24).
+# wait:false so a KServe reconcile hiccup can't wedge the critical infra kustomization.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kserve
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infra
+  interval: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./kserve
+  prune: true
+  wait: false
+  timeout: 8m0s
