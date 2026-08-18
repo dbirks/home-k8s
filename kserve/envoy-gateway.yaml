@@ -4,6 +4,11 @@
 # (with the GIE CRDs present at startup, which they are) implements InferencePool routing.
 # It creates a GatewayClass "eg"; we point the LLMInferenceService at a Gateway on that class.
 ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: envoy-gateway-system
+---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
