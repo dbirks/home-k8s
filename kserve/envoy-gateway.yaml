@@ -1,0 +1,33 @@
+# Step 4: Envoy Gateway — KServe's TESTED data plane for LLMInferenceService.
+# WHY: kgateway v2.4.2 watches the InferencePool CRD but does NOT support it as an HTTPRoute
+# backend ("InvalidKind: unknown backend kind"), so it can't route to the EPP/engine. Envoy Gateway
+# (with the GIE CRDs present at startup, which they are) implements InferencePool routing.
+# It creates a GatewayClass "eg"; we point the LLMInferenceService at a Gateway on that class.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: envoy-gateway
+  namespace: flux-system
+spec:
+  interval: 30m0s
+  url: oci://docker.io/envoyproxy/gateway-helm
+  ref:
+    tag: "v1.2.4"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: envoy-gateway
+  namespace: envoy-gateway-system
+spec:
+  interval: 30m0s
+  install:
+    createNamespace: true
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  chartRef:
+    kind: OCIRepository
+    name: envoy-gateway
+    namespace: flux-system
