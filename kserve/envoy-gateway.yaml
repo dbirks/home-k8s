@@ -29,9 +29,13 @@ spec:
   interval: 30m0s
   install:
     createNamespace: true
-    crds: CreateReplace
+    # Skip the chart's crds/ dir: it bundles the EXPERIMENTAL-channel Gateway API CRDs, which the
+    # safe-upgrades admission policy blocks from layering on our existing STANDARD v1.6.1 set. Envoy
+    # Gateway's OWN CRDs (*.gateway.envoyproxy.io) come from a templated path gated by the values flag
+    # below, so Skip (which only affects crds/) still installs them. EG reuses the v1.6.1 GW API CRDs.
+    crds: Skip
   upgrade:
-    crds: CreateReplace
+    crds: Skip
   chartRef:
     kind: OCIRepository
     name: envoy-gateway
