@@ -1,8 +1,15 @@
-# Step 4: Envoy Gateway — KServe's TESTED data plane for LLMInferenceService.
-# WHY: kgateway v2.4.2 watches the InferencePool CRD but does NOT support it as an HTTPRoute
-# backend ("InvalidKind: unknown backend kind"), so it can't route to the EPP/engine. Envoy Gateway
-# (with the GIE CRDs present at startup, which they are) implements InferencePool routing.
-# It creates a GatewayClass "eg"; we point the LLMInferenceService at a Gateway on that class.
+# Step 4a: Envoy Gateway — the data plane KServe v0.20 tests LLMInferenceService against.
+# Pinned to v1.8.1 to match KServe's dependency matrix (paired with Envoy AI Gateway v1.0.0).
+#
+# Envoy Gateway ALONE cannot route a GIE InferencePool backend (its native backend groups are only
+# core / multicluster / gateway.envoyproxy.io). The InferencePool routing is provided by ENVOY AI
+# GATEWAY (see envoy-ai-gateway.yaml), which plugs in here as Envoy Gateway's *extension manager*:
+#   - extensionManager.service.fqdn -> the ai-gateway-controller service (:1063)
+#   - extensionManager.backendResources -> registers inference.networking.k8s.io/InferencePool/v1
+#     as a backend kind the extension server handles.
+# These values are the AI Gateway v1.0.0 base + inference-pool addon overlays, inlined for GitOps.
+#
+# We create GatewayClass "envoy"; Gateways with that class get an Envoy proxy + AI Gateway routing.
 ---
 apiVersion: v1
 kind: Namespace
@@ -18,7 +25,7 @@ spec:
   interval: 30m0s
   url: oci://docker.io/envoyproxy/gateway-helm
   ref:
-    tag: "v1.9.0"
+    tag: "v1.8.1"
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -41,16 +48,49 @@ spec:
     name: envoy-gateway
     namespace: flux-system
   values:
-    # We already have Gateway API v1.6.1 CRDs (via kgateway); a safe-upgrades admission policy blocks
-    # installing the chart's older (v1.2) Gateway API CRDs. Skip them; keep Envoy Gateway's own CRDs.
     crds:
       gatewayAPI:
         enabled: false
       envoyGateway:
         enabled: true
+    # --- AI Gateway integration (base envoy-gateway-values.yaml + inference-pool addon, v1.0.0) ---
+    config:
+      envoyGateway:
+        gateway:
+          controllerName: gateway.envoyproxy.io/gatewayclass-controller
+        logging:
+          level:
+            default: info
+        provider:
+          type: Kubernetes
+        extensionApis:
+          enableEnvoyPatchPolicy: true
+          enableBackend: true          # required: AI service backends
+        # AI Gateway fine-tunes the xDS resources Envoy Gateway generates, via this extension manager.
+        extensionManager:
+          hooks:
+            xdsTranslator:
+              translation:
+                listener: { includeAll: true }
+                route: { includeAll: true }
+                cluster: { includeAll: true }
+                secret: { includeAll: true }
+              post:
+                - Translation
+                - Cluster
+                - Route
+          service:
+            fqdn:
+              hostname: ai-gateway-controller.envoy-ai-gateway-system.svc.cluster.local
+              port: 1063
+          # inference-pool addon: register InferencePool (GA group/v1) as an extension-handled backend.
+          backendResources:
+            - group: inference.networking.k8s.io
+              kind: InferencePool
+              version: v1
 ---
-# The GatewayClass our LLM Gateways bind to. The chart installs the controller but no class; we
-# declare one pointing at Envoy Gateway's controller. Gateways with this className get an Envoy proxy.
+# The GatewayClass our LLM Gateways bind to. Points at Envoy Gateway's controller; Gateways with this
+# className get an Envoy proxy, and (with AI Gateway wired in above) can route InferencePool backends.
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:

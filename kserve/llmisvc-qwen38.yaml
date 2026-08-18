@@ -8,16 +8,17 @@
 #   - Same local-path PVC workaround: model.uri = PVC ROOT (no subPath), template points vLLM at the
 #     full in-PVC path.
 ---
-# A dedicated Gateway for LLM serving on the kgateway class, separate from the llm.birks.dev portal gw.
-# kgateway has NATIVE Gateway API Inference Extension support (InferencePool as an HTTPRoute backend);
-# it just needs inferenceExtension.enabled:true on the controller (see prereqs/kgateway.yaml).
+# A dedicated Gateway for LLM serving on the Envoy Gateway "envoy" class. InferencePool (llm-d/GIE)
+# routing comes from ENVOY AI GATEWAY (envoy-ai-gateway.yaml), which registers itself as Envoy
+# Gateway's extension server and handles the inference.networking.k8s.io/v1 InferencePool backend.
+# This is exactly the stack KServe v0.20 tests LLMInferenceService against (EG v1.8.1 + AI GW v1.0.0).
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: kserve-llm-gw
   namespace: default
 spec:
-  gatewayClassName: kgateway
+  gatewayClassName: envoy
   listeners:
     - name: http
       protocol: HTTP
