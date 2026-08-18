@@ -66,14 +66,15 @@ spec:
         ports:
           - containerPort: 8000
         resources:
-          # HAMi hard VRAM cap: vLLM sees `nvidia.com/gpumem` MB as its TOTAL device memory, so it
-          # can't OOM co-resident models. Generous 32GB (model ~18-20GB NVFP4 + KV + CUDA-graph capture
-          # buffer) — NOT razor-thin, so CUDA graphs capture fine and we keep full speed (NO
-          # --enforce-eager; that's only needed on starved slices, per vLLM #40937). --gpu-memory-
-          # utilization 0.85 is now 0.85 of 32GB. KV is fp8_e4m3 (never e5m2). HAMi webhook auto-injects
-          # schedulerName hami-scheduler. Every GPU pod MUST set gpumem (HAMi defaultMemory:0 = whole card).
-          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "32000", cpu: "8", memory: 40Gi }
-          requests: { cpu: "4", memory: 20Gi }
+          # HAMi hard VRAM cap: vLLM sees `nvidia.com/gpumem` MB as its TOTAL device memory (confirmed:
+          # vLLM logged "total capacity 31.25 GiB" at a 32000 cap), so it can't OOM co-resident models.
+          # 32000 was too tight -> profile_cudagraph_memory() OOM at ~31GiB (model 18.77 + activation peak
+          # + KV + graph-capture buffer at 8192 ctx). Raised to 44000 for real headroom -> keeps CUDA
+          # graphs (NO --enforce-eager, full speed). KV fp8_e4m3 (never e5m2). HAMi webhook auto-injects
+          # schedulerName hami-scheduler. EVERY GPU pod MUST set gpumem (HAMi defaultMemory:0 = whole card).
+          # host `memory` request kept low (8Gi) so multiple model pods fit in 46GB host RAM (no swap).
+          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "44000", cpu: "8", memory: 24Gi }
+          requests: { cpu: "4", memory: 8Gi }
   router:
     gateway:
       refs:
