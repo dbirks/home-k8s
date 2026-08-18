@@ -36,8 +36,15 @@ spec:
   replicas: 1
   template:                                      # PodSpec for the vLLM engine pod
     runtimeClassName: nvidia
+    securityContext:                              # preset defaults to runAsNonRoot:true; our vLLM
+      runAsNonRoot: false                         # image runs as root and the model files are
+      runAsUser: 0                                # root-owned 600 -> must run as root
     containers:
       - name: main
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: true
         image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
         command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
         args:
