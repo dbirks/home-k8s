@@ -1,49 +1,7 @@
-# First model served through KServe (#25): Qwen3.8-27B NVFP4, from the existing PVC (no download).
-# Custom ClusterServingRuntime = our SM120 vLLM image + NVFP4 flags; InferenceService binds it to
-# the model on qwen38-quant-workspace. RawDeployment mode (matches the base install).
----
-apiVersion: serving.kserve.io/v1alpha1
-kind: ClusterServingRuntime
-metadata:
-  name: vllm-nvfp4-sm120
-spec:
-  annotations:
-    prometheus.kserve.io/port: "8080"
-    prometheus.kserve.io/path: /metrics
-  supportedModelFormats:
-    - name: vllm-nvfp4
-      autoSelect: true
-      priority: 1
-  protocolVersions:
-    - v1
-  containers:
-    - name: kserve-container
-      image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
-      command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
-      args:
-        - "--model=/mnt/models"
-        - "--port=8080"
-        - "--trust-remote-code"
-        - "--kv-cache-dtype=fp8_e4m3"
-        - "--gpu-memory-utilization=0.85"
-        - "--max-model-len=8192"
-      env:
-        # explicit VLLM_PORT beats the service-link-injected VLLM_PORT=tcp://... (vllm crash fix)
-        - { name: VLLM_PORT, value: "8080" }
-        - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
-        - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
-        - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
-      ports:
-        - containerPort: 8080
-          protocol: TCP
-      resources:
-        limits:
-          nvidia.com/gpu: "1"
-          cpu: "8"
-          memory: 40Gi
-        requests:
-          cpu: "4"
-          memory: 20Gi
+# First model served through KServe (#25): Qwen3.8-27B NVFP4 from the existing PVC.
+# NOTE: KServe pvc://<pvc>/<subpath> uses a subPath mount, which is BROKEN on local-path-provisioner
+# (mounts an empty dir). Workaround: custom-container predictor that mounts the PVC ROOT (no subPath)
+# and points vLLM at the full in-PVC path. Custom SM120 vLLM image + NVFP4 flags. RawDeployment.
 ---
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
@@ -57,8 +15,47 @@ spec:
     runtimeClassName: nvidia
     minReplicas: 1
     maxReplicas: 1
-    model:
-      modelFormat:
-        name: vllm-nvfp4
-      runtime: vllm-nvfp4-sm120
-      storageUri: pvc://qwen38-quant-workspace/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16
+    containers:
+      - name: kserve-container
+        image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+          - "--model=/mnt/models/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16"
+          - "--served-model-name=qwen3.8-nvfp4"
+          - "--port=8080"
+          - "--trust-remote-code"
+          - "--kv-cache-dtype=fp8_e4m3"
+          - "--gpu-memory-utilization=0.85"
+          - "--max-model-len=8192"
+        env:
+          - { name: VLLM_PORT, value: "8080" }   # beats service-link-injected VLLM_PORT=tcp://...
+          - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
+          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+          - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+        ports:
+          - containerPort: 8080
+            protocol: TCP
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "8"
+            memory: 40Gi
+          requests:
+            cpu: "4"
+            memory: 20Gi
+        volumeMounts:
+          - { name: model, mountPath: /mnt/models }
+        readinessProbe:
+          httpGet: { path: /health, port: 8080 }
+          initialDelaySeconds: 90
+          periodSeconds: 15
+          failureThreshold: 40
+        livenessProbe:
+          httpGet: { path: /health, port: 8080 }
+          initialDelaySeconds: 300
+          periodSeconds: 30
+          failureThreshold: 6
+    volumes:
+      - name: model
+        persistentVolumeClaim:
+          claimName: qwen38-quant-workspace
