@@ -50,18 +50,18 @@ spec:
         args:
           - "--model=/mnt/models/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16"
           - "--served-model-name=qwen3.8-nvfp4"
-          - "--port=8080"
+          - "--port=8000"
           - "--trust-remote-code"
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
           - "--max-model-len=8192"
         env:
-          - { name: VLLM_PORT, value: "8080" }
+          - { name: VLLM_PORT, value: "8000" }
           - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
           - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
           - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
         ports:
-          - containerPort: 8080
+          - containerPort: 8000
         resources:
           limits: { nvidia.com/gpu: "1", cpu: "8", memory: 40Gi }
           requests: { cpu: "4", memory: 20Gi }
