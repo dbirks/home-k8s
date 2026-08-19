@@ -60,10 +60,34 @@ spec:
     name: kserve-llmisvc-resources
     namespace: flux-system
   # NOTE: rolled back the ghcr.io/dbirks main-built controller (direct spec.scaling.keda). Running it
-  # exposed a chain of bleeding-edge instabilities (manager /readyz CPU starvation, EPP-0.10 flowControl
-  # pod churn, aggressive reconcile loop destabilizing the engine). Back on stable v0.20.0 controller.
-  # Scale-to-zero deferred until llm-d/KServe ship a tagged release with direct scaling.keda + stable
-  # EPP Flow Control. See #27 / #31.
+  # exposed a chain of bleeding-edge instabilities (EPP-0.10 flowControl pod churn, aggressive reconcile
+  # loop destabilizing the engine). Back on stable v0.20.0 controller. Scale-to-zero deferred until
+  # llm-d/KServe ship a tagged release with direct scaling.keda + stable EPP Flow Control. See #27 / #31.
+  #
+  # BUT keep the manager CPU/mem bump (the OTHER half of the reverted postRenderer): the chart default
+  # 100m CPU starves the reconcile loop -> passes hit their context deadline ("context canceled" on the
+  # self-signed-cert reconcile) -> the controller re-renders + DELETES the engine pod every ~1 min, so
+  # vLLM (~10 min cold load: torch.compile + FlashInfer fp4 autotune + graph capture) NEVER reaches
+  # Ready. Livelock. 2 CPU / 1Gi lets a reconcile pass complete. Stable v0.20.0 IMAGE unchanged.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: llmisvc-controller-manager
+            patch: |
+              - op: replace
+                path: /spec/template/spec/containers/0/resources/limits/cpu
+                value: "2"
+              - op: replace
+                path: /spec/template/spec/containers/0/resources/limits/memory
+                value: 1Gi
+              - op: replace
+                path: /spec/template/spec/containers/0/resources/requests/cpu
+                value: 500m
+              - op: replace
+                path: /spec/template/spec/containers/0/resources/requests/memory
+                value: 512Mi
 ---
 # ---- LLMInferenceServiceConfig preset templates (scheduler/router/vLLM) ----
 # The controller combines these "well-known" presets (kserve-config-llm-scheduler, -router, etc.)
