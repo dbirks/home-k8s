@@ -76,18 +76,22 @@ spec:
               kind: Deployment
               name: llmisvc-controller-manager
             patch: |
-              - op: replace
-                path: /spec/template/spec/containers/0/resources/limits/cpu
-                value: "2"
-              - op: replace
-                path: /spec/template/spec/containers/0/resources/limits/memory
-                value: 1Gi
-              - op: replace
-                path: /spec/template/spec/containers/0/resources/requests/cpu
-                value: 500m
-              - op: replace
-                path: /spec/template/spec/containers/0/resources/requests/memory
-                value: 512Mi
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: llmisvc-controller-manager
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        resources:
+                          limits:
+                            cpu: "2"
+                            memory: 1Gi
+                          requests:
+                            cpu: 500m
+                            memory: 512Mi
 ---
 # ---- LLMInferenceServiceConfig preset templates (scheduler/router/vLLM) ----
 # The controller combines these "well-known" presets (kserve-config-llm-scheduler, -router, etc.)
