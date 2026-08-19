@@ -59,6 +59,26 @@ spec:
     kind: OCIRepository
     name: kserve-llmisvc-resources
     namespace: flux-system
+  # Swap the llmisvc controller for our main-built image that supports the DIRECT spec.scaling.keda
+  # .triggers path (v0.20.0 chart only has spec.scaling.wva.keda). Only this one deployment changes;
+  # classic kserve-controller stays v0.20.0. Paired with kserve/llmisvc-crds-main.yaml. See #27.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: llmisvc-controller-manager
+            patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: llmisvc-controller-manager
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        image: ghcr.io/dbirks/llmisvc-controller:main-2f2afd58-scalingkeda
 ---
 # ---- LLMInferenceServiceConfig preset templates (scheduler/router/vLLM) ----
 # The controller combines these "well-known" presets (kserve-config-llm-scheduler, -router, etc.)
