@@ -81,50 +81,9 @@ spec:
         - name: kserve-llm-gw
           namespace: default
     route: {}
-    # Override the EPP to router v0.10.0 with the `flowControl` feature gate enabled. Flow Control is the
-    # scale-from-zero "waiting room": at 0 backends the EPP BUFFERS the request (no 503) and emits
-    # llm_d_epp_flow_control_queue_size, which KEDA watches to wake the model 0->1. The preset ships v0.9.0
-    # with an inline --config-text; we restate command+args (lists replace on merge) and add featureGates.
-    scheduler:
-      template:
-        containers:
-          - name: main
-            image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.10.0
-            command:
-              - /app/epp
-              - --pool-name
-              - qwen38-llm-inference-pool
-              - --pool-namespace
-              - default
-              - --zap-encoder
-              - json
-              - --grpc-port
-              - "9002"
-              - --grpc-health-port
-              - "9003"
-            args:
-              - --config-text
-              - |
-                apiVersion: llm-d.ai/v1alpha1
-                kind: EndpointPickerConfig
-                featureGates:
-                - flowControl
-                plugins:
-                - type: single-profile-handler
-                - type: queue-scorer
-                - type: kv-cache-utilization-scorer
-                - type: prefix-cache-scorer
-                - type: no-hit-lru-scorer
-                - type: max-score-picker
-                schedulingProfiles:
-                - name: default
-                  plugins:
-                  - pluginRef: queue-scorer
-                    weight: 2
-                  - pluginRef: kv-cache-utilization-scorer
-                    weight: 2
-                  - pluginRef: prefix-cache-scorer
-                    weight: 3
-                  - pluginRef: no-hit-lru-scorer
-                    weight: 2
-                  - pluginRef: max-score-picker
+    # EPP left at the stable v0.9.0 preset. The EPP-0.10 flowControl "transparent waiting room" path
+    # churned (pod SIGTERM'd ~every 30s under 0.10's new 30s drain-timeout; deep source research couldn't
+    # pin the deleter — bleeding-edge instability). Scale-from-zero wake will instead use a KEDA trigger on
+    # a gateway request metric (first request to an idle model 503s -> client retries -> served). Revisit
+    # EPP-0.10 Flow Control when it's in a tagged llm-d release. See #31.
+    scheduler: {}
