@@ -1,0 +1,51 @@
+# Background download of poolside/Laguna-S-2.1-NVFP4 (~68GB, W4A4 NVFP4 MoE) to the vllm-models PVC.
+# No GPU — pure network/disk, so it won't disturb the serving model or the regen. Resumable
+# (snapshot_download resumes partial files). For the future catalog (Laguna S 2.1 on llm.birks.dev).
+# Hybrid = full + sliding-window ATTENTION (not Mamba/DeltaNet) -> fp8 KV is fine. W4A4 MoE = the
+# supported SM120 FlashInfer/CUTLASS path. Poolside model: serve later with poolside_v1 parsers.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: laguna-s21-nvfp4-download
+  namespace: default
+spec:
+  backoffLimit: 8
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels: { app: laguna-download }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              export HF_HUB_ENABLE_HF_TRANSFER=1
+              pip install -q hf_transfer 2>/dev/null || true
+              DST=/data/models/Laguna-S-2.1-NVFP4
+              echo "[$(date)] downloading poolside/Laguna-S-2.1-NVFP4 -> $DST"
+              python3 - <<'PY'
+              from huggingface_hub import snapshot_download
+              p = snapshot_download(
+                  "poolside/Laguna-S-2.1-NVFP4",
+                  local_dir="/data/models/Laguna-S-2.1-NVFP4",
+                  max_workers=8,
+              )
+              print("snapshot at", p)
+              PY
+              echo "[$(date)] done: $(du -sh /data/models/Laguna-S-2.1-NVFP4 | cut -f1)"
+          env:
+            - { name: HF_HOME, value: /data }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits: { cpu: "4", memory: 8Gi }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: vllm-models } }
