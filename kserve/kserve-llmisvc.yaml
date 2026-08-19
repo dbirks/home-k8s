@@ -59,32 +59,11 @@ spec:
     kind: OCIRepository
     name: kserve-llmisvc-resources
     namespace: flux-system
-  # Swap the llmisvc controller for our main-built image that supports the DIRECT spec.scaling.keda
-  # .triggers path (v0.20.0 chart only has spec.scaling.wva.keda). Only this one deployment changes;
-  # classic kserve-controller stays v0.20.0. Paired with kserve/llmisvc-crds-main.yaml. See #27.
-  postRenderers:
-    - kustomize:
-        patches:
-          - target:
-              kind: Deployment
-              name: llmisvc-controller-manager
-            patch: |
-              apiVersion: apps/v1
-              kind: Deployment
-              metadata:
-                name: llmisvc-controller-manager
-              spec:
-                template:
-                  spec:
-                    containers:
-                      - name: manager
-                        image: ghcr.io/dbirks/llmisvc-controller:main-2f2afd58-scalingkeda
-                        # v0.20.0 chart caps the manager at cpu 100m — too tight for the main build:
-                        # under load its /readyz handler gets starved, readiness times out, the pod never
-                        # joins the webhook Service, and reconciles hot-loop. Give it real headroom.
-                        resources:
-                          requests: { cpu: "250m", memory: "512Mi" }
-                          limits: { cpu: "2", memory: "1Gi" }
+  # NOTE: rolled back the ghcr.io/dbirks main-built controller (direct spec.scaling.keda). Running it
+  # exposed a chain of bleeding-edge instabilities (manager /readyz CPU starvation, EPP-0.10 flowControl
+  # pod churn, aggressive reconcile loop destabilizing the engine). Back on stable v0.20.0 controller.
+  # Scale-to-zero deferred until llm-d/KServe ship a tagged release with direct scaling.keda + stable
+  # EPP Flow Control. See #27 / #31.
 ---
 # ---- LLMInferenceServiceConfig preset templates (scheduler/router/vLLM) ----
 # The controller combines these "well-known" presets (kserve-config-llm-scheduler, -router, etc.)
