@@ -1,0 +1,44 @@
+# KEDA — event-driven autoscaler. Needed for KServe LLMISVC scale-to-zero: the scale-to-zero path
+# uses a KEDA ScaledObject (idleReplicaCount:0), and a Prometheus trigger on the EPP Flow Control
+# queue-size metric wakes an idle model 0->1 on the first (buffered) request. HPA path can't reach 0.
+# See task #27 / project_kserve_llmd_llmisvc_stack.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keda
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: kedacore
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://kedacore.github.io/charts
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: keda
+  namespace: keda
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: keda
+      version: "2.20.2"
+      sourceRef:
+        kind: HelmRepository
+        name: kedacore
+        namespace: flux-system
+      interval: 30m
