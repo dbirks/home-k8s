@@ -1,0 +1,19 @@
+# Standalone, durable owner for the qwen38-quant-workspace PVC (holds the Qwen3.8-27B NVFP4
+# model weights served by the KServe LLMInferenceService, model.uri=pvc://qwen38-quant-workspace).
+#
+# WHY THIS EXISTS: the PVC used to be defined INSIDE dated one-off quant/eval Job manifests. When
+# those jobs were retired to .hold (2026-08-19 incident, see memory), Flux pruned the PVC along with
+# them and nearly deleted the model data (PV reclaim was Delete). Now the PVC lives here on its own so
+# retiring jobs never touches it. volumeName pins it to the RETAINED PV that already holds the data.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen38-quant-workspace
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 260Gi
+  volumeName: pvc-6f35112d-8504-4118-9b43-39787f5bff9e   # the Retained PV with the existing model data
