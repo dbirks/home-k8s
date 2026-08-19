@@ -79,6 +79,12 @@ spec:
                     containers:
                       - name: manager
                         image: ghcr.io/dbirks/llmisvc-controller:main-2f2afd58-scalingkeda
+                        # v0.20.0 chart caps the manager at cpu 100m — too tight for the main build:
+                        # under load its /readyz handler gets starved, readiness times out, the pod never
+                        # joins the webhook Service, and reconciles hot-loop. Give it real headroom.
+                        resources:
+                          requests: { cpu: "250m", memory: "512Mi" }
+                          limits: { cpu: "2", memory: "1Gi" }
 ---
 # ---- LLMInferenceServiceConfig preset templates (scheduler/router/vLLM) ----
 # The controller combines these "well-known" presets (kserve-config-llm-scheduler, -router, etc.)
