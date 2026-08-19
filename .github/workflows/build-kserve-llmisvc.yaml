@@ -1,0 +1,45 @@
+name: build-kserve-llmisvc
+
+# Builds the KServe llmisvc-controller image from a pinned upstream `main` commit and pushes to GHCR.
+# WHY: our released v0.20.0 controller only supports spec.scaling.wva.keda (WVA-mediated). The DIRECT
+# spec.scaling.keda.triggers path (user-defined KEDA triggers -> KServe generates the ScaledObject, no
+# WVA) that we need for clean EPP-Flow-Control scale-to-zero only exists on main. Only THIS image
+# changes; classic kserve-controller stays v0.20.0. Runs on GitHub runners (heavy build off the dev box).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "kserve commit/branch to build"
+        default: "2f2afd581869c9db53c6f9ce75a2797743a934d6"
+        required: true
+      tag:
+        description: "GHCR image tag"
+        default: "main-2f2afd58-scalingkeda"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout kserve at the pinned commit
+        run: |
+          git clone --filter=blob:none https://github.com/kserve/kserve.git kserve
+          cd kserve
+          git checkout ${{ github.event.inputs.ref }}
+          echo "built from $(git rev-parse HEAD)"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build llmisvc-controller
+        run: |
+          cd kserve
+          docker buildx build --load \
+            -t ghcr.io/dbirks/llmisvc-controller:${{ github.event.inputs.tag }} \
+            -f llmisvc-controller.Dockerfile .
+
+      - name: Push to GHCR
+        run: docker push ghcr.io/dbirks/llmisvc-controller:${{ github.event.inputs.tag }}
