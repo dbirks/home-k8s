@@ -1,0 +1,29 @@
+# /models page RBAC — lets the llm-portal ServiceAccount read LLMInferenceService
+# CRs in the `default` namespace (where qwen38-llm + muse-glimmer-llm live) so the
+# portal's /models page (gated by MODELS_NAMESPACE=default) can list them.
+# Read-only (get/list/watch); cross-namespace binding: Role in `default`, subject SA
+# in `llm-portal`.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: llm-portal-models-reader
+  namespace: default
+rules:
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["llminferenceservices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: llm-portal-models-reader
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: llm-portal-models-reader
+subjects:
+  - kind: ServiceAccount
+    name: llm-portal
+    namespace: llm-portal

@@ -65,6 +65,7 @@ data:
   KEYSTORE_MODE: "kubernetes"        # persist keys as k8s Secrets (default is memory!)
   KUBERNETES_NAMESPACE: "llm-portal" # where key Secrets are written
   DEFAULT_MODEL: "main"              # prefilled in setup snippets; matches vLLM served-model-name
+  MODELS_NAMESPACE: "default"        # enables /models page: lists LLMInferenceServices in this ns (read-only RBAC in apps/llm-portal-models-rbac.yaml)
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -85,7 +86,7 @@ spec:
       containers:
         - name: portal
           # pinned image tag (public ghcr, multi-arch). # {"$imagepolicy": "flux-system:llm-portal"}
-          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-cfa8dd06329c8aaa2c3386607a80772612854465
+          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-0dab00c3401e6880edead35b8aa2710e6aabf098
           ports:
             - containerPort: 8080
           envFrom:
