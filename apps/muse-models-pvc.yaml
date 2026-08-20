@@ -1,0 +1,16 @@
+# Durable, standalone PVC for the Muse-Glimmer-30B NVFP4 model served in the always-on catalog.
+# STANDALONE on purpose (incident lesson 2026-08-19): the old muse model lived on a PVC defined
+# INSIDE the muse-quant Job manifest, so retiring that job pruned the PVC and destroyed the local
+# copy. This PVC is independent of any job — retiring jobs never touches it. Model is re-pulled from
+# HF (dbirks/Muse-Glimmer-30B-NVFP4-AutoRound) by apps/muse-nvfp4-download.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: muse-models
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path        # NVMe; ~18GB NVFP4 weights + HF blob cache
+  resources:
+    requests:
+      storage: 50Gi

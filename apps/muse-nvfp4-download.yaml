@@ -1,0 +1,52 @@
+# One-off: re-download the Muse-Glimmer-30B NVFP4 (AutoRound, W4A4) quant from HF to the durable
+# muse-models PVC, for the always-on catalog. The local copy was lost in the 2026-08-19 incident
+# (see memory); the artifact is safe on HF (PRIVATE dbirks repo). No GPU — pure network/disk, so it
+# won't disturb the serving Qwen3.8 engine. Resumable (snapshot_download resumes partial files).
+# Retire this to .hold once the download completes (the muse-models PVC persists independently).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: muse-nvfp4-download
+  namespace: default
+spec:
+  backoffLimit: 8
+  activeDeadlineSeconds: 86400
+  ttlSecondsAfterFinished: 259200      # auto-GC 3d after finish (incident lesson: don't leave stale jobs)
+  template:
+    metadata:
+      labels: { app: muse-download }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              export HF_HUB_ENABLE_HF_TRANSFER=1
+              pip install -q hf_transfer 2>/dev/null || true
+              DST=/data/Muse-Glimmer-30B-NVFP4-AutoRound
+              echo "[$(date)] downloading dbirks/Muse-Glimmer-30B-NVFP4-AutoRound -> $DST"
+              python3 - <<'PY'
+              from huggingface_hub import snapshot_download
+              p = snapshot_download(
+                  "dbirks/Muse-Glimmer-30B-NVFP4-AutoRound",
+                  local_dir="/data/Muse-Glimmer-30B-NVFP4-AutoRound",
+                  max_workers=8,
+              )
+              print("snapshot at", p)
+              PY
+              echo "[$(date)] done: $(du -sh /data/Muse-Glimmer-30B-NVFP4-AutoRound | cut -f1)"
+              ls -la /data/Muse-Glimmer-30B-NVFP4-AutoRound | head -30
+          env:
+            - { name: HF_HOME, value: /data }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits: { cpu: "4", memory: 8Gi }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: muse-models } }
