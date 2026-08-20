@@ -21,6 +21,16 @@ spec:
     adminUser: admin
     adminPassword: admin
 
+    # Serve behind the llm.birks.dev/grafana subpath (single public Cloudflare entry).
+    # serve_from_sub_path makes Grafana emit all asset/API links under /grafana/, so
+    # the kgateway HTTPRoute forwards /grafana/* unchanged (no prefix rewrite needed).
+    # root_url is global, so the internal ingresses (private nginx + tailscale) now also
+    # live at /grafana/ — the private one auto-redirects / -> /grafana/ (app-root anno).
+    grafana.ini:
+      server:
+        root_url: "https://llm.birks.dev/grafana/"
+        serve_from_sub_path: true
+
     service:
       type: ClusterIP
       port: 80
@@ -41,8 +51,12 @@ spec:
     ingress:
       enabled: true
       ingressClassName: private
+      # Grafana serves from /grafana (serve_from_sub_path); redirect the bare host.
+      annotations:
+        nginx.ingress.kubernetes.io/app-root: /grafana/
       hosts:
         - grafana.hoam.lan
+      path: /grafana
 
     # Sidecar watches for ConfigMaps with dashboard/datasource labels.
     # Pinned to 2.8.1 (chart default 2.5.0's cached image hit a persistent

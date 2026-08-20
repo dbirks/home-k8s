@@ -94,3 +94,35 @@ spec:
               - dspark-deepswe-metrics.default.svc.cluster.local:9100
             labels:
               instance: dspark-deepswe
+      # --- LLM serving observability: KServe/vLLM engine pods (/metrics :8000) ---
+      # Each engine's vLLM Prometheus metrics carry a `model_name` label already;
+      # the extra `model`/`engine` labels here tag the label-less process/up metrics.
+      - job_name: 'vllm-qwen38'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - qwen38-llm-kserve-workload-svc.default.svc.cluster.local:8000
+            labels:
+              model: qwen3.8-nvfp4
+              engine: qwen38-llm
+      - job_name: 'vllm-muse-glimmer'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - muse-glimmer-llm-kserve-workload-svc.default.svc.cluster.local:8000
+            labels:
+              model: muse-glimmer-30b
+              engine: muse-glimmer-llm
+      # HAMi vGPU device-plugin monitor: per-pod VRAM + GPU SM utilization.
+      # hami_vgpu_memory_used_bytes / hami_container_device_utilization_ratio{pod=...}
+      # and host-level hami_host_gpu_memory_used_bytes / hami_host_gpu_utilization_ratio.
+      - job_name: 'hami-gpu'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - hami-device-plugin-monitor.kube-system.svc.cluster.local:31992
+            labels:
+              instance: hami-gpu

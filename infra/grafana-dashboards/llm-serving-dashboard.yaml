@@ -1,0 +1,178 @@
+# LLM serving observability — purpose-built, high signal-to-noise.
+#
+# Backed ONLY by metrics that actually exist on this cluster:
+#   * vLLM engine /metrics (scrape jobs vllm-qwen38 / vllm-muse-glimmer in
+#     infra/prometheus.yaml) — vllm:* series carry a model_name label.
+#   * HAMi vGPU monitor (scrape job hami-gpu) — hami_* per-pod VRAM + GPU util.
+#   * process_start_time_seconds + up{} from the same engine scrapes.
+# Datasource uid: prometheus. Note: vLLM emits no model-load-duration metric, so
+# "Engine uptime" (time since process start) is the cold-start / restart proxy.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-serving-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  llm-serving.json: |
+    {
+      "annotations": {"list": [{"builtIn": 1, "datasource": {"type": "grafana", "uid": "-- Grafana --"}, "enable": true, "hide": true, "name": "Annotations & Alerts", "type": "dashboard"}]},
+      "description": "vLLM/KServe serving health: per-model up, throughput, latency, queue, VRAM and GPU utilization.",
+      "editable": true,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"color": {"mode": "fixed"}, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red", "index": 0}, "1": {"text": "UP", "color": "green", "index": 1}}}], "unit": "short"}, "overrides": []},
+          "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+          "id": 1,
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name", "orientation": "auto"},
+          "title": "Engine Up / Ready",
+          "type": "stat",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "up{job=~\"vllm-.*\"}", "legendFormat": "{{model}}", "refId": "A"}]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "s", "decimals": 0, "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+          "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+          "id": 2,
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "value_and_name"},
+          "title": "Engine Uptime (since last start)",
+          "type": "stat",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "time() - process_start_time_seconds{job=~\"vllm-.*\"}", "legendFormat": "{{model}}", "refId": "A"}]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "bytes", "min": 0, "max": 103079215104, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 80530636800}, {"color": "red", "value": 96636764160}]}}, "overrides": []},
+          "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+          "id": 3,
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false, "showThresholdMarkers": true},
+          "title": "GPU VRAM Used (host, /96GB)",
+          "type": "gauge",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "hami_host_gpu_memory_used_bytes", "legendFormat": "used", "refId": "A"}]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}, {"color": "green", "value": 40}, {"color": "orange", "value": 90}]}}, "overrides": []},
+          "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+          "id": 4,
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false, "showThresholdMarkers": true},
+          "title": "GPU Utilization (host)",
+          "type": "gauge",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "hami_host_gpu_utilization_ratio", "legendFormat": "gpu", "refId": "A"}]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "tok/s", "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "stacking": {"mode": "none"}}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+          "id": 5,
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "title": "Throughput — tokens/sec (per model)",
+          "type": "timeseries",
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (model_name) (rate(vllm:generation_tokens_total[1m]))", "legendFormat": "gen — {{model_name}}", "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (model_name) (rate(vllm:prompt_tokens_total[1m]))", "legendFormat": "prompt — {{model_name}}", "refId": "B"}
+          ]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "stacking": {"mode": "none"}}}, "overrides": [{"matcher": {"id": "byRegexp", "options": "/waiting.*/"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]}]},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+          "id": 6,
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "title": "Requests — running vs waiting (queue depth)",
+          "type": "timeseries",
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "vllm:num_requests_running", "legendFormat": "running — {{model_name}}", "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "vllm:num_requests_waiting", "legendFormat": "waiting — {{model_name}}", "refId": "B"}
+          ]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"drawStyle": "line", "fillOpacity": 25, "lineWidth": 1, "stacking": {"mode": "normal"}}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+          "id": 7,
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "title": "VRAM Used per model (HAMi vGPU, stacked)",
+          "type": "timeseries",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "hami_vgpu_memory_used_bytes", "legendFormat": "{{pod}}", "refId": "A"}]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+          "id": 8,
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "title": "Time To First Token (TTFT) — p50 / p95 / p99",
+          "type": "timeseries",
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.50, sum by (le, model_name) (rate(vllm:time_to_first_token_seconds_bucket[5m])))", "legendFormat": "p50 — {{model_name}}", "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, model_name) (rate(vllm:time_to_first_token_seconds_bucket[5m])))", "legendFormat": "p95 — {{model_name}}", "refId": "B"},
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(vllm:time_to_first_token_seconds_bucket[5m])))", "legendFormat": "p99 — {{model_name}}", "refId": "C"}
+          ]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
+          "id": 9,
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "title": "End-to-end request latency — p50 / p95",
+          "type": "timeseries",
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.50, sum by (le, model_name) (rate(vllm:e2e_request_latency_seconds_bucket[5m])))", "legendFormat": "p50 — {{model_name}}", "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, model_name) (rate(vllm:e2e_request_latency_seconds_bucket[5m])))", "legendFormat": "p95 — {{model_name}}", "refId": "B"}
+          ]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 6, "x": 12, "y": 21},
+          "id": 10,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom", "calcs": []}, "tooltip": {"mode": "multi"}},
+          "title": "KV-cache usage (per model)",
+          "type": "timeseries",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "vllm:kv_cache_usage_perc", "legendFormat": "{{model_name}}", "refId": "A"}]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 6, "x": 18, "y": 21},
+          "id": 11,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom", "calcs": []}, "tooltip": {"mode": "multi"}},
+          "title": "GPU SM utilization per pod (HAMi)",
+          "type": "timeseries",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "hami_container_device_utilization_ratio", "legendFormat": "{{pod}}", "refId": "A"}]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}, "overrides": [{"matcher": {"id": "byRegexp", "options": "/.*error.*/"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}]},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 29},
+          "id": 12,
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "title": "Completed requests /s by finish reason",
+          "type": "timeseries",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (model_name, finished_reason) (rate(vllm:request_success_total[5m]))", "legendFormat": "{{finished_reason}} — {{model_name}}", "refId": "A"}]
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 29},
+          "id": 13,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom", "calcs": []}, "tooltip": {"mode": "multi"}},
+          "title": "Prefix-cache hit rate (per model)",
+          "type": "timeseries",
+          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (model_name) (rate(vllm:prefix_cache_hits_total[5m])) / clamp_min(sum by (model_name) (rate(vllm:prefix_cache_queries_total[5m])), 1)", "legendFormat": "{{model_name}}", "refId": "A"}]
+        }
+      ],
+      "refresh": "15s",
+      "schemaVersion": 39,
+      "tags": ["llm", "vllm", "kserve", "gpu"],
+      "templating": {"list": []},
+      "time": {"from": "now-1h", "to": "now"},
+      "title": "LLM Serving Observability",
+      "uid": "llm-serving"
+    }

@@ -1,11 +1,25 @@
 # llm.birks.dev routing + API-key enforcement.
 #
-# /v1/* -> vLLM backend, guarded by kgateway apiKeyAuth (per-key Secrets).
-# (/ -> portal is added once the portal Deployment/Service exist.)
+# /v1/* -> KServe/llm-d gateway, guarded by kgateway apiKeyAuth (per-key Secrets).
+# (/ -> portal for OIDC login/key management, unauthenticated.)
 #
-# INTERIM BACKEND: the plain `vllm` Service (Qwen3.6-27B) in the `default` namespace,
-# reachable cross-namespace via the ReferenceGrant below. When the vLLM Production
-# Stack is stood up in llm-portal, repoint this backendRef there and drop the grant.
+# BACKEND: the KServe/llm-d Envoy gateway Service `envoy-default-kserve-llm-gw-8ab60ea9`
+# in `envoy-gateway-system` (port 80). This is the Envoy-class Gateway `kserve-llm-gw`
+# programmed at 10.0.0.204 that fronts the two LLMInferenceServices. The service name is
+# a deterministic hash of the Gateway's namespace/name and is stable across reconciles.
+#   (PREVIOUS backendRef, for one-line revert: Service `vllm-stack-router-service`
+#    port 80 in ns `default` via a ReferenceGrant in `default` — that vLLM Production
+#    Stack is now PARKED and the Service is gone, so /v1 was returning 500.)
+#
+# MODEL ROUTING (important): this gateway does NOT do OpenAI body-`model` routing on a
+# bare /v1 path — the Envoy AI Gateway model-router ext-proc is not wired (no
+# AIGatewayRoute, no ext-proc sidecar; bare /v1 => 404). Routing is PATH-based: KServe
+# publishes each model under /default/<isvc>/v1/... . So we expose one authenticated
+# base path per catalog model and rewrite into the KServe path:
+#   - https://llm.birks.dev/v1        -> qwen38-llm      (model "qwen3.8-nvfp4", default/coding)
+#   - https://llm.birks.dev/muse/v1   -> muse-glimmer-llm (model "muse-glimmer-30b", reasoning)
+# Clients set base_url to the matching path; the body `model` must match that path's model
+# (vLLM validates it). /v1 stays the default so existing single-model coworker configs work.
 #
 # API-KEY MODEL (verified live + matched to the portal repo's Secret contract):
 #   - One Secret per credential (type extauth.solo.io/apikey), stringData holds
@@ -29,17 +43,48 @@ spec:
         - path:
             type: PathPrefix
             value: /v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /default/qwen38-llm/v1
       backendRefs:
-        - name: vllm-stack-router-service   # vLLM Production Stack router (Qwen3.6-27B)
-          namespace: default
+        - name: envoy-default-kserve-llm-gw-8ab60ea9   # KServe/llm-d Envoy gateway (qwen3.8-nvfp4)
+          namespace: envoy-gateway-system
           port: 80
 ---
-# Allow the llm-portal HTTPRoute to reference the vllm Service in `default`.
+# Second catalog model: muse-glimmer-30b, exposed at /muse/v1 (same auth).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-v1-muse
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /muse/v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /default/muse-glimmer-llm/v1
+      backendRefs:
+        - name: envoy-default-kserve-llm-gw-8ab60ea9   # KServe/llm-d Envoy gateway (muse-glimmer-30b)
+          namespace: envoy-gateway-system
+          port: 80
+---
+# Allow the llm-portal HTTPRoutes to reference the KServe Envoy gateway Service.
 apiVersion: gateway.networking.k8s.io/v1
 kind: ReferenceGrant
 metadata:
-  name: llm-portal-httproute-to-vllm
-  namespace: default
+  name: llm-portal-httproute-to-kserve-gw
+  namespace: envoy-gateway-system
 spec:
   from:
     - group: gateway.networking.k8s.io
@@ -48,9 +93,9 @@ spec:
   to:
     - group: ""
       kind: Service
-      name: vllm-stack-router-service
+      name: envoy-default-kserve-llm-gw-8ab60ea9
 ---
-# Enforce API keys on /v1 ONLY (portal paths stay unauthenticated for OIDC login).
+# Enforce API keys on the /v1 model routes ONLY (portal paths stay unauthenticated for OIDC login).
 apiVersion: gateway.kgateway.dev/v1alpha1
 kind: TrafficPolicy
 metadata:
@@ -61,6 +106,9 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: vllm-v1
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: vllm-v1-muse
   apiKeyAuth:
     keySources:
       - header: Authorization

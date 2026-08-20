@@ -1,0 +1,45 @@
+# Grafana at llm.birks.dev/grafana — same single Cloudflare entry point as /v1 + portal.
+#
+# The vLLM/LLM observability dashboards, reachable on the public host at a subpath.
+# Grafana runs with serve_from_sub_path=true + root_url=.../grafana/ (see
+# infra/grafana.yaml), so it OWNS the /grafana prefix: we forward /grafana/* to it
+# UNCHANGED (no URLRewrite) and Grafana strips the prefix itself + emits assets under
+# /grafana/, which keeps the page from rendering as an asset-404 shell.
+#
+# Auth: none at the gateway — Grafana has its own login. Do NOT attach the /v1
+# apiKeyAuth TrafficPolicy here. /grafana is a longer prefix than the portal's `/`
+# catch-all, so Gateway-API precedence routes it here (same trick as /v1).
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /grafana
+      backendRefs:
+        - name: grafana
+          namespace: monitoring
+          port: 80
+---
+# Allow the llm-portal HTTPRoute to reference the grafana Service in `monitoring`.
+apiVersion: gateway.networking.k8s.io/v1
+kind: ReferenceGrant
+metadata:
+  name: llm-portal-httproute-to-grafana
+  namespace: monitoring
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: llm-portal
+  to:
+    - group: ""
+      kind: Service
+      name: grafana
