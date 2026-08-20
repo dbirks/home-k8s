@@ -175,14 +175,17 @@ data:
         },
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "fieldConfig": {"defaults": {"unit": "none", "decimals": 2, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}, "overrides": []},
+          "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}, "overrides": []},
           "gridPos": {"h": 8, "w": 6, "x": 18, "y": 18},
           "id": 14,
           "options": {"legend": {"displayMode": "list", "placement": "bottom", "calcs": ["mean"]}, "tooltip": {"mode": "multi"}},
-          "title": "Spec-decode acceptance rate (drafter)",
-          "description": "Accepted draft tokens / total draft tokens. Non-zero only for models with a speculative drafter (Qwen3.8 DFlash2).",
+          "title": "Output tokens per request — p50 / p95",
+          "description": "Distribution of generated tokens per completed request (response length).",
           "type": "timeseries",
-          "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (model_name) (rate(vllm:spec_decode_num_accepted_tokens_total{model_name=~\"$model\"}[5m])) / clamp_min(sum by (model_name) (rate(vllm:spec_decode_num_draft_tokens_total{model_name=~\"$model\"}[5m])), 1)", "legendFormat": "{{model_name}}", "refId": "A"}]
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.50, sum by (le, model_name) (rate(vllm:request_generation_tokens_bucket{model_name=~\"$model\"}[10m])))", "legendFormat": "p50 — {{model_name}}", "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, model_name) (rate(vllm:request_generation_tokens_bucket{model_name=~\"$model\"}[10m])))", "legendFormat": "p95 — {{model_name}}", "refId": "B"}
+          ]
         },
 
         {"type": "row", "id": 102, "title": "Latency", "collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 26}, "panels": []},
