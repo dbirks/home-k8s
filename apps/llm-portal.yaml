@@ -64,8 +64,15 @@ data:
   ENTRA_CLIENT_ID: "1787dab3-157b-4872-a88a-bffe4ba75094"   # public id
   KEYSTORE_MODE: "kubernetes"        # persist keys as k8s Secrets (default is memory!)
   KUBERNETES_NAMESPACE: "llm-portal" # where key Secrets are written
-  DEFAULT_MODEL: "main"              # prefilled in setup snippets; matches vLLM served-model-name
   MODELS_NAMESPACE: "default"        # enables /models page: lists LLMInferenceServices in this ns (read-only RBAC in apps/llm-portal-models-rbac.yaml)
+  GRAFANA_URL: "https://llm.birks.dev/grafana"   # Metrics link in header + account page
+  # Setup-picker catalog: each model + its base path (qwen on /v1, muse on /muse/v1).
+  # A reasoning model's snippets carry a max_tokens reminder. id = vLLM served-model-name.
+  ONBOARDING_MODELS: |
+    [
+      {"id":"qwen3.8-nvfp4","label":"Qwen3.8-27B","kind":"coding","path":""},
+      {"id":"muse-glimmer-30b","label":"Muse-Glimmer 30B","kind":"reasoning","path":"/muse"}
+    ]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -86,7 +93,7 @@ spec:
       containers:
         - name: portal
           # pinned image tag (public ghcr, multi-arch). # {"$imagepolicy": "flux-system:llm-portal"}
-          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-0dab00c3401e6880edead35b8aa2710e6aabf098
+          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-c229c6bc114415132a09d050f53f3f173e2f4c73
           ports:
             - containerPort: 8080
           envFrom:
