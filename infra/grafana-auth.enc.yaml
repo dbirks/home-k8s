@@ -1,0 +1,24 @@
+apiVersion: v1
+data:
+    admin-password: ENC[AES256_GCM,data:93/2ilhxhmBahTj+h/4We6skKLxudMxmDeyXBDaa/LqX97esUAMTcw==,iv:clA1LyMRsXIeefSW4a6Tqv2k3mMnpNg23LPG4HQVUZU=,tag:IDYBNBf78P2YBKebXc7NBw==,type:str]
+    admin-user: ENC[AES256_GCM,data:jGmVfIZu6Xw=,iv:75Q1VO2aVkrQRof88wxqi5O8r8mHl4l/lnHEoD9Fw1w=,tag:IH08IK37xijRGFQZ4DSVcw==,type:str]
+    azuread-client-secret: ENC[AES256_GCM,data:qOqhQ/I7HB/Y1fpnajEy7IhO0mHStlGEfeWjOoXQMF91MpzJLyDSqpeHC4r5NIjN/03WCmqU/vo=,iv:LHBu58xlM4MAA9iw3/FTFe56qakqskFrShgniF3KwGs=,tag:M/UnILeAi9x8wQzh6j8TPQ==,type:str]
+kind: Secret
+metadata:
+    name: grafana-auth
+    namespace: monitoring
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBHRlpYd01MOEhIWVZGOVZa
+            dTBGTXk2aE9DUTRWNGNXd1VPTFBVMzJMNkR3CmxCcXlmSHZ4UG5uS0daSSsvV2NN
+            L251dGtZcTEyTkY5WGxOaXpxTklVOGMKLS0tIGxHS3NNdWU3Z0IyYmRMREZ2bks2
+            RnRJY1VpbmErRmNWeWxNUE5DSW5mQUEK8VGbamqhn1HNm0TBbblQJK2IfqYJURaQ
+            sAwszXnaY4eeJrekYa4hrFJtA/r7BJJ2Wc2DnuPM4bEeO64zZdKHxQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-08-20T23:10:19Z"
+    mac: ENC[AES256_GCM,data:jBKRCai4Nl0Co6smO79JxIyBIYS7X7jol3bCHYgwX/754et3Svn5RGx42SgbQbi/hTEM5cX2ODw3jeAgKzJIUyvw76xKcrzOjmb/L/TPFWSC4D2p4IdHs+1OGiZzTo0EmlC8qFUBa8X9T30BT2GyFvHq87uwHkx1qNp0n7swCFY=,iv:XULYlZIZwGtwqWZcER2041p/dvu9NrjPLNZX1zvO3lQ=,tag:nUoNSex3dG0Z1QKaGSrz3A==,type:str]
+    version: 3.13.0
