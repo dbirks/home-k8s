@@ -37,6 +37,13 @@ spec:
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
           - "--max-model-len=8192"
+          # Muse-Glimmer emits OpenAI-Harmony channel format (analysis + final + to=self tool routing).
+          # Without these, raw channel tokens bleed into message.content (ugly for clients). The custom
+          # muse-glimmer image ships matching `muse_glimmer` parsers; this splits reasoning_content from
+          # the clean final answer and enables tool calls. (Recipe from the retired muse-serve manifests.)
+          - "--enable-auto-tool-choice"
+          - "--tool-call-parser=muse_glimmer"
+          - "--reasoning-parser=muse_glimmer"
         env:
           - { name: VLLM_PORT, value: "8000" }
           - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
