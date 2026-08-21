@@ -12,9 +12,12 @@
 # from spec.infrastructure.parametersRef (EnvoyProxy must live in the Gateway's namespace).
 # HTTP :80 only — TLS terminates at Cloudflare's edge, origin hop stays plain HTTP.
 #
-# The cutover keeps cloudflared unchanged: a hand-written ClusterIP Service named `llm-gw`
-# (apps/llm-routes.yaml) selects THIS gateway's Envoy pods, so the dashboard's
-# llm-gw.llm-portal.svc:80 target still resolves after kgateway is gone.
+# The cutover keeps cloudflared unchanged: the hand-written `llm-gw` Service below keeps
+# the dashboard's llm-gw.llm-portal.svc:80 target resolving after kgateway is gone. It is
+# an ExternalName (CNAME) rather than a selector Service because Envoy Gateway runs the
+# proxy pods in `envoy-gateway-system`, not in this Gateway's namespace, and a Service
+# selector cannot cross namespaces. The CNAME target `envoy-<ns>-<gw>-<hash>` is
+# deterministic from the Gateway's namespace/name, so it is stable across reconciles.
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
@@ -47,3 +50,16 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
+---
+# Stable cutover Service: cloudflared's public-hostname mapping (Cloudflare dashboard,
+# not editable from here) targets llm-gw.llm-portal.svc.cluster.local:80. This ExternalName
+# CNAMEs that stable name to the new Envoy Gateway's managed Service, so the tunnel reaches
+# llm-public-gw unchanged. (Replaces the ClusterIP Service the kgateway Gateway used to own.)
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-gw
+  namespace: llm-portal
+spec:
+  type: ExternalName
+  externalName: envoy-llm-portal-llm-public-gw-b53bbc43.envoy-gateway-system.svc.cluster.local
