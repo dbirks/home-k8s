@@ -1,0 +1,49 @@
+# llm.birks.dev public Gateway (Envoy Gateway, class "envoy") — the single entry the
+# Cloudflare Tunnel points at. Replaces the retired kgateway Gateway of the same purpose.
+#
+# WHY a separate Gateway (not the KServe-managed `kserve-llm-gw`): that Gateway and its
+# six *-kserve-route HTTPRoutes are owned/reconciled by the LLMInferenceService controller
+# — we must not co-tenant our public routes on it. So we stand up our OWN envoy-class
+# Gateway here and backendRef into the KServe Envoy gateway Service from our routes.
+#
+# ClusterIP (not LoadBalancer): cloudflared runs in-cluster and reaches this over cluster
+# DNS, so we don't spend a MetalLB LAN IP on a public-only endpoint. Envoy Gateway defaults
+# the managed Service to LoadBalancer, so we force ClusterIP via this EnvoyProxy referenced
+# from spec.infrastructure.parametersRef (EnvoyProxy must live in the Gateway's namespace).
+# HTTP :80 only — TLS terminates at Cloudflare's edge, origin hop stays plain HTTP.
+#
+# The cutover keeps cloudflared unchanged: a hand-written ClusterIP Service named `llm-gw`
+# (apps/llm-routes.yaml) selects THIS gateway's Envoy pods, so the dashboard's
+# llm-gw.llm-portal.svc:80 target still resolves after kgateway is gone.
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: llm-public-gw-proxy
+  namespace: llm-portal
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: llm-public-gw
+  namespace: llm-portal
+spec:
+  gatewayClassName: envoy
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: llm-public-gw-proxy
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same

@@ -1,0 +1,35 @@
+# Aggregate client API-key Secret for the llm.birks.dev public path.
+#
+# CONTRACT (the llm-portal issuer writes entries to match this EXACTLY):
+#   name: llm-apikeys, namespace: llm-portal, type: Opaque
+#   data: one entry per issued key — key `client-<opaqueid>`, value `llm_<raw>`
+#         (the BARE token, NO "Bearer " prefix).
+# The Envoy Gateway SecurityPolicy.apiKeyAuth.credentialRefs (apps/llm-routes.yaml)
+# references THIS single Secret. Each data value is a valid API key; the data key
+# (client id) is forwarded to the backend as X-Client-Id.
+#
+# Bootstrapped here with ONE test entry so auth can be verified end-to-end. The portal
+# will add/remove real entries at runtime. Repo is PUBLIC → SOPS+age encrypted.
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+    name: llm-apikeys
+    namespace: llm-portal
+data:
+    client-test: ENC[AES256_GCM,data:4HbJ8tqkipiH0rfMQtap334x4RI=,iv:NCeKCo/8h6RoPeONZ7zYka1eOHwmFxLfoeok57ehXGc=,tag:SckxVNWxPVI+SMF407qpyw==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBtNWFJdjl4YklnRWRzb1Nw
+            RTl6TGVJQS90Z3F5aTF1d3BsOU1OemJaUlVBCmxna2M5OXhlb1JoSjBrNUh6Vzhu
+            b2FwSk8xc2RSMXVsZ2R5V25OQ2hTRGsKLS0tIHRTd3lPb3ZyNG4wdFVxWlJVK1hF
+            QTd3akNRZ3NiNVlKbzFmUHZiM2ZZVW8K8mnA9qzN5o+GckUkQeTKrLpqjS22DrPh
+            VLNXZcO4ATjsRjl+/CMJlKmklIKmSh9fb27D80kNqr8YpBhg9ahhRA==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-08-21T04:03:26Z"
+    mac: ENC[AES256_GCM,data:sK34tBWNezUDeOUHwx6+iWb54pbSRiFZprU087y5ihWUkmkTWC3MaUN0J5cCLl1yJ8y83qCHbC7sJT8rcbL8yDikshVAT1SXK9URJ8U8VxH4sfVAyFof+aAk7BNVqKXw5pQ5msm2p9KMe6v9sL1Zsz1D5rPwLRmiGeUzyW3GNu8=,iv:Jxxx2eVdv0BGo2DNtayCYvVjN99hr+NmziluDM4wSJs=,tag:zLo7o4UXCjOTIrGw/BTSeQ==,type:str]
+    version: 3.13.0

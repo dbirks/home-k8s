@@ -20,7 +20,7 @@ metadata:
   namespace: llm-portal
 spec:
   parentRefs:
-    - name: llm-gw
+    - name: llm-public-gw
   rules:
     - matches:
         - path:

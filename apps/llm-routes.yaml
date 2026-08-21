@@ -1,34 +1,38 @@
 # llm.birks.dev routing + API-key enforcement.
 #
-# /v1/* -> KServe/llm-d gateway, guarded by kgateway apiKeyAuth (per-key Secrets).
-# (/ -> portal for OIDC login/key management, unauthenticated.)
+# ENTRY: Cloudflare Tunnel -> Envoy Gateway `llm-public-gw` (class "envoy", ns llm-portal,
+# apps/llm-public-gateway.yaml). Per-route SecurityPolicy apiKeyAuth guards the model
+# routes; portal `/` and grafana `/grafana` stay unauthenticated (OIDC/oauth2-proxy own
+# their own login). (Previous impl was kgateway + TrafficPolicy apiKeyAuth — retired.)
 #
 # BACKEND: the KServe/llm-d Envoy gateway Service `envoy-default-kserve-llm-gw-8ab60ea9`
 # in `envoy-gateway-system` (port 80). This is the Envoy-class Gateway `kserve-llm-gw`
-# programmed at 10.0.0.204 that fronts the two LLMInferenceServices. The service name is
-# a deterministic hash of the Gateway's namespace/name and is stable across reconciles.
-#   (PREVIOUS backendRef, for one-line revert: Service `vllm-stack-router-service`
-#    port 80 in ns `default` via a ReferenceGrant in `default` — that vLLM Production
-#    Stack is now PARKED and the Service is gone, so /v1 was returning 500.)
+# (10.0.0.204) that fronts the LLMInferenceServices. The service name is a deterministic
+# hash of the Gateway's namespace/name and is stable across reconciles. That Gateway and
+# its *-kserve-route HTTPRoutes are owned by the LLMISVC controller — we do NOT touch them;
+# we backendRef into its Service from our own routes (ReferenceGrant below).
 #
-# MODEL ROUTING (important): this gateway does NOT do OpenAI body-`model` routing on a
-# bare /v1 path — the Envoy AI Gateway model-router ext-proc is not wired (no
-# AIGatewayRoute, no ext-proc sidecar; bare /v1 => 404). Routing is PATH-based: KServe
-# publishes each model under /default/<isvc>/v1/... . So we expose one authenticated
-# base path per catalog model and rewrite into the KServe path:
-#   - https://llm.birks.dev/v1        -> qwen38-llm      (model "qwen3.8-nvfp4", default/coding)
-#   - https://llm.birks.dev/muse/v1   -> muse-glimmer-llm (model "muse-glimmer-30b", reasoning)
+# MODEL ROUTING (important): this backend does NOT do OpenAI body-`model` routing on a
+# bare /v1 path (no AIGatewayRoute/ext-proc; bare /v1 => 404). Routing is PATH-based: KServe
+# publishes each model under /default/<isvc>/v1/... . So we expose one authenticated base
+# path per catalog model and rewrite into the KServe path:
+#   - https://llm.birks.dev/v1            -> qwen38-llm     (model "qwen3.8-nvfp4", default/coding)
+#   - https://llm.birks.dev/muse/v1       -> muse-glimmer-llm (model "muse-glimmer-30b")
+#   - https://llm.birks.dev/qwen36/v1     -> qwen36-llm     (model "qwen3.6-27b")
+#   - https://llm.birks.dev/qwen36-a3b/v1 -> qwen36-a3b-llm (model "qwen3.6-35b-a3b" MoE)
+#   - https://llm.birks.dev/gemma/v1      -> gemma4-llm     (model "gemma-4-31b")
+#   - https://llm.birks.dev/laguna/v1     -> laguna-llm     (model "laguna-s-2.1")
 # Clients set base_url to the matching path; the body `model` must match that path's model
-# (vLLM validates it). /v1 stays the default so existing single-model coworker configs work.
+# (vLLM validates it). /v1 stays the default so single-model coworker configs still work.
 #
-# API-KEY MODEL (verified live + matched to the portal repo's Secret contract):
-#   - One Secret per credential (type extauth.solo.io/apikey), stringData holds
-#     { client-<opaque-id>: "llm_<credential>" } — the RAW key value, NO "Bearer " prefix.
-#   - Selected by label `llm-portal/api-key: "true"` (the portal's LabelDomain=llm-portal;
-#     this selector MUST match it or every key silently fails to authenticate).
-#   - keySources: [{header: Authorization}] — kgateway STRIPS the "Bearer " scheme and
-#     matches the bare token, so OpenAI/Claude-Code clients sending
-#     `Authorization: Bearer llm_...` match the raw stored value. (Verified: 200.)
+# API-KEY MODEL (Envoy Gateway SecurityPolicy.apiKeyAuth):
+#   - ONE aggregate Opaque Secret `llm-apikeys` (apps/llm-apikeys.enc.yaml). Each data entry
+#     is `client-<opaqueid>: llm_<raw>` — the RAW key, NO "Bearer " prefix. The portal
+#     issuer adds/removes entries at runtime.
+#   - credentialRefs names that one Secret; extractFrom Authorization header. Envoy strips
+#     the "Bearer " scheme and matches the bare token, so OpenAI/Claude-Code clients sending
+#     `Authorization: Bearer llm_...` authenticate against the stored raw value.
+#   - forwardClientIDHeader: the matched client id is forwarded to vLLM as X-Client-Id.
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -37,7 +41,7 @@ metadata:
   namespace: llm-portal
 spec:
   parentRefs:
-    - name: llm-gw
+    - name: llm-public-gw
   rules:
     - matches:
         - path:
@@ -62,7 +66,7 @@ metadata:
   namespace: llm-portal
 spec:
   parentRefs:
-    - name: llm-gw
+    - name: llm-public-gw
   rules:
     - matches:
         - path:
@@ -87,7 +91,7 @@ metadata:
   namespace: llm-portal
 spec:
   parentRefs:
-    - name: llm-gw
+    - name: llm-public-gw
   rules:
     - matches:
         - path:
@@ -112,7 +116,7 @@ metadata:
   namespace: llm-portal
 spec:
   parentRefs:
-    - name: llm-gw
+    - name: llm-public-gw
   rules:
     - matches:
         - path:
@@ -137,7 +141,7 @@ metadata:
   namespace: llm-portal
 spec:
   parentRefs:
-    - name: llm-gw
+    - name: llm-public-gw
   rules:
     - matches:
         - path:
@@ -162,7 +166,7 @@ metadata:
   namespace: llm-portal
 spec:
   parentRefs:
-    - name: llm-gw
+    - name: llm-public-gw
   rules:
     - matches:
         - path:
@@ -195,9 +199,11 @@ spec:
       kind: Service
       name: envoy-default-kserve-llm-gw-8ab60ea9
 ---
-# Enforce API keys on the /v1 model routes ONLY (portal paths stay unauthenticated for OIDC login).
-apiVersion: gateway.kgateway.dev/v1alpha1
-kind: TrafficPolicy
+# Enforce API keys on the model routes ONLY (portal `/` and grafana `/grafana` stay
+# unauthenticated for OIDC / oauth2-proxy login). Envoy Gateway SecurityPolicy attaches
+# per-HTTPRoute via targetRefs.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
 metadata:
   name: vllm-apikey-auth
   namespace: llm-portal
@@ -222,15 +228,16 @@ spec:
       kind: HTTPRoute
       name: vllm-v1-laguna
   apiKeyAuth:
-    keySources:
-      - header: Authorization
-    secretSelector:
-      matchLabels:
-        llm-portal/api-key: "true"
+    credentialRefs:
+      - name: llm-apikeys
+    extractFrom:
+      - headers:
+          - Authorization
+    forwardClientIDHeader: X-Client-Id
 ---
 # Catch-all -> portal (sign-in, /account, key create/revoke). Same namespace as the
 # Gateway, so no ReferenceGrant. NO apiKeyAuth here (OIDC login must be reachable);
-# /v1 is a longer prefix so it still routes to vLLM.
+# the model routes use longer prefixes so they still match first.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -238,7 +245,7 @@ metadata:
   namespace: llm-portal
 spec:
   parentRefs:
-    - name: llm-gw
+    - name: llm-public-gw
   rules:
     - matches:
         - path:
