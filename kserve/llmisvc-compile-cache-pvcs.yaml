@@ -1,0 +1,26 @@
+# Persistent vLLM torch.compile / inductor cache volumes (on NVMe via local-path).
+#
+# WHY: each scale-from-zero cold start currently recompiles torch.compile/inductor kernels
+# (~85s of the ~4min cold start, measured 2026-08-21) because vLLM's cache
+# (VLLM_CACHE_ROOT, default ~/.cache/vllm) lives on the pod's ephemeral rootfs and is lost
+# when the engine scales to 0. Mounting a persistent PVC at VLLM_CACHE_ROOT lets a later cold
+# start reuse the compiled artifacts and skip recompilation (CUDA-graph capture still repeats).
+# vLLM keys the cache by model/config/VLLM_*/torch/GPU, so it self-invalidates on any change.
+#
+# One RWO PVC per model (engines are separate Deployments; single node so the PVC rebinds to the
+# same node across the model's scale 0<->1 cycles). local-path SC = NVMe. Small (cache is ~100s of MB).
+# Reclaim=Delete is fine: it's a rebuildable cache, not durable data.
+#
+# Rolled out incrementally: qwen3.8 first (pilot), the rest after it's validated.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen38-vllm-cache
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi

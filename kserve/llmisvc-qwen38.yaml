@@ -59,7 +59,7 @@ spec:
           name: qwen-epp-request-rate
           metadata:
             serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_llm_inference_pool_default_ext_proc_upstream_rq_total[2m]))'
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_llm_inference_pool_default_ext_proc_upstream_rq_total[1m]))'
             threshold: "5"
             activationThreshold: "0.001"
   template:                                      # PodSpec for the vLLM engine pod
@@ -88,6 +88,8 @@ spec:
           - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
           - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
           - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+          # Persistent torch.compile cache dir (qwen38-vllm-cache PVC on NVMe) — skips recompile on cold start.
+          - { name: VLLM_CACHE_ROOT, value: /vllm-cache }
         ports:
           - containerPort: 8000
         resources:
@@ -100,6 +102,14 @@ spec:
           # host `memory` request kept low (8Gi) so multiple model pods fit in 46GB host RAM (no swap).
           limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "44000", cpu: "8", memory: 24Gi }
           requests: { cpu: "4", memory: 8Gi }
+        volumeMounts:
+          # Persist vLLM's torch.compile/inductor cache on NVMe so a scale-from-zero cold start
+          # reuses compiled kernels instead of re-paying ~85s of compilation on every wake.
+          - { name: vllm-cache, mountPath: /vllm-cache }
+    volumes:
+      - name: vllm-cache
+        persistentVolumeClaim:
+          claimName: qwen38-vllm-cache
   router:
     gateway:
       refs:
