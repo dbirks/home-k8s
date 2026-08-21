@@ -53,7 +53,7 @@ spec:
           - "--port=8000"
           - "--trust-remote-code"
           - "--kv-cache-dtype=fp8_e4m3"
-          - "--gpu-memory-utilization=0.85"
+          - "--gpu-memory-utilization=0.9"
           - "--max-model-len=8192"
           # poolside Laguna XML-style tool protocol + interleaved reasoning (poolside_v1 parsers).
           - "--enable-auto-tool-choice"
@@ -68,7 +68,12 @@ spec:
         ports:
           - containerPort: 8000
         resources:
-          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "44000", cpu: "8", memory: 24Gi }
+          # EXCLUSIVE model: Laguna-S-2.1 is a large NVFP4 MoE that OOM'd at the shared 44000 cap
+          # (needs most of the card). gpumem 94000 => it schedules only when the card is otherwise
+          # empty (all other catalog models asleep) — acceptable under scale-to-zero. NOTE: loading a
+          # ~50GB+ model on the 46GB-no-swap host may still need the bounded-buffer loader (InstantTensor/
+          # runai_streamer, queued) — validate the full wake+load after that lands.
+          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "94000", cpu: "8", memory: 24Gi }
           requests: { cpu: "4", memory: 8Gi }
   router:
     gateway:
