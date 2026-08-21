@@ -51,13 +51,17 @@ spec:
       cooldownPeriod: 120
       pollingInterval: 15
       triggers:
+        # Wake signal = the Envoy ext-proc request RATE to qwen's InferencePool. ext-proc is called
+        # for routing on EVERY incoming request BEFORE the engine, so this rises >0 even at 0 engine
+        # replicas → KEDA activates (0->1). Falls to 0 after ~2min of no requests → scale to idle (0).
+        # (Chosen over flow_control_pool_saturation, which reads 1 whenever the engine is down → flaps.)
         - type: prometheus
-          name: qwen-epp-saturation
+          name: qwen-epp-request-rate
           metadata:
             serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-            query: 'sum(llm_d_epp_flow_control_pool_saturation{engine="qwen38-llm"})'
-            threshold: "0.5"
-            activationThreshold: "0.01"
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_llm_inference_pool_default_ext_proc_upstream_rq_total[2m]))'
+            threshold: "5"
+            activationThreshold: "0.001"
   template:                                      # PodSpec for the vLLM engine pod
     runtimeClassName: nvidia
     securityContext:                              # preset defaults to runAsNonRoot:true; our vLLM
