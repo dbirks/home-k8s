@@ -73,12 +73,19 @@ data:
   GRAFANA_URL: "https://llm.birks.dev/grafana"   # Metrics link in header + account page
   # The e-gineering mark now ships baked into the image (//go:embed default logo,
   # alt defaults to "e-gineering") — no BRAND_LOGO_FILE / mounted ConfigMap needed.
-  # Setup-picker catalog: each model + its base path (qwen on /v1, muse on /muse/v1).
+  # Setup-picker catalog. Since the stage-2 routing change (apps/llm-routes.yaml +
+  # apps/llm-ai-gateway.yaml) ALL models share ONE base URL https://llm.birks.dev/v1
+  # and are selected by the request-body `model` field (AIGatewayRoute model-name
+  # routing) — so every path is "" (no per-model path prefix any more).
   # A reasoning model's snippets carry a max_tokens reminder. id = vLLM served-model-name.
   ONBOARDING_MODELS: |
     [
       {"id":"qwen3.8-nvfp4","label":"Qwen3.8-27B","kind":"coding","path":""},
-      {"id":"muse-glimmer-30b","label":"Muse-Glimmer 30B","kind":"reasoning","path":"/muse"}
+      {"id":"muse-glimmer-30b","label":"Muse-Glimmer 30B","kind":"reasoning","path":""},
+      {"id":"qwen3.6-27b","label":"Qwen3.6-27B","kind":"coding","path":""},
+      {"id":"qwen3.6-35b-a3b","label":"Qwen3.6-35B-A3B","kind":"reasoning","path":""},
+      {"id":"gemma-4-31b","label":"Gemma 4 31B","kind":"reasoning","path":""},
+      {"id":"laguna-s-2.1","label":"Laguna-S 2.1","kind":"reasoning","path":""}
     ]
 ---
 apiVersion: apps/v1
@@ -100,7 +107,7 @@ spec:
       containers:
         - name: portal
           # pinned image tag (public ghcr, multi-arch). # {"$imagepolicy": "flux-system:llm-portal"}
-          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-6f2fdeacce27101fb5e8551d7f2f39c59360db6c
+          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-48fc22fc11daf0e3fd7b2664ced55856139653bf
           ports:
             - containerPort: 8080
           envFrom:
