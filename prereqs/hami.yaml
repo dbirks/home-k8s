@@ -47,7 +47,7 @@ spec:
   chart:
     spec:
       chart: hami
-      version: "2.9.0"          # chart 2.9.0 == app 2.9.0 (verified against the repo index)
+      version: "2.10.0"          # chart 2.9.0 == app 2.9.0 (verified against the repo index)
       sourceRef:
         kind: HelmRepository
         name: hami
@@ -66,7 +66,7 @@ spec:
         image:
           registry: registry.k8s.io      # Aliyun default mirror lacks v1.36.2
           repository: kube-scheduler
-          tag: "v1.36.2"                  # MUST equal the k8s control-plane minor
+          tag: "v1.36.4"                  # MUST equal the k8s control-plane minor
       certManager:
         enabled: true                     # cert-manager present; avoids the old certgen image
 
