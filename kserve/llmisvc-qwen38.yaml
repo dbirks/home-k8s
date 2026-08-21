@@ -36,14 +36,16 @@ spec:
   model:
     uri: pvc://qwen38-quant-workspace          # PVC ROOT (subPath mount is broken on local-path)
     name: qwen3.8-nvfp4                          # the OpenAI `model` name clients route by
-  replicas: 1
-  # SCALE-TO-ZERO (Phase 2 validation): KEDA scales the engine to 0 after `cooldownPeriod` idle,
-  # and back to 1 when the llm-d EPP flow-control pool saturates (a request waiting with no ready
-  # endpoints). cooldownPeriod short (120s) for testing. NOTE: cold-load is ~3min, longer than most
-  # client timeouts, so the first request after idle likely needs a retry (scale-up still fires).
-  # If saturation proves not to be the right wake signal, swap the trigger query. Remove this block
-  # to revert qwen to always-on.
+  # SCALE-TO-ZERO (Phase 2 validation): `replicas` and `scaling` are mutually exclusive — use scaling.
+  # min=max=1 (single-replica model), idleReplicaCount:0 drops it BELOW min to 0 when fully idle for
+  # cooldownPeriod, and the KEDA prometheus trigger scales it back to 1 when the llm-d EPP flow-control
+  # pool saturates (a request waiting with no ready endpoints). cooldownPeriod short (120s) for testing.
+  # NOTE: cold-load is ~3min, longer than most client timeouts, so the first request after idle likely
+  # needs a retry (scale-up still fires). Swap the trigger query if saturation isn't the right wake
+  # signal. Revert to always-on = replace this whole scaling block with `replicas: 1`.
   scaling:
+    minReplicas: 1
+    maxReplicas: 1
     keda:
       idleReplicaCount: 0
       cooldownPeriod: 120
