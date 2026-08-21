@@ -1,0 +1,51 @@
+# One-off: download the three new NVFP4 catalog models (SEQUENTIALLY, to keep NVMe I/O gentle so
+# it doesn't stress etcd) to the durable catalog-models PVC. No GPU — pure network/disk. Repos
+# confirmed by research 2026-08-20 (all public, W4A4 NVFP4, SM120-serveable). Retire to .hold after.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: catalog-download-20260820
+  namespace: default
+spec:
+  backoffLimit: 8
+  activeDeadlineSeconds: 86400
+  ttlSecondsAfterFinished: 259200
+  template:
+    metadata:
+      labels: { app: catalog-download }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              export HF_HUB_ENABLE_HF_TRANSFER=1
+              pip install -q hf_transfer 2>/dev/null || true
+              # sequential downloads (max_workers modest) to avoid saturating the shared NVMe
+              python3 - <<'PY'
+              from huggingface_hub import snapshot_download
+              repos = [
+                  ("unsloth/Qwen3.6-27B-NVFP4",            "/data/Qwen3.6-27B-NVFP4"),
+                  ("unsloth/Qwen3.6-35B-A3B-NVFP4-Fast",   "/data/Qwen3.6-35B-A3B-NVFP4-Fast"),
+                  ("nvidia/Gemma-4-31B-IT-NVFP4",          "/data/Gemma-4-31B-IT-NVFP4"),
+              ]
+              for repo, dst in repos:
+                  print(f"=== downloading {repo} -> {dst}", flush=True)
+                  p = snapshot_download(repo, local_dir=dst, max_workers=4)
+                  print(f"=== done {repo} at {p}", flush=True)
+              PY
+              echo "[$(date)] all downloads complete:"; du -sh /data/* 2>/dev/null
+          env:
+            - { name: HF_HOME, value: /data }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits: { cpu: "4", memory: 8Gi }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: catalog-models } }
