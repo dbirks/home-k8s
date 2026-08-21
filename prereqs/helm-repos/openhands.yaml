@@ -1,16 +1,17 @@
-# OpenHands agent-canvas's official Helm chart (added in agent-canvas v1.4.0,
-# github.com/OpenHands/agent-canvas#1641) is NOT published to an OCI registry
-# or a traditional Helm repo index -- it only exists as source at
-# helm/agent-canvas inside the app's own git repo (confirmed: no packages
-# under the OpenHands/agent-canvas or All-Hands-AI GitHub orgs). So instead of
-# a HelmRepository/OCIRepository like the other files in this directory, we
-# use a GitRepository and point the HelmRelease's chart.spec.sourceRef at it
-# (apps/openhands.yaml), with chart.spec.chart set to the in-repo path.
+# OpenHands agent-canvas Helm chart. It is NOT published to an OCI registry or
+# a Helm repo index -- it only exists as source at helm/agent-canvas inside the
+# git repo. So instead of a HelmRepository/OCIRepository like the other files in
+# this directory, we use a GitRepository and point the HelmRelease's
+# chart.spec.sourceRef at it (apps/openhands.yaml), with chart.spec.chart set to
+# the in-repo path (./helm/agent-canvas).
 #
-# Pinned to a release tag (the chart was introduced in v1.4.0) rather than a
-# branch, so chart upgrades are deliberate. NOTE: this repo is ARCHIVED at
-# v1.6.1 (final standalone release); the maintained line is now the
-# OpenHands/OpenHands monorepo — see apps/openhands.yaml.
+# 2026-08-21: RE-HOMED from the now-ARCHIVED standalone OpenHands/agent-canvas
+# repo (final release v1.6.1) to the maintained OpenHands/OpenHands monorepo,
+# which republishes ghcr.io/openhands/agent-canvas on the unified OpenHands
+# version line. The chart at helm/agent-canvas is structurally identical (chart
+# version still 0.1.0, same override keys) -- verified against v1.15.0. Pinned to
+# a release tag so upgrades stay deliberate; the ignore filter keeps only /helm
+# so the fetched artifact stays small despite the large monorepo.
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
@@ -18,9 +19,9 @@ metadata:
   namespace: flux-system
 spec:
   interval: 1h
-  url: https://github.com/OpenHands/agent-canvas
+  url: https://github.com/OpenHands/OpenHands
   ref:
-    tag: v1.6.1
+    tag: v1.15.0
   ignore: |
     # This checkout exists only to vendor helm/agent-canvas for the
     # HelmRelease -- exclude everything else (frontend/backend source,

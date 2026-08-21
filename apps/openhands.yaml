@@ -35,14 +35,14 @@
 #
 # Endpoints: openhands.hoam.lan (private ingress)
 #
-# Chart defaults reference: https://github.com/OpenHands/agent-canvas/blob/v1.6.1/helm/agent-canvas/values.yaml
+# Chart defaults reference: https://github.com/OpenHands/OpenHands/blob/v1.15.0/helm/agent-canvas/values.yaml
 #
-# NOTE: the standalone OpenHands/agent-canvas repo is now ARCHIVED at v1.6.1
-# (final standalone release). The product merged into the OpenHands/OpenHands
-# monorepo, which republishes ghcr.io/openhands/agent-canvas on the unified
-# OpenHands version line (1.15.0 as of 2026-08-21). Moving to that line means
-# re-homing the GitRepository below to OpenHands/OpenHands@v1.x — deferred as a
-# deliberate, separately-tested migration (see repo notes / report).
+# 2026-08-21: migrated to the OpenHands/OpenHands monorepo line (v1.15.0). The
+# standalone OpenHands/agent-canvas repo was archived at v1.6.1; the maintained
+# product republishes ghcr.io/openhands/agent-canvas on the unified OpenHands
+# version line. Chart is structurally identical (verified: image/nameOverride/
+# fullnameOverride/resources/config.extraEnv/persistence.mounts/ingress override
+# keys all present at v1.15.0). GitRepository re-homed in prereqs/helm-repos/openhands.yaml.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -62,7 +62,7 @@ spec:
     # Chart's appVersion is pinned to 1.2.0 (last bumped when the chart was
     # added); override to the image tag we actually want to run.
     image:
-      tag: "1.6.1"
+      tag: "1.15.0"
 
     # Give the StatefulSet's single fullname a predictable, short name
     # instead of the chart default (release name + "agent-canvas" combined).
