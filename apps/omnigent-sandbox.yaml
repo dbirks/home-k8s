@@ -61,9 +61,18 @@ metadata:
     app.kubernetes.io/name: omnigent
     app.kubernetes.io/component: server
 rules:
+  # v0.10.0+: the kubernetes sandbox provider now launches each runner as a
+  # batch/v1 Job (which spawns the child Pod) instead of a bare Pod, for
+  # automatic crash restart (#4744). The launcher creates/gets/deletes the Job,
+  # and lists Pods by job-name label to find + poll the Job's child Pod.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+  # pods create/delete retained for the bare-Pod -> Job migration fallback;
+  # list added so the launcher can find a Job's child Pod by label.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["create", "get", "delete"]
+    verbs: ["create", "list", "get", "delete"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
@@ -115,8 +124,8 @@ data:
         # (see omnigent-sandbox-creds.enc.yaml)
         secret_name: omnigent-creds
         service_account: omnigent-runner
-        # Pin runner Pods to the same image version as the persistent host (v0.6.0)
-        image: ghcr.io/omnigent-ai/omnigent-host@sha256:7096a2d8cfc61e95da0da6cf6d7ede2a38a6950cce33d90123ee0917289b6221
+        # Pin runner Pods to the same image version as the persistent host (v0.10.0)
+        image: ghcr.io/omnigent-ai/omnigent-host@sha256:625e16f7a3aa72f6cbe75d06d134c2124d5d4998bc43feb8db4bef6b18ae0ab8
         # Single-node cluster — pin to this node
         node_selector:
           kubernetes.io/hostname: talos-210-73x

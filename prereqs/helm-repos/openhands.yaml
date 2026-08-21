@@ -7,8 +7,10 @@
 # use a GitRepository and point the HelmRelease's chart.spec.sourceRef at it
 # (apps/openhands.yaml), with chart.spec.chart set to the in-repo path.
 #
-# Pinned to the v1.4.0 tag (the release that introduced the chart) rather
-# than a branch, so chart upgrades are deliberate.
+# Pinned to a release tag (the chart was introduced in v1.4.0) rather than a
+# branch, so chart upgrades are deliberate. NOTE: this repo is ARCHIVED at
+# v1.6.1 (final standalone release); the maintained line is now the
+# OpenHands/OpenHands monorepo — see apps/openhands.yaml.
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
@@ -18,7 +20,7 @@ spec:
   interval: 1h
   url: https://github.com/OpenHands/agent-canvas
   ref:
-    tag: v1.5.2
+    tag: v1.6.1
   ignore: |
     # This checkout exists only to vendor helm/agent-canvas for the
     # HelmRelease -- exclude everything else (frontend/backend source,
