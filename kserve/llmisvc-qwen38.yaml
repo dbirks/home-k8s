@@ -59,7 +59,11 @@ spec:
           name: qwen-epp-request-rate
           metadata:
             serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_llm_inference_pool_default_ext_proc_upstream_rq_total[1m]))'
+            # NOTE: window MUST stay >= [2m]. Prometheus scrapes the Envoy gateway at a 60s interval, so a
+            # [1m] rate() window rarely holds the 2 samples PromQL needs -> query returns EMPTY -> KEDA never
+            # wakes the model (verified 2026-08-21). [2m] reliably holds 2-3 samples. A snappier wake needs a
+            # faster Envoy scrape (dedicated 15s job), not a shorter window.
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_llm_inference_pool_default_ext_proc_upstream_rq_total[2m]))'
             threshold: "5"
             activationThreshold: "0.001"
   template:                                      # PodSpec for the vLLM engine pod
