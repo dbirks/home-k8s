@@ -1,0 +1,72 @@
+# Catalog model: poolside Laguna-S-2.1 NVFP4 (LagunaForCausalLM, custom arch, MoE 256 experts / 10 active)
+# — scale-to-zero. W4A4 nvfp4-pack MoE (verified num_bits:4 weights+activations) -> FlashInfer W4A4 MoE on
+# SM120, forced with VLLM_USE_FLASHINFER_MOE_FP4=1. Custom arch ships modeling_laguna.py +
+# configuration_laguna.py -> --trust-remote-code REQUIRED. fp8_e4m3 KV.
+# NOTE: no reasoning/tool-call parsers set — poolside-specific parser names are unknown; the model dir has
+# a bundled chat_template.jinja (auto-loaded). Deployed parser-less first; add parsers once the poolside
+# model card / repo documents them. This PVC (vllm-models) root mounts at /mnt/models, and Laguna lives at
+# models/Laguna-S-2.1-NVFP4 -> --model=/mnt/models/models/Laguna-S-2.1-NVFP4 (verified on disk).
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata:
+  name: laguna-llm
+  namespace: default
+spec:
+  model:
+    uri: pvc://vllm-models
+    name: laguna-s-2.1
+  scaling:
+    minReplicas: 1
+    maxReplicas: 1
+    keda:
+      idleReplicaCount: 0
+      cooldownPeriod: 120
+      pollingInterval: 15
+      triggers:
+        # <POOL> = sanitized LLMInferenceService name laguna-llm -> laguna_llm.
+        - type: prometheus
+          name: laguna-epp-request-rate
+          metadata:
+            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_laguna_llm_inference_pool_default_ext_proc_upstream_rq_total[2m]))'
+            threshold: "5"
+            activationThreshold: "0.001"
+  template:
+    runtimeClassName: nvidia
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+    containers:
+      - name: main
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+        image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+          - "--model=/mnt/models/models/Laguna-S-2.1-NVFP4"
+          - "--served-model-name=laguna-s-2.1"
+          - "--port=8000"
+          - "--trust-remote-code"
+          - "--kv-cache-dtype=fp8_e4m3"
+          - "--gpu-memory-utilization=0.85"
+          - "--max-model-len=8192"
+        env:
+          - { name: VLLM_PORT, value: "8000" }
+          - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
+          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+          - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+          - { name: VLLM_USE_FLASHINFER_MOE_FP4, value: "1" }   # force FlashInfer W4A4 MoE path on SM120
+        ports:
+          - containerPort: 8000
+        resources:
+          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "44000", cpu: "8", memory: 24Gi }
+          requests: { cpu: "4", memory: 8Gi }
+  router:
+    gateway:
+      refs:
+        - name: kserve-llm-gw
+          namespace: default
+    route: {}
+    scheduler: {}

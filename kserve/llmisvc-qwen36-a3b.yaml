@@ -1,0 +1,69 @@
+# Catalog model: Qwen3.6-35B-A3B NVFP4 (qwen3_5_moe, 256 experts / 8 active) — scale-to-zero.
+# W4A4 nvfp4-pack MoE: verified config groups have num_bits:4 for both weights and input_activations,
+# so it serves natively via FlashInfer b12x/CUTLASS on SM120. Until vLLM auto-select (PR #47577) lands,
+# force the FlashInfer FP4 MoE path with VLLM_USE_FLASHINFER_MOE_FP4=1 (see CLAUDE.md pitfalls).
+# fp8_e4m3 KV, trust-remote-code, max-model-len 8192. model.uri = PVC ROOT (local-path subPath is broken).
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata:
+  name: qwen36-a3b-llm
+  namespace: default
+spec:
+  model:
+    uri: pvc://catalog-models
+    name: qwen3.6-35b-a3b
+  scaling:
+    minReplicas: 1
+    maxReplicas: 1
+    keda:
+      idleReplicaCount: 0
+      cooldownPeriod: 120
+      pollingInterval: 15
+      triggers:
+        # <POOL> = sanitized LLMInferenceService name qwen36-a3b-llm -> qwen36_a3b_llm.
+        - type: prometheus
+          name: qwen36-a3b-epp-request-rate
+          metadata:
+            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen36_a3b_llm_inference_pool_default_ext_proc_upstream_rq_total[2m]))'
+            threshold: "5"
+            activationThreshold: "0.001"
+  template:
+    runtimeClassName: nvidia
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+    containers:
+      - name: main
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+        image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+          - "--model=/mnt/models/Qwen3.6-35B-A3B-NVFP4-Fast"
+          - "--served-model-name=qwen3.6-35b-a3b"
+          - "--port=8000"
+          - "--trust-remote-code"
+          - "--kv-cache-dtype=fp8_e4m3"
+          - "--gpu-memory-utilization=0.85"
+          - "--max-model-len=8192"
+        env:
+          - { name: VLLM_PORT, value: "8000" }
+          - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
+          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+          - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+          - { name: VLLM_USE_FLASHINFER_MOE_FP4, value: "1" }   # force FlashInfer W4A4 MoE path on SM120
+        ports:
+          - containerPort: 8000
+        resources:
+          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "44000", cpu: "8", memory: 24Gi }
+          requests: { cpu: "4", memory: 8Gi }
+  router:
+    gateway:
+      refs:
+        - name: kserve-llm-gw
+          namespace: default
+    route: {}
+    scheduler: {}

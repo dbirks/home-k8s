@@ -1,0 +1,74 @@
+# Catalog model: Gemma-4-31B-IT NVFP4 (gemma4 VL, dense) — scale-to-zero.
+# W4A4 dense NVFP4 (modelopt export, kv_cache_quant_algo FP8) -> fp8_e4m3 KV, max-model-len 16384.
+# Gemma 4 harmony-style reasoning + tool calls: --reasoning-parser gemma4 --tool-call-parser gemma4
+# --enable-auto-tool-choice. Chat template: the model dir ships chat_template.jinja; point --chat-template
+# at the in-PVC file so we don't depend on the image bundling examples/tool_chat_template_gemma4.jinja.
+# --trust-remote-code kept for safety (gemma4 is a recent native arch; harmless if already supported).
+# model.uri = PVC ROOT (local-path subPath is broken).
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata:
+  name: gemma4-llm
+  namespace: default
+spec:
+  model:
+    uri: pvc://catalog-models
+    name: gemma-4-31b
+  scaling:
+    minReplicas: 1
+    maxReplicas: 1
+    keda:
+      idleReplicaCount: 0
+      cooldownPeriod: 120
+      pollingInterval: 15
+      triggers:
+        # <POOL> = sanitized LLMInferenceService name gemma4-llm -> gemma4_llm.
+        - type: prometheus
+          name: gemma4-epp-request-rate
+          metadata:
+            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_gemma4_llm_inference_pool_default_ext_proc_upstream_rq_total[2m]))'
+            threshold: "5"
+            activationThreshold: "0.001"
+  template:
+    runtimeClassName: nvidia
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+    containers:
+      - name: main
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+        image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+          - "--model=/mnt/models/Gemma-4-31B-IT-NVFP4"
+          - "--served-model-name=gemma-4-31b"
+          - "--port=8000"
+          - "--trust-remote-code"
+          - "--kv-cache-dtype=fp8_e4m3"
+          - "--gpu-memory-utilization=0.85"
+          - "--max-model-len=16384"
+          - "--chat-template=/mnt/models/Gemma-4-31B-IT-NVFP4/chat_template.jinja"
+          - "--enable-auto-tool-choice"
+          - "--tool-call-parser=gemma4"
+          - "--reasoning-parser=gemma4"
+        env:
+          - { name: VLLM_PORT, value: "8000" }
+          - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
+          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+          - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+        ports:
+          - containerPort: 8000
+        resources:
+          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "44000", cpu: "8", memory: 24Gi }
+          requests: { cpu: "4", memory: 8Gi }
+  router:
+    gateway:
+      refs:
+        - name: kserve-llm-gw
+          namespace: default
+    route: {}
+    scheduler: {}

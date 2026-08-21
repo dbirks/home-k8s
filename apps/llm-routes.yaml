@@ -79,6 +79,106 @@ spec:
           namespace: envoy-gateway-system
           port: 80
 ---
+# Catalog model: qwen3.6-27b, exposed at /qwen36/v1 (same auth).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-v1-qwen36
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /qwen36/v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /default/qwen36-llm/v1
+      backendRefs:
+        - name: envoy-default-kserve-llm-gw-8ab60ea9   # KServe/llm-d Envoy gateway (qwen3.6-27b)
+          namespace: envoy-gateway-system
+          port: 80
+---
+# Catalog model: qwen3.6-35b-a3b (MoE), exposed at /qwen36-a3b/v1 (same auth).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-v1-qwen36-a3b
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /qwen36-a3b/v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /default/qwen36-a3b-llm/v1
+      backendRefs:
+        - name: envoy-default-kserve-llm-gw-8ab60ea9   # KServe/llm-d Envoy gateway (qwen3.6-35b-a3b)
+          namespace: envoy-gateway-system
+          port: 80
+---
+# Catalog model: gemma-4-31b, exposed at /gemma/v1 (same auth).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-v1-gemma
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /gemma/v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /default/gemma4-llm/v1
+      backendRefs:
+        - name: envoy-default-kserve-llm-gw-8ab60ea9   # KServe/llm-d Envoy gateway (gemma-4-31b)
+          namespace: envoy-gateway-system
+          port: 80
+---
+# Catalog model: laguna-s-2.1, exposed at /laguna/v1 (same auth).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-v1-laguna
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /laguna/v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /default/laguna-llm/v1
+      backendRefs:
+        - name: envoy-default-kserve-llm-gw-8ab60ea9   # KServe/llm-d Envoy gateway (laguna-s-2.1)
+          namespace: envoy-gateway-system
+          port: 80
+---
 # Allow the llm-portal HTTPRoutes to reference the KServe Envoy gateway Service.
 apiVersion: gateway.networking.k8s.io/v1
 kind: ReferenceGrant
@@ -109,6 +209,18 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: vllm-v1-muse
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: vllm-v1-qwen36
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: vllm-v1-qwen36-a3b
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: vllm-v1-gemma
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: vllm-v1-laguna
   apiKeyAuth:
     keySources:
       - header: Authorization
