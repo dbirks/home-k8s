@@ -31,7 +31,8 @@ spec:
           name: laguna-epp-request-rate
           metadata:
             serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_laguna_llm_inference_pool_default_ext_proc_upstream_rq_total[2m]))'
+            # Wake scoped to the 15s envoy-gw scrape so [1m] holds ~4 samples (snappier wake). See llmisvc-qwen38.yaml.
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_laguna_llm_inference_pool_default_ext_proc_upstream_rq_total{job="envoy-gw"}[1m]))'
             threshold: "5"
             activationThreshold: "0.001"
   template:
@@ -64,6 +65,9 @@ spec:
           - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
           - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
           - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+          # Persistent torch.compile cache on NVMe (laguna-vllm-cache PVC) — skips recompile on cold start
+          # (laguna's compiled cudagraph load is the slowest, so this matters most here).
+          - { name: VLLM_CACHE_ROOT, value: /vllm-cache }
           - { name: VLLM_USE_FLASHINFER_MOE_FP4, value: "1" }   # force FlashInfer W4A4 MoE path on SM120
         ports:
           - containerPort: 8000
@@ -75,6 +79,12 @@ spec:
           # runai_streamer, queued) — validate the full wake+load after that lands.
           limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "94000", cpu: "8", memory: 24Gi }
           requests: { cpu: "4", memory: 8Gi }
+        volumeMounts:
+          - { name: vllm-cache, mountPath: /vllm-cache }   # persist torch.compile cache across scale-to-zero
+    volumes:
+      - name: vllm-cache
+        persistentVolumeClaim:
+          claimName: laguna-vllm-cache
   router:
     gateway:
       refs:

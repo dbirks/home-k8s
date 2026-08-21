@@ -1,26 +1,61 @@
 # Persistent vLLM torch.compile / inductor cache volumes (on NVMe via local-path).
 #
-# WHY: each scale-from-zero cold start currently recompiles torch.compile/inductor kernels
-# (~85s of the ~4min cold start, measured 2026-08-21) because vLLM's cache
-# (VLLM_CACHE_ROOT, default ~/.cache/vllm) lives on the pod's ephemeral rootfs and is lost
-# when the engine scales to 0. Mounting a persistent PVC at VLLM_CACHE_ROOT lets a later cold
-# start reuse the compiled artifacts and skip recompilation (CUDA-graph capture still repeats).
-# vLLM keys the cache by model/config/VLLM_*/torch/GPU, so it self-invalidates on any change.
+# WHY: each scale-from-zero cold start otherwise recompiles torch.compile/inductor kernels
+# (~85s of a ~5m40s cold cold-start; VALIDATED 2026-08-21: with the cache, qwen3.8's 2nd cold
+# start dropped to 2m13s and torch.compile from 85s -> 2.3s). vLLM's cache (VLLM_CACHE_ROOT,
+# default ~/.cache/vllm) otherwise lives on the pod's ephemeral rootfs (the model PVC is mounted
+# READ-ONLY), so it's lost when the engine scales to 0. Mounting a persistent PVC at VLLM_CACHE_ROOT
+# lets a later cold start reuse the compiled artifacts. vLLM keys the cache by model/config/VLLM_*/
+# torch/GPU, so it self-invalidates on any change.
 #
 # One RWO PVC per model (engines are separate Deployments; single node so the PVC rebinds to the
-# same node across the model's scale 0<->1 cycles). local-path SC = NVMe. Small (cache is ~100s of MB).
-# Reclaim=Delete is fine: it's a rebuildable cache, not durable data.
-#
-# Rolled out incrementally: qwen3.8 first (pilot), the rest after it's validated.
+# same node across the model's scale 0<->1 cycles). local-path SC = NVMe. Small (cache is ~100s of MB;
+# 5Gi is generous headroom). Reclaim=Delete is fine: rebuildable cache, not durable data.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
-metadata:
-  name: qwen38-vllm-cache
-  namespace: default
+metadata: { name: qwen38-vllm-cache, namespace: default }
 spec:
   accessModes: [ReadWriteOnce]
   storageClassName: local-path
-  resources:
-    requests:
-      storage: 5Gi
+  resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: muse-glimmer-vllm-cache, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: qwen36-vllm-cache, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: qwen36-a3b-vllm-cache, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: gemma4-vllm-cache, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: laguna-vllm-cache, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources: { requests: { storage: 5Gi } }
