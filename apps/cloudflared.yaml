@@ -3,8 +3,10 @@
 # Remote-managed tunnel: the TUNNEL_TOKEN (SOPS: apps/cloudflared-token.enc.yaml)
 # identifies the tunnel; the public-hostname routing (llm.birks.dev ->
 # http://llm-gw.llm-portal.svc.cluster.local:80) is configured in the Cloudflare
-# dashboard. Outbound-only (no inbound ports — good for Talos behind NAT); TLS
-# terminates at Cloudflare's edge, origin hop to kgateway is plain HTTP.
+# dashboard. That `llm-gw` Service is now an ExternalName CNAME (apps/llm-public-gateway.yaml)
+# to the Envoy Gateway `llm-public-gw`, so the dashboard target is unchanged. Outbound-only
+# (no inbound ports — good for Talos behind NAT); TLS terminates at Cloudflare's edge,
+# origin hop to the Envoy gateway is plain HTTP.
 ---
 apiVersion: apps/v1
 kind: Deployment
