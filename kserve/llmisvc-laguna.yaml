@@ -2,9 +2,12 @@
 # — scale-to-zero. W4A4 nvfp4-pack MoE (verified num_bits:4 weights+activations) -> FlashInfer W4A4 MoE on
 # SM120, forced with VLLM_USE_FLASHINFER_MOE_FP4=1. Custom arch ships modeling_laguna.py +
 # configuration_laguna.py -> --trust-remote-code REQUIRED. fp8_e4m3 KV.
-# NOTE: no reasoning/tool-call parsers set — poolside-specific parser names are unknown; the model dir has
-# a bundled chat_template.jinja (auto-loaded). Deployed parser-less first; add parsers once the poolside
-# model card / repo documents them. This PVC (vllm-models) root mounts at /mnt/models, and Laguna lives at
+# Parsers: poolside documents `--enable-auto-tool-choice --tool-call-parser poolside_v1
+# --reasoning-parser poolside_v1` for Laguna-S-2.1 (vLLM recipes page + HF model card). Both `poolside_v1`
+# parsers ship in this image, verified registered by name: vllm/reasoning/poolside_v1_reasoning_parser.py
+# -> PoolsideV1ReasoningParser (docstring: "Laguna reasoning parser"); vllm/tool_parsers/
+# poolside_v1_tool_parser.py -> PoolsideV1ToolParser. Model dir also has a bundled chat_template.jinja
+# (auto-loaded). This PVC (vllm-models) root mounts at /mnt/models, and Laguna lives at
 # models/Laguna-S-2.1-NVFP4 -> --model=/mnt/models/models/Laguna-S-2.1-NVFP4 (verified on disk).
 apiVersion: serving.kserve.io/v1alpha2
 kind: LLMInferenceService
@@ -52,6 +55,10 @@ spec:
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
           - "--max-model-len=8192"
+          # poolside Laguna XML-style tool protocol + interleaved reasoning (poolside_v1 parsers).
+          - "--enable-auto-tool-choice"
+          - "--tool-call-parser=poolside_v1"
+          - "--reasoning-parser=poolside_v1"
         env:
           - { name: VLLM_PORT, value: "8000" }
           - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }

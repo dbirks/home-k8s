@@ -15,8 +15,27 @@ spec:
   model:
     uri: pvc://muse-models                         # PVC ROOT (subPath mount is broken on local-path)
     name: muse-glimmer-30b                          # the OpenAI `model` name clients route by
-  replicas: 1   # restored after s2z Phase 1 verified stable. (Will convert to idleReplicaCount:0
-                # scale-to-zero once the KEDA wake path is validated on qwen — Phase 2.)
+  # SCALE-TO-ZERO (Phase 2 — KEDA wake path validated on the qwen catalog). `replicas` and `scaling`
+  # are mutually exclusive; min=max=1 with idleReplicaCount:0 drops the engine to 0 after cooldownPeriod
+  # of no traffic and the prometheus trigger wakes it 0->1 on the first request. Cold-load ~3-4min, so
+  # the first request after idle needs client retries (they keep the ext-proc rate up so KEDA holds it).
+  scaling:
+    minReplicas: 1
+    maxReplicas: 1
+    keda:
+      idleReplicaCount: 0
+      cooldownPeriod: 120
+      pollingInterval: 15
+      triggers:
+        # Wake signal = Envoy ext-proc request RATE to muse's InferencePool. <POOL> = sanitized
+        # LLMInferenceService name muse-glimmer-llm -> muse_glimmer_llm.
+        - type: prometheus
+          name: muse-epp-request-rate
+          metadata:
+            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_muse_glimmer_llm_inference_pool_default_ext_proc_upstream_rq_total[2m]))'
+            threshold: "5"
+            activationThreshold: "0.001"
   template:
     runtimeClassName: nvidia
     securityContext:
