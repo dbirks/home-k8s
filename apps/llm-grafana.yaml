@@ -37,6 +37,10 @@ spec:
         # oauth2-proxy forwards /grafana/* unchanged; Grafana owns the subpath.
         root_url: "https://llm.birks.dev/grafana/"
         serve_from_sub_path: true
+      dashboards:
+        # Land straight on the LLM Serving Overview dashboard (uid llm-serving) instead of
+        # Grafana's empty home, so /grafana is the metrics view with no extra clicks.
+        default_home_dashboard_uid: llm-serving
       auth:
         # No Grafana login at all — the Entra gate is oauth2-proxy, upstream.
         disable_login_form: true

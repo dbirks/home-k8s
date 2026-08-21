@@ -13,6 +13,13 @@ rules:
   - apiGroups: ["serving.kserve.io"]
     resources: ["llminferenceservices"]
     verbs: ["get", "list", "watch"]
+  # The LLMISVC `Ready` condition stays True even at 0 replicas (scale-to-zero), so the
+  # /models page must derive real status from the engine Deployment `<isvc>-kserve`
+  # (spec.replicas / status.readyReplicas): 0 desired = Idle (scaled to zero),
+  # desired>ready = Loading, ready>=1 = Ready.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
