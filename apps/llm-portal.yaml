@@ -71,6 +71,8 @@ data:
   KUBERNETES_SECRET_NAME: "llm-apikeys" # the ONE aggregate Secret Envoy Gateway apiKeyAuth reads (portal upserts client-<id> entries)
   MODELS_NAMESPACE: "default"        # enables /models page: lists LLMInferenceServices in this ns (read-only RBAC in apps/llm-portal-models-rbac.yaml)
   GRAFANA_URL: "https://llm.birks.dev/grafana"   # Metrics link in header + account page
+  BRAND_LOGO_FILE: "/etc/brand/egineering.svg"   # e-gineering mark on the landing (mounted from llm-portal-logo CM)
+  BRAND_LOGO_ALT: "e-gineering"
   # Setup-picker catalog: each model + its base path (qwen on /v1, muse on /muse/v1).
   # A reasoning model's snippets carry a max_tokens reminder. id = vLLM served-model-name.
   ONBOARDING_MODELS: |
@@ -117,6 +119,11 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: brand-logo, mountPath: /etc/brand, readOnly: true }
+      volumes:
+        - name: brand-logo
+          configMap: { name: llm-portal-logo }
 ---
 apiVersion: v1
 kind: Service
