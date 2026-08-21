@@ -70,7 +70,7 @@ data:
   KUBERNETES_NAMESPACE: "llm-portal" # namespace of the aggregate API-key Secret
   KUBERNETES_SECRET_NAME: "llm-apikeys" # the ONE aggregate Secret Envoy Gateway apiKeyAuth reads (portal upserts client-<id> entries)
   MODELS_NAMESPACE: "default"        # enables /models page: lists LLMInferenceServices in this ns (read-only RBAC in apps/llm-portal-models-rbac.yaml)
-  GRAFANA_URL: "https://llm.birks.dev/grafana"   # Metrics link in header + account page
+  GRAFANA_URL: "https://llm.birks.dev/grafana/d/llm-serving/llm-serving-overview"   # deep link to the LLM-serving dashboard (Grafana nav link, new tab)
   # The e-gineering mark now ships baked into the image (//go:embed default logo,
   # alt defaults to "e-gineering") — no BRAND_LOGO_FILE / mounted ConfigMap needed.
   # Setup-picker catalog. Since the stage-2 routing change (apps/llm-routes.yaml +
@@ -107,7 +107,7 @@ spec:
       containers:
         - name: portal
           # pinned image tag (public ghcr, multi-arch). # {"$imagepolicy": "flux-system:llm-portal"}
-          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-c9fa855373c493480954adb6b8c10b51eca18663
+          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-6609bbf2d4c91a89d257c88be84cd7142a2e887b
           ports:
             - containerPort: 8080
           envFrom:
