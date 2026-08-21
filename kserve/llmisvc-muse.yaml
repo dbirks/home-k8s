@@ -15,7 +15,9 @@ spec:
   model:
     uri: pvc://muse-models                         # PVC ROOT (subPath mount is broken on local-path)
     name: muse-glimmer-30b                          # the OpenAI `model` name clients route by
-  replicas: 1
+  replicas: 0   # TEMP (scale-to-zero Phase 1): parked to keep host RAM headroom while the s2z
+                # controller swap re-reconciles + rolls the qwen engine (46GB no-swap node can't
+                # cold-load two 27-30B models at once). Restore to 1 after Phase 1 verifies stable.
   template:
     runtimeClassName: nvidia
     securityContext:

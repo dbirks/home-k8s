@@ -85,6 +85,13 @@ spec:
                   spec:
                     containers:
                       - name: manager
+                        # SCALE-TO-ZERO bundle (#27): our fork dbirks/kserve@scale-to-zero-epp010
+                        # (master's direct spec.scaling.keda.triggers + idleReplicaCount:0 from
+                        # #5839/#5996, PLUS #6026 bumping the scheduler preset to EPP v0.10.0). Paired
+                        # with the vendored EPP-0.10 presets in llmisvc-runtime-configs-s2z.yaml so the
+                        # controller reconciles TOWARD the EPP it expects — no version-skew SIGTERM churn
+                        # (the root cause of the earlier rollback). Revert both = back to stable v0.20.0.
+                        image: ghcr.io/dbirks/llmisvc-controller:s2z-epp010-1770f10
                         resources:
                           limits:
                             cpu: "2"
@@ -123,4 +130,7 @@ spec:
   values:
     kserve:
       llmisvcConfigs:
-        enabled: true
+        # DISABLED: the v0.20.0 chart presets pin EPP v0.9.0, which would fight the s2z master
+        # controller (version skew = the SIGTERM churn we rolled back before). The EPP-0.10,
+        # master-matched presets are vendored in llmisvc-runtime-configs-s2z.yaml instead.
+        enabled: false
