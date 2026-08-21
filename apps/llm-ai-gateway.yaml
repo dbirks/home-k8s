@@ -1,0 +1,91 @@
+# Single-URL model-name routing for llm.birks.dev (replaces the six per-model path routes).
+#
+# WHY a dedicated gateway: an Envoy AI Gateway `AIGatewayRoute` reads the `model` field from the
+# request body, stamps the internal `x-ai-eg-model` header, and routes to a per-model backend. The
+# controller-generated HTTPRoute also injects a catch-all `route-not-found` rule at PathPrefix `/`.
+# On a gateway shared with the portal that catch-all ties with the portal's `/` route, so we give the
+# AI routing its OWN envoy-class gateway (`llm-ai-gw`) here. The public gateway `llm-public-gw`
+# (apps/llm-routes.yaml) fronts it with an authenticated `/v1` path route + keeps portal/grafana.
+#
+# CONSTRAINT (verified): the generated HTTPRoute forces each InferencePool backendRef into the
+# AIGatewayRoute's OWN namespace, so this route MUST live in `default` alongside the six pools.
+#
+# WAKE PATH: real traffic terminates the endpoint-picker ext-proc on THIS gateway's Envoy, whose pod
+# carries the `prometheus.io/scrape` annotation on :19001. Prometheus' annotation-based kubernetes-pods
+# job scrapes it, so the KEDA scale-from-zero trigger metric
+# (envoy_cluster_clusters_endpointpicker_<pool>_inference_pool_default_ext_proc_upstream_rq_total)
+# reappears here automatically — no prometheus.yaml change needed.
+---
+# ClusterIP (not LoadBalancer): llm-ai-gw is reached only in-cluster by llm-public-gw's routes, so it
+# must not consume a MetalLB LAN IP. Envoy Gateway defaults the managed Service to LoadBalancer; this
+# EnvoyProxy (must be in the Gateway's namespace) forces ClusterIP.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: llm-ai-gw-proxy
+  namespace: default
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: llm-ai-gw
+  namespace: default
+spec:
+  gatewayClassName: envoy
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: llm-ai-gw-proxy
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same   # only the AIGatewayRoute-generated HTTPRoute (default ns) attaches here
+---
+# One AIGatewayRoute, one rule per catalog model -> that model's InferencePool. The client sets
+# `model` in the request body; EAG extracts it into `x-ai-eg-model` and matches here. served-model-name
+# on each vLLM equals the public model name, so no modelNameOverride is needed.
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIGatewayRoute
+metadata:
+  name: llm-model-router
+  namespace: default
+spec:
+  parentRefs:
+    - name: llm-ai-gw
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  rules:
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-nvfp4 }]
+      backendRefs:
+        - { name: qwen38-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: muse-glimmer-30b }]
+      backendRefs:
+        - { name: muse-glimmer-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.6-27b }]
+      backendRefs:
+        - { name: qwen36-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.6-35b-a3b }]
+      backendRefs:
+        - { name: qwen36-a3b-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: gemma-4-31b }]
+      backendRefs:
+        - { name: gemma4-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: laguna-s-2.1 }]
+      backendRefs:
+        - { name: laguna-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
