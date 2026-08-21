@@ -15,8 +15,22 @@
 # The AI gateway's managed Service name `envoy-default-llm-ai-gw-1404bca3` is a deterministic hash
 # of its namespace/name and is stable across reconciles.
 #
-# NOTE: the Anthropic surface for Claude Code (/anthropic/v1/messages, EAG OpenAI<->Anthropic
-# translation) is a fast-follow; this file currently exposes the OpenAI surface only.
+# ANTHROPIC SURFACE (Claude Code) — NATIVE passthrough, NO translation:
+#   vLLM serves the Anthropic Messages API natively at /v1/messages (+ /v1/messages/count_tokens),
+#   returning real Anthropic-format responses. The problem: the model-name AI gateway (llm-ai-gw,
+#   Envoy AI Gateway v1.0.0) only understands OpenAI paths — its ext-proc rejects /v1/messages with
+#   404 "unsupported path", and EAG can't body-model-route the Anthropic body without translating.
+#   So the Anthropic surface CANNOT use body-model routing; it is pinned to ONE model via PATH.
+#   KServe's own generated HTTPRoute on kserve-llm-gw already exposes a native per-model path
+#   (/default/qwen38-llm/v1/messages -> qwen38 InferencePool -> EPP -> vLLM, verified 200 + valid
+#   Anthropic body, no translation). The `vllm-anthropic` route below fronts that path: it matches
+#   PathPrefix /v1/messages (strictly longer than the OpenAI /v1 prefix, so it wins precedence and
+#   does NOT disturb the OpenAI surface) and REWRITES the prefix to /default/qwen38-llm/v1/messages
+#   on kserve-llm-gw. Claude Code sets ANTHROPIC_BASE_URL=https://llm.birks.dev and appends
+#   /v1/messages. The body `model` is NOT used for routing here; it must equal the served-model-name
+#   or vLLM 404s, so coworkers set ANTHROPIC_MODEL=qwen3.8-nvfp4 (and ANTHROPIC_SMALL_FAST_MODEL).
+#   To offer OTHER models on Anthropic, add per-model prefixes (e.g. /anthropic/<model>) rewriting to
+#   that model's /default/<isvc>/v1/messages — path routing, still native, still no translation.
 #
 # API-KEY MODEL (Envoy Gateway SecurityPolicy.apiKeyAuth):
 #   - ONE aggregate Opaque Secret `llm-apikeys` (apps/llm-apikeys.enc.yaml) in ns llm-portal. Each
@@ -62,6 +76,58 @@ spec:
     - group: ""
       kind: Service
       name: envoy-default-llm-ai-gw-1404bca3
+    - group: ""
+      kind: Service
+      name: envoy-default-kserve-llm-gw-8ab60ea9   # kserve-llm-gw Envoy (native per-model /v1/messages)
+---
+# ANTHROPIC surface for Claude Code: native /v1/messages passthrough pinned to qwen3.8 (see header).
+# PathPrefix /v1/messages is strictly longer than the OpenAI /v1 prefix, so Gateway API precedence
+# routes /v1/messages* HERE and leaves all other /v1/* on the model-name AI gateway untouched. The
+# URLRewrite maps the matched prefix onto qwen38's native KServe path on kserve-llm-gw:
+#   /v1/messages                 -> /default/qwen38-llm/v1/messages
+#   /v1/messages/count_tokens    -> /default/qwen38-llm/v1/messages/count_tokens
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-anthropic
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-public-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/messages
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /default/qwen38-llm/v1/messages
+      backendRefs:
+        - name: envoy-default-kserve-llm-gw-8ab60ea9   # kserve-llm-gw Envoy (native InferencePool routing)
+          namespace: envoy-gateway-system
+          port: 80
+---
+# Same API-key enforcement as the OpenAI surface, attached to the Anthropic route.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: vllm-anthropic-apikey-auth
+  namespace: llm-portal
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: vllm-anthropic
+  apiKeyAuth:
+    credentialRefs:
+      - name: llm-apikeys
+    extractFrom:
+      - headers:
+          - Authorization
+    forwardClientIDHeader: X-Client-Id
 ---
 # Enforce API keys on the model API ONLY (portal `/` and grafana `/grafana` stay unauthenticated
 # for OIDC / oauth2-proxy login). Attaches to the single /v1 HTTPRoute.
