@@ -1,16 +1,17 @@
 # llm.birks.dev — API-key portal: namespace + RBAC (foundational)
 #
 # The portal (Go app, repo dbirks/kubernetes-llm-api-key-portal) signs users in via
-# Entra OIDC and creates/revokes API keys as Kubernetes Secrets in THIS namespace.
-# kgateway then enforces those keys on /v1/* (its controller already has cluster-wide
-# Secret read via its own ClusterRole). Keeping the portal's key-Secrets, the
-# HTTPRoute, and the TrafficPolicy all in `llm-portal` avoids cross-namespace
-# ReferenceGrant (kgateway PERMISSIVE mode would otherwise fail closed).
+# Entra OIDC and issues/revokes API keys by upserting entries into ONE aggregate
+# Secret in THIS namespace. Envoy Gateway's SecurityPolicy.apiKeyAuth then enforces
+# those keys on /v1/* by reading that single Secret by name (see apps/llm-routes.yaml).
 #
-# Secret shape kgateway expects (OSS apiKeyAuth, v2.2+): ONE Secret per key,
-# type extauth.solo.io/apikey, data key literally `api-key`, client identity =
-# Secret name. (NB: this differs from the brief's multi-entry client-<id> shape —
-# the portal code must write one-Secret-per-key. Flagged to the portal repo.)
+# Secret shape Envoy Gateway apiKeyAuth expects: ONE aggregate Opaque Secret
+# (`llm-apikeys`, bootstrapped SOPS-encrypted in apps/llm-apikeys.enc.yaml), with
+# one `data` entry per issued key — key `client-<opaqueid>`, value `llm_<raw>` (the
+# bare token, no "Bearer " prefix). The portal ADDS/REMOVES entries at runtime via
+# patch; it never recreates the Secret. Per-key ownership lives in a
+# `llm-portal/key-<opaqueid>` annotation on the same Secret (a per-key label is no
+# longer possible with one object), so the account page can list/revoke a user's keys.
 #
 # OIDC secret (ENTRA_CLIENT_SECRET + SESSION_KEY) lives in apps/llm-portal-oidc.enc.yaml
 # (SOPS). Public config (tenant/client id, PUBLIC_BASE_URL) goes inline on the portal
@@ -33,11 +34,14 @@ metadata:
   name: llm-portal-secrets
   namespace: llm-portal
 rules:
-  # Least-privilege: the portal manages API-key Secrets in its own namespace only.
-  # No "update" — keys are immutable (create -> use -> revoke/delete).
+  # Least-privilege: the portal upserts entries into the single aggregate API-key
+  # Secret (`llm-apikeys`) in its own namespace only. It needs `patch` (and
+  # `create`, to bootstrap the Secret if it is ever absent) to add/remove entries;
+  # `get`/`list`/`watch` to read them back. `list`/`watch`/`create` cannot be
+  # scoped by resourceName in RBAC, so the namespace is the blast-radius boundary.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -63,7 +67,8 @@ data:
   ENTRA_TENANT_ID: "c396bef6-8e08-40ab-b4f7-02d01fb0b6ce"   # public id
   ENTRA_CLIENT_ID: "1787dab3-157b-4872-a88a-bffe4ba75094"   # public id
   KEYSTORE_MODE: "kubernetes"        # persist keys as k8s Secrets (default is memory!)
-  KUBERNETES_NAMESPACE: "llm-portal" # where key Secrets are written
+  KUBERNETES_NAMESPACE: "llm-portal" # namespace of the aggregate API-key Secret
+  KUBERNETES_SECRET_NAME: "llm-apikeys" # the ONE aggregate Secret Envoy Gateway apiKeyAuth reads (portal upserts client-<id> entries)
   MODELS_NAMESPACE: "default"        # enables /models page: lists LLMInferenceServices in this ns (read-only RBAC in apps/llm-portal-models-rbac.yaml)
   GRAFANA_URL: "https://llm.birks.dev/grafana"   # Metrics link in header + account page
   # Setup-picker catalog: each model + its base path (qwen on /v1, muse on /muse/v1).
@@ -93,7 +98,7 @@ spec:
       containers:
         - name: portal
           # pinned image tag (public ghcr, multi-arch). # {"$imagepolicy": "flux-system:llm-portal"}
-          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-538f818b1ec351234ad5b5ce24c62dc3df537b2d
+          image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-41d95bea1384721e949da9b11d087dfc2633f7a3
           ports:
             - containerPort: 8080
           envFrom:
