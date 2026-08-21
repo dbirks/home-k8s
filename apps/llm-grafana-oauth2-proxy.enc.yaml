@@ -1,0 +1,24 @@
+apiVersion: v1
+data:
+    OAUTH2_PROXY_CLIENT_ID: ENC[AES256_GCM,data:uzY3GyGAwYBaVfqBRE55IhHnUNbh/Oi3cuadTJJDT8jxrsY2fBptnfizTY+qgnT4,iv:JUrn+8GYmiRpu+5OG4/WWDyyyGdpAATvAFCfxYePb3w=,tag:zxg87kS0Ndy7kpSNUVOPCQ==,type:str]
+    OAUTH2_PROXY_CLIENT_SECRET: ENC[AES256_GCM,data:J0Nam1+UlVsGiOQm8yOeY1sFhqmYtX6pJnsvOhcVJLUd0Id66Z630lJny+UF/bcsp9Fn2xklZ7A=,iv:0VkdmI62fk1C0xP4zYv/gje5/YZ/C3Ap8BB+OXiJ6/o=,tag:dzIW0qgNbYe4qL220oFkoQ==,type:str]
+    OAUTH2_PROXY_COOKIE_SECRET: ENC[AES256_GCM,data:EUKGT1k/Wkmo57SR8B/jOnVwnqM3tOBce/4AMSt/OY8KlTgqWRveS6IGgQCeH96RcrhND/8egy0AT+kW,iv:G5qRrnY4VyyfEk+78/iD3pxhap3VxQox4UGPE/JT+DY=,tag:KTohNj+fpjTICM6Z16Whew==,type:str]
+kind: Secret
+metadata:
+    name: oauth2-proxy-secrets
+    namespace: llm-grafana
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB4SFNOZFdXUEJ4M0VKdTFB
+            VThsOUxUNSt5YytTMlEyL0M5b05UVXY3T2dvCkJrMGppMFhtSE5teHRVSnBrWS9w
+            M2p2ZklBeVNaQkx4Nk8rbUlDbC9vcDgKLS0tIGpJWk5DT1ZCblJsU1d3VjZFQXRD
+            V0JFM29yNHFSN2ZSSEEyMFhQbGVscU0KKItug2+u8CqIoD3X8K0u9ZUpkjxmNI9w
+            FboA++4jT/QFVK17gwOzsnXjNL/1qzpVdsqHZW7hNXC4wYP/lZuJpg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-08-21T02:29:17Z"
+    mac: ENC[AES256_GCM,data:JKA66s/Dbski0I2XpLt05WT7D5Us+MIYTaXXwe1s9mySKfwodlALwa3lH99pdU24bFvUJBHUB6vAwYmJbp23t4sskpqWKJ7+boJ/ZCGkL5PLmMGf+UKs7tKGKtOZVRxut+L4htMG/29fUc+UN3zZMPmhl+vPJhdzOBLywtTAPlc=,iv:2QVQP68mScynPiyuA5OCLSbOA7q0TwzbFMYy+6S7DH0=,tag:qG8/iJ7UUCnaj6frl+Pp6A==,type:str]
+    version: 3.13.0

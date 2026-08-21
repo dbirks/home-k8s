@@ -18,69 +18,8 @@ spec:
         namespace: flux-system
       interval: 5m
   values:
-    # Break-glass local admin: user + password come from the SOPS-sealed secret
-    # infra/grafana-auth.enc.yaml (keys admin-user / admin-password). This is the
-    # source of truth so the password survives pod/DB restarts. Coworkers never
-    # need it — they sign in with Microsoft (see [auth.azuread] below).
-    admin:
-      existingSecret: grafana-auth
-      userKey: admin-user
-      passwordKey: admin-password
-
-    # Azure AD (Entra) OAuth client secret, injected as an env var that Grafana
-    # maps to [auth.azuread] client_secret. Value lives only in the sealed secret.
-    envValueFrom:
-      GF_AUTH_AZUREAD_CLIENT_SECRET:
-        secretKeyRef:
-          name: grafana-auth
-          key: azuread-client-secret
-
-    # Serve behind the llm.birks.dev/grafana subpath (single public Cloudflare entry).
-    # serve_from_sub_path makes Grafana emit all asset/API links under /grafana/, so
-    # the kgateway HTTPRoute forwards /grafana/* unchanged (no prefix rewrite needed).
-    # root_url is global, so the internal ingresses (private nginx + tailscale) now also
-    # live at /grafana/ — the private one auto-redirects / -> /grafana/ (app-root anno).
-    grafana.ini:
-      server:
-        root_url: "https://llm.birks.dev/grafana/"
-        serve_from_sub_path: true
-
-      # Keep the local login form reachable (break-glass admin) AND show the
-      # "Sign in with Microsoft" button. No auto-login so /grafana/login always
-      # renders the page rather than bouncing straight to Entra.
-      auth:
-        disable_login_form: false
-        oauth_auto_login: false
-
-      # Anonymous access stays OFF — metrics are never exposed publicly.
-      "auth.anonymous":
-        enabled: false
-
-      # Passwordless SSO for E-gineering coworkers via their Microsoft account.
-      # Single-tenant Entra app "Grafana LLM Observability".
-      # Redirect URI (registered): https://llm.birks.dev/grafana/login/azuread
-      # (root_url + /login/azuread, correct under the /grafana subpath).
-      # client_secret is supplied via GF_AUTH_AZUREAD_CLIENT_SECRET env (above).
-      "auth.azuread":
-        name: Microsoft
-        enabled: true
-        auto_login: false
-        allow_sign_up: true
-        client_id: "9d3b230c-4e23-47d0-8c55-01f9d3569de3"
-        scopes: "openid email profile"
-        auth_url: "https://login.microsoftonline.com/c396bef6-8e08-40ab-b4f7-02d01fb0b6ce/oauth2/v2.0/authorize"
-        token_url: "https://login.microsoftonline.com/c396bef6-8e08-40ab-b4f7-02d01fb0b6ce/oauth2/v2.0/token"
-        # Restrict to the E-gineering tenant only.
-        allowed_organizations: "c396bef6-8e08-40ab-b4f7-02d01fb0b6ce"
-        # Roles come from the app-role "roles" claim (Admin/Viewer). Users with
-        # no assigned app role fall back to the org default (Viewer) below.
-        role_attribute_strict: false
-        allow_assign_grafana_admin: true
-
-      # New SSO users land as read-only Viewers unless assigned Admin in Entra.
-      users:
-        auto_assign_org: true
-        auto_assign_org_role: Viewer
+    adminUser: admin
+    adminPassword: admin
 
     service:
       type: ClusterIP
@@ -102,12 +41,8 @@ spec:
     ingress:
       enabled: true
       ingressClassName: private
-      # Grafana serves from /grafana (serve_from_sub_path); redirect the bare host.
-      annotations:
-        nginx.ingress.kubernetes.io/app-root: /grafana/
       hosts:
         - grafana.hoam.lan
-      path: /grafana
 
     # Sidecar watches for ConfigMaps with dashboard/datasource labels.
     # Pinned to 2.8.1 (chart default 2.5.0's cached image hit a persistent

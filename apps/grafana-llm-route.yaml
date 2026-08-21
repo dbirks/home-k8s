@@ -1,14 +1,17 @@
 # Grafana at llm.birks.dev/grafana — same single Cloudflare entry point as /v1 + portal.
 #
-# The vLLM/LLM observability dashboards, reachable on the public host at a subpath.
-# Grafana runs with serve_from_sub_path=true + root_url=.../grafana/ (see
-# infra/grafana.yaml), so it OWNS the /grafana prefix: we forward /grafana/* to it
-# UNCHANGED (no URLRewrite) and Grafana strips the prefix itself + emits assets under
-# /grafana/, which keeps the page from rendering as an asset-404 shell.
+# The dedicated LLM Grafana (namespace llm-grafana), reachable on the public host at
+# a subpath and GATED BY ENTRA at this route via oauth2-proxy.
 #
-# Auth: none at the gateway — Grafana has its own login. Do NOT attach the /v1
-# apiKeyAuth TrafficPolicy here. /grafana is a longer prefix than the portal's `/`
-# catch-all, so Gateway-API precedence routes it here (same trick as /v1).
+# /grafana/* is forwarded UNCHANGED (no URLRewrite) to the oauth2-proxy Service in
+# llm-grafana. oauth2-proxy owns /grafana/oauth2/* (Entra sign-in + callback) and,
+# once a session exists, proxies every other /grafana/* path to the dedicated Grafana
+# (serve_from_sub_path=true, root_url=.../grafana/), which strips the prefix itself.
+#
+# Auth: Entra at the proxy (oauth2-proxy), NOT Grafana's own login (Grafana runs
+# anonymous behind the gate). Do NOT attach the /v1 apiKeyAuth TrafficPolicy here.
+# /grafana is a longer prefix than the portal's `/` catch-all, so Gateway-API
+# precedence routes it here (same trick as /v1).
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -24,16 +27,16 @@ spec:
             type: PathPrefix
             value: /grafana
       backendRefs:
-        - name: grafana
-          namespace: monitoring
+        - name: oauth2-proxy
+          namespace: llm-grafana
           port: 80
 ---
-# Allow the llm-portal HTTPRoute to reference the grafana Service in `monitoring`.
+# Allow the llm-portal HTTPRoute to reference the oauth2-proxy Service in `llm-grafana`.
 apiVersion: gateway.networking.k8s.io/v1
 kind: ReferenceGrant
 metadata:
-  name: llm-portal-httproute-to-grafana
-  namespace: monitoring
+  name: llm-portal-httproute-to-llm-grafana
+  namespace: llm-grafana
 spec:
   from:
     - group: gateway.networking.k8s.io
@@ -42,4 +45,4 @@ spec:
   to:
     - group: ""
       kind: Service
-      name: grafana
+      name: oauth2-proxy

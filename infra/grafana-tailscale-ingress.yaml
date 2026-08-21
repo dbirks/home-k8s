@@ -24,8 +24,7 @@ spec:
     - host: grafana
       http:
         paths:
-          # Grafana serves from /grafana (serve_from_sub_path=true); route the subpath.
-          - path: /grafana
+          - path: /
             pathType: Prefix
             backend:
               service:

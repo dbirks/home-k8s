@@ -1,0 +1,89 @@
+# oauth2-proxy — the Entra gate in front of the dedicated LLM Grafana.
+#
+# Flow: Cloudflare -> kgateway (llm-gw) -> HTTPRoute /grafana -> THIS oauth2-proxy
+#       -> (after Entra login) upstream http://grafana.llm-grafana:80.
+#
+# Entra/Azure OIDC provider (v2.0 issuer). Single-tenant app "LLM Grafana
+# oauth2-proxy" (appId 60cd9226-...), redirect https://llm.birks.dev/grafana/oauth2/callback.
+# Runs UNDER the /grafana path: --proxy-prefix=/grafana/oauth2 so its own endpoints
+# (sign_in, callback, auth) and the callback registered in Entra all live under
+# /grafana, lining up with Grafana's serve_from_sub_path. Non-oauth2 paths are
+# proxied to Grafana UNCHANGED (path preserved), which Grafana serves at /grafana/.
+#
+# Secrets (client id/secret + cookie secret) come from the SOPS-sealed
+# apps/llm-grafana-oauth2-proxy.enc.yaml as OAUTH2_PROXY_* env.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: llm-grafana
+  labels:
+    app: oauth2-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+          args:
+            - --provider=oidc
+            - --oidc-issuer-url=https://login.microsoftonline.com/c396bef6-8e08-40ab-b4f7-02d01fb0b6ce/v2.0
+            # Entra org accounts always carry preferred_username (the UPN, email-form);
+            # the `email` claim is not guaranteed, so key the identity off UPN.
+            - --oidc-email-claim=preferred_username
+            - --scope=openid email profile
+            - --email-domain=*
+            - --redirect-url=https://llm.birks.dev/grafana/oauth2/callback
+            - --upstream=http://grafana.llm-grafana.svc.cluster.local:80
+            - --http-address=0.0.0.0:4180
+            - --proxy-prefix=/grafana/oauth2
+            - --cookie-domain=llm.birks.dev
+            - --cookie-path=/grafana
+            - --cookie-secure=true
+            - --reverse-proxy=true
+            - --skip-provider-button=true
+          envFrom:
+            - secretRef:
+                name: oauth2-proxy-secrets
+          ports:
+            - name: http
+              containerPort: 4180
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: llm-grafana
+spec:
+  selector:
+    app: oauth2-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: 4180

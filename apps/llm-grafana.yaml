@@ -1,0 +1,85 @@
+# Dedicated LLM Grafana — passwordless, LLM-serving dashboard only.
+#
+# SEPARATE from the user's normal Grafana (monitoring/grafana). This instance is
+# gated UPSTREAM by oauth2-proxy at the /grafana route (Entra login), so Grafana
+# itself runs fully open (anonymous Admin, no login form). It is NEVER exposed
+# without the oauth2-proxy gate in front of it — the only ingress to it is the
+# llm.birks.dev/grafana HTTPRoute -> oauth2-proxy -> this Grafana.
+#
+# It serves ONLY the LLM Serving dashboard (apps/llm-grafana-dashboards/) off the
+# shared Prometheus in `monitoring`. Sidecar search is scoped to this namespace so
+# it does NOT pick up the monitoring instance's dashboards.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-grafana
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: grafana
+  namespace: llm-grafana
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: grafana
+      version: "10.5.15"
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+      interval: 5m
+  values:
+    grafana.ini:
+      server:
+        # oauth2-proxy forwards /grafana/* unchanged; Grafana owns the subpath.
+        root_url: "https://llm.birks.dev/grafana/"
+        serve_from_sub_path: true
+      auth:
+        # No Grafana login at all — the Entra gate is oauth2-proxy, upstream.
+        disable_login_form: true
+      "auth.basic":
+        enabled: false
+      "auth.anonymous":
+        # Fully usable anonymously (gated by oauth2-proxy in front).
+        enabled: true
+        org_name: "Main Org."
+        org_role: Admin
+
+    service:
+      type: ClusterIP
+      port: 80
+
+    # Ephemeral: datasource + dashboard are provisioned, nothing to persist.
+    persistence:
+      enabled: false
+
+    initChownData:
+      enabled: false
+
+    # Sidecar loads dashboard ConfigMaps, scoped to THIS namespace only so the
+    # monitoring instance's dashboards (deepswe etc.) are not pulled in.
+    sidecar:
+      image:
+        repository: kiwigrid/k8s-sidecar
+        tag: "2.8.1"
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        labelValue: "1"
+        searchNamespace: llm-grafana
+
+    # Shared Prometheus in `monitoring` (the scrape jobs stay there).
+    datasources:
+      datasources.yaml:
+        apiVersion: 1
+        datasources:
+          - name: Prometheus
+            type: prometheus
+            uid: prometheus
+            url: http://prometheus-server.monitoring.svc.cluster.local:80
+            access: proxy
+            isDefault: true
+            editable: false
