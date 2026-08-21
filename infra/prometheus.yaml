@@ -104,7 +104,7 @@ spec:
           - targets:
               - qwen38-llm-kserve-workload-svc.default.svc.cluster.local:8000
             labels:
-              model: qwen3.8-nvfp4
+              model: qwen3.8-27b
               engine: qwen38-llm
       - job_name: 'vllm-muse-glimmer'
         scrape_interval: 15s
@@ -143,7 +143,7 @@ spec:
           - targets:
               - qwen38-llm-epp-service.default.svc.cluster.local:9090
             labels:
-              model: qwen3.8-nvfp4
+              model: qwen3.8-27b
               engine: qwen38-llm
               component: epp
       - job_name: 'epp-muse-glimmer'

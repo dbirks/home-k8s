@@ -66,7 +66,7 @@ spec:
       group: gateway.networking.k8s.io
   rules:
     - matches:
-        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-nvfp4 }]
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b }]
       backendRefs:
         - { name: qwen38-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:

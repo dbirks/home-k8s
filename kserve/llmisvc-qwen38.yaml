@@ -35,7 +35,7 @@ metadata:
 spec:
   model:
     uri: pvc://qwen38-quant-workspace          # PVC ROOT (subPath mount is broken on local-path)
-    name: qwen3.8-nvfp4                          # the OpenAI `model` name clients route by
+    name: qwen3.8-27b                            # the OpenAI `model` name clients route by
   # SCALE-TO-ZERO (Phase 2 validation): `replicas` and `scaling` are mutually exclusive — use scaling.
   # min=max=1 (single-replica model), idleReplicaCount:0 drops it BELOW min to 0 when fully idle for
   # cooldownPeriod, and the KEDA prometheus trigger scales it back to 1 when the llm-d EPP flow-control
@@ -81,7 +81,7 @@ spec:
         command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
         args:
           - "--model=/mnt/models/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16"
-          - "--served-model-name=qwen3.8-nvfp4"
+          - "--served-model-name=qwen3.8-27b"
           - "--port=8000"
           - "--trust-remote-code"
           - "--kv-cache-dtype=fp8_e4m3"
