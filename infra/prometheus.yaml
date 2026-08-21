@@ -160,3 +160,28 @@ spec:
               model: muse-glimmer-30b
               engine: muse-glimmer-llm
               component: epp
+      # --- Envoy gateway proxy stats at 15s (for a SNAPPIER KEDA scale-from-zero wake) ---
+      # The annotation-based kubernetes-pods job already scrapes these pods, but at the chart's
+      # 60s global interval -- too slow to fill a short rate() window, so the wake trigger was stuck
+      # on a [2m] window. This job scrapes the managed Envoy proxy pods' :19001/stats/prometheus every
+      # 15s; KEDA triggers scope their query to {job="envoy-gw"} + [1m] (4 samples) for a faster wake.
+      # Scoped to pods carrying gateway.envoyproxy.io/owning-gateway-name (the 3 gateway proxies; the
+      # envoy-gateway controller pod has no such label and is excluded), metrics container port only.
+      - job_name: 'envoy-gw'
+        scrape_interval: 15s
+        metrics_path: /stats/prometheus
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [envoy-gateway-system]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_name]
+            action: keep
+            regex: .+
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            action: keep
+            regex: metrics
+          - source_labels: [__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_name]
+            target_label: gateway
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
