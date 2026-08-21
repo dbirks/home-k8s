@@ -126,3 +126,37 @@ spec:
               - hami-device-plugin-monitor.kube-system.svc.cluster.local:31992
             labels:
               instance: hami-gpu
+      # --- llm-d EPP (endpoint picker / smart scheduler) :9090, per model ---
+      # EPP 0.10's secure metrics endpoint requires a bearer token (controller-runtime
+      # authn/authz); the prometheus-server SA token authorizes (verified 200). Gives us
+      # inference_pool_ready_pods, inference_pool_average_queue_size / kv_cache_utilization,
+      # llm_d_epp_flow_control_pool_saturation, per-endpoint queue — the scale-from-zero +
+      # routing signals (also feeds the coworker dashboard).
+      - job_name: 'epp-qwen38'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        scheme: http
+        authorization:
+          type: Bearer
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        static_configs:
+          - targets:
+              - qwen38-llm-epp-service.default.svc.cluster.local:9090
+            labels:
+              model: qwen3.8-nvfp4
+              engine: qwen38-llm
+              component: epp
+      - job_name: 'epp-muse-glimmer'
+        scrape_interval: 15s
+        metrics_path: /metrics
+        scheme: http
+        authorization:
+          type: Bearer
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        static_configs:
+          - targets:
+              - muse-glimmer-llm-epp-service.default.svc.cluster.local:9090
+            labels:
+              model: muse-glimmer-30b
+              engine: muse-glimmer-llm
+              component: epp
