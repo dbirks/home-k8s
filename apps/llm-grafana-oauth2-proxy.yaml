@@ -3,8 +3,10 @@
 # Flow: Cloudflare -> kgateway (llm-gw) -> HTTPRoute /grafana -> THIS oauth2-proxy
 #       -> (after Entra login) upstream http://grafana.llm-grafana:80.
 #
-# Entra/Azure OIDC provider (v2.0 issuer). Single-tenant app "LLM Grafana
-# oauth2-proxy" (appId 60cd9226-...), redirect https://llm.birks.dev/grafana/oauth2/callback.
+# Entra/Azure OIDC provider (v2.0 issuer). Uses the SHARED single-tenant LLM
+# app "kubernetes-llm-api-key-portal" (appId 1787dab3-...) — one Entra app for
+# the whole LLM service. This proxy uses that app's second client secret
+# ("grafana-oauth2-proxy") and its redirect https://llm.birks.dev/grafana/oauth2/callback.
 # Runs UNDER the /grafana path: --proxy-prefix=/grafana/oauth2 so its own endpoints
 # (sign_in, callback, auth) and the callback registered in Entra all live under
 # /grafana, lining up with Grafana's serve_from_sub_path. Non-oauth2 paths are
