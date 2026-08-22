@@ -64,28 +64,39 @@ spec:
     - name: llm-ai-gw
       kind: Gateway
       group: gateway.networking.k8s.io
+  # TIMEOUTS: EAG defaults every generated route rule to request:60s, which 504s any completion
+  # running longer than 60s ("OpenAIBackendError ... upstream request timeout"). Long / high-token
+  # generations (and batched load) blow past that, so each rule sets request+backendRequest to 30m.
+  # A Gateway-level BackendTrafficPolicy (apps/llm-gateway-timeouts.yaml) is overridden by this
+  # more-specific per-rule route timeout, so the value MUST be set here on the AIGatewayRoute source.
   rules:
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: qwen38-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: muse-glimmer-30b }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: muse-glimmer-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.6-27b }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: qwen36-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.6-35b-a3b }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: qwen36-a3b-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: gemma-4-31b }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: gemma4-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: laguna-s-2.1 }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: laguna-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
