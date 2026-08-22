@@ -1,0 +1,44 @@
+# Long request timeouts for the LLM serving gateways.
+#
+# WHY: Envoy's default HTTP route timeout is 15s. LLM chat completions routinely run far longer
+# than that (a 6144-token generation, especially batched under concurrency, is 60-180s), so the
+# gateway was 504-ing long responses with "upstream request timeout". This bit both the on-policy
+# regen batch client (~44% of attempts wasted as 504s) and would bite any coworker asking for a
+# long completion. A BackendTrafficPolicy raises the route request timeout to 30 minutes on each
+# gateway. Applies to NEW requests as soon as Envoy reconfigures; no route/job restart needed.
+#
+#   llm-ai-gw     (default ns)    -> model-name routing gateway; the internal hop every request
+#                                    takes (regen client hits this one directly).
+#   llm-public-gw (llm-portal ns) -> external entry from the Cloudflare Tunnel; the coworker hop.
+#
+# A BackendTrafficPolicy's targetRefs must live in the policy's own namespace, hence two policies.
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: llm-ai-gw-long-timeout
+  namespace: default
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: llm-ai-gw
+  timeout:
+    http:
+      requestTimeout: 1800s          # route timeout (was Envoy default 15s -> 504 on long gens)
+      connectionIdleTimeout: 1800s   # keep idle upstream conns alive across slow generations
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: llm-public-gw-long-timeout
+  namespace: llm-portal
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: llm-public-gw
+  timeout:
+    http:
+      requestTimeout: 1800s
+      connectionIdleTimeout: 1800s
