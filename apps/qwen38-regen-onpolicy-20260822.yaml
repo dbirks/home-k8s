@@ -51,8 +51,15 @@ data:
     SCRIPTS=/tmp/spec/scripts
     uv pip install /tmp/spec aiohttp datasets tqdm --system --quiet
 
-    # Internal serving gateway (no auth); body `model` is what routes it. NO second vLLM is launched.
-    EP=http://envoy-default-llm-ai-gw-1404bca3.envoy-gateway-system.svc.cluster.local/v1/chat/completions
+    # Two endpoints. GW = the model-name AI gateway; used ONLY to wake the scale-to-zero model and
+    # to keep KEDA from scaling it back to zero (a light keepalive ping below). ENG = the vLLM
+    # engine's OWN OpenAI server, hit DIRECTLY for the real generation. Direct-to-engine avoids the
+    # Envoy AI Gateway's per-request body buffering + OpenAI<->x translation + hardcoded 60s route
+    # timeout, all of which 504'd/500'd large 6144-token batch responses and starved the 16 workers
+    # down to ~9 in-flight. It also keeps regen OUT of the coworker-facing gateway path (serving is
+    # priority). Single-replica model, so hitting the workload Service directly (no EPP) is correct.
+    GW=http://envoy-default-llm-ai-gw-1404bca3.envoy-gateway-system.svc.cluster.local/v1/chat/completions
+    ENG=http://qwen38-llm-kserve-workload-svc.default.svc.cluster.local:8000/v1/chat/completions
     MODEL=qwen3.8-27b
     DS=/dataset/qwen38-onpolicy-v1
     mkdir -p "$DS" /output/logs
@@ -71,7 +78,7 @@ data:
     echo "=== [$(date)] warmup: waking $MODEL via gateway (deadline 1200s) ==="
     warm=0; start=$(date +%s)
     while [ $(( $(date +%s) - start )) -lt 1200 ]; do
-        code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -X POST "$EP" \
+        code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 -X POST "$GW" \
             -H 'Content-Type: application/json' \
             -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":4}" || echo 000)
         echo "[$(date)] warmup -> HTTP $code (elapsed $(( $(date +%s) - start ))s)"
@@ -80,16 +87,31 @@ data:
     done
     [ "$warm" = "1" ] || { echo "ERROR: warmup gate timed out; $MODEL never returned 200"; exit 1; }
 
-    # ---- on-policy regen (client-only, concurrency 16; reuses the ONE served instance) ----
+    # ---- KEDA keepalive: hold the model at 1 replica while we hit the engine DIRECTLY ----
+    # We bypass the gateway for real work, so the gateway's ext_proc request-rate metric (the KEDA
+    # wake trigger) would fall to 0 and scale $MODEL to zero mid-batch, killing the engine endpoint.
+    # A tiny 1-token ping every 15s keeps that metric well above the 0.001 activation threshold.
+    ( while true; do
+        curl -s -o /dev/null -m 15 -X POST "$GW" -H 'Content-Type: application/json' \
+            -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" || true
+        sleep 15
+      done ) &
+    KEEPALIVE_PID=$!
+    trap 'kill $KEEPALIVE_PID 2>/dev/null || true' EXIT
+    echo "[$(date)] KEDA keepalive started (pid $KEEPALIVE_PID, pinging gateway every 15s)"
+
+    # ---- on-policy regen (client-only, concurrency 16; hits the engine DIRECTLY) ----
     # max-tokens 6144 leaves ~2048 prompt headroom under the served model's 8192 context (see header).
-    echo "[$(date)] starting on-policy regen (concurrency 16, max-tokens 6144)"
+    # --max-retries 3: retries now only cover rare genuine engine errors (a prompt+max_tokens>8192 row
+    # deterministically 400s, so retrying it is wasted slots) instead of the old 60s-timeout 504 storm.
+    echo "[$(date)] starting on-policy regen (concurrency 16, max-tokens 6144, direct-to-engine)"
     for spec in opc-python:25000 typescript-instruct:25000; do
         ds=${spec%%:*}; lim=${spec##*:}
         echo "=== [$(date)] regen $ds (limit $lim) ==="
         python3 "$SCRIPTS/response_regeneration/script.py" \
             --dataset "$ds" --limit "$lim" \
-            --endpoint "$EP" --model "$MODEL" \
-            --max-tokens 6144 --concurrency 16 --max-retries 8 \
+            --endpoint "$ENG" --model "$MODEL" \
+            --max-tokens 6144 --concurrency 16 --max-retries 3 \
             --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -40
     done
     cat "$DS"/regen_*.jsonl > "$DS/all.jsonl" 2>/dev/null || true
