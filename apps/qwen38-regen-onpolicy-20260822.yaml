@@ -57,6 +57,15 @@ data:
     DS=/dataset/qwen38-onpolicy-v1
     mkdir -p "$DS" /output/logs
 
+    # The regen script uses --model for BOTH the request-body routing name AND a local
+    # AutoTokenizer.from_pretrained() (review-only detokenize of returned token_ids). Route needs
+    # `qwen3.8-27b`, but that's not an HF id. Fix: run from a workdir holding a symlink named
+    # `qwen3.8-27b` -> the served model's own tokenizer files (read-only mount of its PVC). Then
+    # from_pretrained("qwen3.8-27b") resolves the local dir, and the payload model still routes.
+    WORK=/tmp/regen-work; mkdir -p "$WORK"
+    ln -sfn /model-src/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16 "$WORK/$MODEL"
+    cd "$WORK"
+
     # ---- cold-start warmup gate: wake the scale-to-zero qwen3.8 and wait for HTTP 200 ----
     # The traffic itself trips the KEDA request-rate trigger (deploy 0->1); warm compile cache ~2min.
     echo "=== [$(date)] warmup: waking $MODEL via gateway (deadline 1200s) ==="
@@ -120,8 +129,11 @@ spec:
             - { name: dataset, mountPath: /dataset }   # regen output (resumable)
             - { name: output, mountPath: /output }     # logs
             - { name: scripts, mountPath: /scripts }
+            - { name: model-src, mountPath: /model-src, readOnly: true }  # served model's tokenizer (RO)
       volumes:
         - { name: models, persistentVolumeClaim: { claimName: vllm-models } }
         - { name: dataset, persistentVolumeClaim: { claimName: dspark-dataset-hdd } }
         - { name: output, persistentVolumeClaim: { claimName: dspark-output-hdd-v2 } }
         - { name: scripts, configMap: { name: qwen38-regen-onpolicy-20260822-script, defaultMode: 0755 } }
+        # Served model's PVC, read-only — only for its tokenizer files (detokenize). Same node (RWO ok).
+        - { name: model-src, persistentVolumeClaim: { claimName: qwen38-quant-workspace, readOnly: true } }
