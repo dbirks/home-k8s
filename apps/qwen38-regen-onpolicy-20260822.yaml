@@ -122,11 +122,14 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-regen-onpolicy-20260822
+  name: qwen38-regen-onpolicy-20260824
   namespace: default
 spec:
   backoffLimit: 4
-  activeDeadlineSeconds: 172800
+  # Was 172800 (48h), which killed the 2026-08-22 run mid-generation before the
+  # ~50k-row target finished (early hours were slow pre-throughput-fix). 7 days
+  # gives ample margin; --resume means the recreate continues from banked rows.
+  activeDeadlineSeconds: 604800
   template:
     metadata:
       labels: { app: qwen38-regen-onpolicy }
