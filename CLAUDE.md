@@ -44,7 +44,7 @@ kubectl create secret generic sops-age --namespace=flux-system \
 - **All changes must go through GitOps** — edit files in the repo, commit, and let Flux reconcile. Do not patch deployments directly with kubectl.
 - Suspended apps are renamed to `.yaml.hold` so Flux ignores them
 - Scaled-down deployments use `replicas: 0` in their yaml (e.g. `apps/vllm-tts.yaml`)
-- Node IP is DHCP-assigned (currently 10.0.0.198) — update talosconfig endpoints and kubeconfig cluster server if it changes
+- Node IP is DHCP-assigned (currently **10.0.0.136**, verified via `kubectl get nodes`). If it changes, update the kubeconfig cluster server and the talosctl endpoints. NOTE: `talos/talconfig.yaml` and the talosctl examples below still reference the older `10.0.0.177`; reconcile those to the live IP when convenient.
 - `enableServiceLinks: false` is required on vLLM pods (K8s service named "vllm" conflicts with vLLM's VLLM_PORT env var)
 - GPU workloads need `runtimeClassName: nvidia`
 - Node needs label `feature.node.kubernetes.io/pci-10de.present=true` for nvidia-device-plugin DaemonSet
@@ -57,6 +57,19 @@ kubectl create secret generic sops-age --namespace=flux-system \
 - Endpoints: `vllm.hoam.lan` (LLM), `speech.hoam.lan` (speech-to-text)
 - Qwen3.6-27B is a hybrid model (DeltaNet+Attention) — TurboQuant KV cache is NOT compatible, use fp8_e4m3
 - NVFP4 quantization leverages Blackwell FP4 tensor cores for native 4-bit compute
+
+## Serving stack (KServe / llm.birks.dev)
+
+The public coworker endpoint `llm.birks.dev` is served by a KServe LLM stack, NOT by the `apps/vllm.yaml` deployment above. Full diagram-ready reference: GitHub issue #95.
+
+- **Model catalog**: six models, each a KServe `LLMInferenceService` (LLMISVC, KServe v0.20.0): qwen3.8-27b, muse-glimmer-30b, qwen3.6-27b, qwen3.6-35b-a3b, gemma-4-31b, laguna-s-2.1. One LLMISVC expands into a vLLM engine Deployment, a workload Service (`<name>-kserve-workload-svc:8000`, the raw OpenAI server), an `InferencePool`, and an EPP router-scheduler.
+- **Two gateways, layered (we need both, they are not alternatives)**:
+  - **Envoy Gateway v1.8.1** is the only data plane. Single `GatewayClass` `envoy`; it runs every proxy pod (in `envoy-gateway-system`) and provides TLS, API-key auth (`SecurityPolicy`), and timeouts (`BackendTrafficPolicy`).
+  - **Envoy AI Gateway v1.0.0** is a control-plane extension only (`ai-gateway-controller`, no proxy of its own). Its `AIGatewayRoute` reads the request-body `model`, stamps `x-ai-eg-model`, and routes to the right `InferencePool` via EPP. It emits the generated `llm-model-router` HTTPRoute that Envoy Gateway then serves. Base Envoy Gateway cannot do body-based model routing or InferencePool targeting, which is why the extension exists.
+  - Mnemonic: AI Gateway decides which model, Envoy Gateway carries the bytes.
+- **Scale-to-zero**: KEDA v2.20.2, one ScaledObject per model, triggered on the Envoy ext_proc request-rate metric scraped by the `envoy-gw` Prometheus job (15s). Idle models scale their engine to 0 and cold-start on the first request (warmup ~2min).
+- **Co-residence limit**: the binding constraint is **46GB host RAM (no swap), NOT the 96GB VRAM**. About two models fit resident at once; a rollout that surges to a third overloads the node. Scale a model to 0 before changing it.
+- **Auth / access**: external coworkers reach it as `llm.birks.dev` via Cloudflare Tunnel to the `llm-public-gw` Gateway, API-key authenticated (keys issued as k8s Secrets by the Entra-OIDC Go portal). Internal high-volume batch clients (for example the regen job) should hit the vLLM `*-workload-svc:8000` DIRECTLY, bypassing the gateway; the AI Gateway ext-proc buffers and translates every body and is fragile on large batch responses.
 
 ## Talos
 
