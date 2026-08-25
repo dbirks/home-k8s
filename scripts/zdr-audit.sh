@@ -103,9 +103,12 @@ PROM="http://prometheus-server.monitoring.svc.cluster.local:80"
 labeldump=$(kubectl run zdr-prom-probe --rm -i --restart=Never -n "$NS" --image=curlimages/curl:8.11.0 --quiet -- \
   sh -c "curl -s '$PROM/api/v1/labels'" 2>/dev/null || true)
 if [ -n "$labeldump" ]; then
-  bad=$(grep -oiE "\"($SUSPECT)\"" <<<"$labeldump" | sort -u || true)
+  bad=$(grep -oiE "\"($SUSPECT)\"" <<<"$labeldump" | tr -d '"' | sort -u || true)
+  # Known-benign: Envoy Gateway's control-plane metric watchable_depth carries a static `message`
+  # enum (gateway-status/infra-ir/provider-resources) naming its internal watch queue — not content.
+  bad=$(grep -v '^message$' <<<"$bad" || true)
   if [ -n "$bad" ]; then red "  SUSPECT label names present in Prometheus: $bad"; FAIL=1
-  else grn "  no content-bearing label names in Prometheus label set"; fi
+  else grn "  no content-bearing label names in Prometheus label set (message= is benign envoy-gw watchable_depth)"; fi
 else
   yel "  could not reach Prometheus label API (probe pod failed); re-run when reachable"
 fi

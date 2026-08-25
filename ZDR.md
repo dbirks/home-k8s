@@ -55,3 +55,12 @@ document the limitation here rather than calling the whole path ZDR unqualified.
 Run `scripts/zdr-audit.sh` (see its header for the canary and Cloudflare flags). It covers: effective vLLM
 flags per pod (A), a canary-content search across component logs (B), a canary/label search across `/metrics`
 and Prometheus (C), and a re-check after ingestion (D).
+
+Known-benign label: Prometheus carries a `message` label on Envoy Gateway's control-plane metric
+`watchable_depth`, whose values are a fixed enum (`gateway-status`, `infra-ir`, `provider-resources`)
+naming an internal watch queue. It is not customer content; the audit script whitelists it.
+
+Last verified live: 2026-08-25 — qwen38 rolled with `enable_prefix_caching=False`,
+`disable_uvicorn_access_log=True`, `otlp_traces_endpoint=None`; canary absent from all component logs and
+`/metrics`; both LLM gateway proxies stopped emitting per-request access logs (delta 0). The other five
+models carry identical verified deployment specs and take effect on their next cold start.
