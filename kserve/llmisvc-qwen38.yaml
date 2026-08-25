@@ -86,7 +86,7 @@ spec:
           - "--device"
           - "0"
           - "--max-context"
-          - "131072"
+          - "262144"                                 # model native max (plain RoPE, no scaling); KV auto ~481k tok fits it
           - "--kv-capacity"
           - "auto"
           - "--max-concurrency"

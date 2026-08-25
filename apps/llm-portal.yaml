@@ -82,7 +82,7 @@ data:
   # client hint so agents budget correctly. Qwen coding models serve 262144; the rest 131072.
   ONBOARDING_MODELS: |
     [
-      {"id":"qwen3.8-27b","label":"Qwen3.8-27B","kind":"coding","path":"","context":131072},
+      {"id":"qwen3.8-27b","label":"Qwen3.8-27B","kind":"coding","path":"","context":262144},
       {"id":"qwen3.8-27b-vllm","label":"Qwen3.8-27B (vLLM)","kind":"coding","path":"","context":262144},
       {"id":"muse-glimmer-30b","label":"Muse-Glimmer 30B","kind":"reasoning","path":"","context":131072},
       {"id":"qwen3.6-27b","label":"Qwen3.6-27B","kind":"coding","path":"","context":262144},
