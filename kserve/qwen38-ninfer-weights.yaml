@@ -1,0 +1,53 @@
+# NInfer weights for qwen3.8-27b (default engine as of #100 cutover).
+#
+# NInfer uses its OWN single-file `.ninfer` artifact, NOT the vLLM NVFP4 safetensors
+# in qwen38-quant-workspace. This PVC + one-off download Job fetch the prebuilt
+# artifact from Hugging Face with SHA-256 verification. The Job completes once and
+# stays Complete (ttlSecondsAfterFinished cleans the pod). CPU-only, holds no GPU.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen38-ninfer-model
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-ninfer-download
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              pip install -q -U "huggingface_hub[cli]"
+              hf download neroued/Qwen3.8-27B-nvfp4-NInfer \
+                qwen3_8_27b_nvfp4.ninfer \
+                --local-dir /models
+              cd /models
+              printf '%s  %s\n' \
+                'bb3360522a06e136e0367f5703414d26272b7285c8a6ab6194135c17dbd81b32' \
+                'qwen3_8_27b_nvfp4.ninfer' | sha256sum --check
+              ls -l /models
+          volumeMounts:
+            - { name: model, mountPath: /models }
+      volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: qwen38-ninfer-model
