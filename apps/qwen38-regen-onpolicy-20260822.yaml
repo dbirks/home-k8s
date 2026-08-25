@@ -59,9 +59,10 @@ data:
     # down to ~9 in-flight. It also keeps regen OUT of the coworker-facing gateway path (serving is
     # priority). Single-replica model, so hitting the workload Service directly (no EPP) is correct.
     GW=http://envoy-default-llm-ai-gw-1404bca3.envoy-gateway-system.svc.cluster.local/v1/chat/completions
-    # Points at the NInfer default qwen3.8-27b (user request). NInfer serves OpenAI chat/completions;
-    # the script's token_id detokenize is review-only and tolerates absent token_ids, so the
-    # regenerated content is saved regardless. Concurrency matched to ninfer --max-concurrency (8).
+    # Points at the default qwen3.8-27b engine (currently vLLM). NInfer as the gateway default was
+    # reverted: the llm-d EPP fail-closes on NInfer's missing vLLM-format /metrics and evicts every
+    # gateway request, so NInfer is not viable behind this gateway path yet (see #100 / the EPP issue).
+    # The regen needs the gateway for its warmup gate + KEDA keepalive, so it runs on the vLLM default.
     ENG=http://qwen38-llm-kserve-workload-svc.default.svc.cluster.local:8000/v1/chat/completions
     MODEL=qwen3.8-27b
     DS=/dataset/qwen38-onpolicy-v1
