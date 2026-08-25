@@ -1,17 +1,25 @@
-# Step 3: the first LLMInferenceService (llm-d path) — Qwen3.8 NVFP4.
-# HOW THIS DIFFERS from the classic InferenceService we did before:
-#   - The `LLMInferenceService` controller turns THIS one CR into: a Deployment (the vLLM pod),
-#     an InferencePool (the routable group), an EPP (endpoint picker / smart scheduler), and an
-#     HTTPRoute on the gateway. Clients hit the gateway and are routed BY MODEL NAME.
-#   - `router.gateway.refs` = reuse the existing kgateway (v2.4.2 supports the Inference Extension),
-#     so no second gateway to install. `route:{}` + `scheduler:{}` = KServe manages the HTTPRoute + EPP.
-#   - Same local-path PVC workaround: model.uri = PVC ROOT (no subPath), template points vLLM at the
-#     full in-PVC path.
+# DEFAULT qwen3.8-27b, served by the NInfer C++/CUDA engine (ghcr.io/dbirks/ninfer), #100.
+#
+# Validated on the RTX PRO 6000 (SM120) as qwen3.8-27b-ninfer before this flip: OpenAI /v1 +
+# tool_calls + SSE, MTP speculative decode, scale-to-zero. The LLMISVC name `qwen38-llm` and model
+# name `qwen3.8-27b` are UNCHANGED, so the InferencePool `qwen38-llm-inference-pool`, its
+# AIGatewayRoute rule, and the KEDA wake metric carry over untouched — only the engine changed.
+#
+# The previous vLLM behavior is preserved verbatim as `qwen3.8-27b-vllm`
+# (kserve/llmisvc-qwen38-vllm.yaml): A/B baseline + instant fallback. To revert the default to vLLM,
+# swap this file's model.uri/name/template back (or just point clients at -vllm).
+#
+# NInfer uses its OWN single-file `.ninfer` artifact (qwen38-ninfer-model PVC, filled by
+# kserve/qwen38-ninfer-weights.yaml), NOT the vLLM NVFP4 safetensors.
+#
+# ZDR (#98): the vLLM ZDR flags don't apply to NInfer's CLI. Mitigations here: no --request-log-jsonl
+# (would write request records to disk), and --response-store-max-records 1 (engine floor; 0 is
+# rejected). That store only populates for OpenAI Responses API store=true requests, which our
+# chat-completions / Anthropic-translated clients never send, so it stays empty in practice and is
+# process-local (cleared on restart, never on disk).
 ---
-# A dedicated Gateway for LLM serving on the Envoy Gateway "envoy" class. InferencePool (llm-d/GIE)
-# routing comes from ENVOY AI GATEWAY (envoy-ai-gateway.yaml), which registers itself as Envoy
-# Gateway's extension server and handles the inference.networking.k8s.io/v1 InferencePool backend.
-# This is exactly the stack KServe v0.20 tests LLMInferenceService against (EG v1.8.1 + AI GW v1.0.0).
+# Shared Gateway for LLM serving on the Envoy Gateway "envoy" class (used by every catalog LLMISVC).
+# InferencePool (llm-d/GIE) routing comes from ENVOY AI GATEWAY (apps/llm-ai-gateway.yaml).
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -34,15 +42,8 @@ metadata:
   namespace: default
 spec:
   model:
-    uri: pvc://qwen38-quant-workspace          # PVC ROOT (subPath mount is broken on local-path)
-    name: qwen3.8-27b                            # the OpenAI `model` name clients route by
-  # SCALE-TO-ZERO (Phase 2 validation): `replicas` and `scaling` are mutually exclusive — use scaling.
-  # min=max=1 (single-replica model), idleReplicaCount:0 drops it BELOW min to 0 when fully idle for
-  # cooldownPeriod, and the KEDA prometheus trigger scales it back to 1 when the llm-d EPP flow-control
-  # pool saturates (a request waiting with no ready endpoints). cooldownPeriod short (120s) for testing.
-  # NOTE: cold-load is ~3min, longer than most client timeouts, so the first request after idle likely
-  # needs a retry (scale-up still fires). Swap the trigger query if saturation isn't the right wake
-  # signal. Revert to always-on = replace this whole scaling block with `replicas: 1`.
+    uri: pvc://qwen38-ninfer-model              # PVC ROOT holding qwen3_8_27b_nvfp4.ninfer
+    name: qwen3.8-27b                            # the OpenAI `model` name clients route by (DEFAULT)
   scaling:
     minReplicas: 1
     maxReplicas: 1
@@ -51,99 +52,82 @@ spec:
       cooldownPeriod: 120
       pollingInterval: 15
       triggers:
-        # Wake signal = the Envoy ext-proc request RATE to qwen's InferencePool. ext-proc is called
-        # for routing on EVERY incoming request BEFORE the engine, so this rises >0 even at 0 engine
-        # replicas → KEDA activates (0->1). Falls to 0 after ~2min of no requests → scale to idle (0).
-        # (Chosen over flow_control_pool_saturation, which reads 1 whenever the engine is down → flaps.)
         - type: prometheus
           name: qwen-epp-request-rate
           metadata:
             serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-            # Wake trigger scoped to the dedicated 15s Envoy scrape (job="envoy-gw", infra/prometheus.yaml)
-            # so a [1m] rate() window holds ~4 samples -> snappier wake (~30s vs ~2m). Do NOT drop below [1m]
-            # or widen the scrape past ~15s: rate() needs >=2 samples in the window (a [1m] window over the
-            # old 60s annotation scrape returned EMPTY and broke scale-from-zero, 2026-08-21).
+            # Metric segment `qwen38_llm_inference_pool` unchanged (same LLMISVC name); engine-agnostic.
             query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_llm_inference_pool_default_ext_proc_upstream_rq_total{job="envoy-gw"}[1m]))'
             threshold: "5"
             activationThreshold: "0.001"
-  template:                                      # PodSpec for the vLLM engine pod
+  template:                                      # PodSpec for the NInfer engine pod
     runtimeClassName: nvidia
-    securityContext:                              # preset defaults to runAsNonRoot:true; our vLLM
-      runAsNonRoot: false                         # image runs as root and the model files are
-      runAsUser: 0                                # root-owned 600 -> must run as root
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 0
     containers:
       - name: main
         securityContext:
           runAsNonRoot: false
           runAsUser: 0
           allowPrivilegeEscalation: true
-        image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
-        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        image: ghcr.io/dbirks/ninfer:latest
+        # ninfer-serve uses SPACE-separated args (--flag value), NOT --flag=value (it rejects
+        # `--host=0.0.0.0` as unknown). Serve OpenAI /v1 on 8000 (KServe pool/EPP/workload svc target).
+        command: ["ninfer-serve"]
         args:
-          - "--model=/mnt/models/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16"
-          - "--served-model-name=qwen3.8-27b"
-          - "--port=8000"
-          - "--trust-remote-code"
-          - "--kv-cache-dtype=fp8_e4m3"
-          - "--gpu-memory-utilization=0.85"
-          # Context raised 8192 -> native max 262144 (256K) for agentic clients (Claude Code needs
-          # far more than 8k; see #100). Measured-safe: the KV pool holds ~281k tokens at gpumem 44000
-          # / util 0.85, so a full 262144-token sequence fits (concurrency drops to ~1 only at full
-          # length; short/regen requests still batch normally since KV is allocated by actual length).
-          - "--max-model-len=262144"
-          # Tool calling. This model's chat_template.jinja emits the Qwen3-Coder XML format
-          # (<tool_call><function=NAME><parameter=P>value</parameter></function></tool_call>), so the
-          # matching parser is qwen3_coder — NOT hermes (hermes expects JSON inside the tags and would
-          # fail to parse these calls). Without --enable-auto-tool-choice + a parser, tool_choice:"auto"
-          # 400s ("requires --enable-auto-tool-choice and --tool-call-parser to be set"). See #99.
-          - "--enable-auto-tool-choice"
-          - "--tool-call-parser=qwen3_coder"
-          # --- ZDR (zero-data-retention), issue #98 / ZDR.md. Verified supported by this image
-          # (python3 -m vllm.entrypoints.openai.api_server --help). No request/output logging, no
-          # Uvicorn access log, and NO cross-request prefix/KV reuse (completed-request prompt-derived
-          # KV state is not retained). Do not remove without revisiting the ZDR policy.
-          - "--no-enable-log-requests"
-          - "--no-enable-log-outputs"
-          - "--disable-uvicorn-access-log"
-          - "--no-enable-prefix-caching"
+          - "/mnt/models/qwen3_8_27b_nvfp4.ninfer"   # positional: KServe mounts the PVC root at /mnt/models
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+          - "--model-id"
+          - "qwen3.8-27b"                            # public alias == model.name above
+          - "--device"
+          - "0"
+          - "--max-context"
+          - "131072"
+          - "--kv-capacity"
+          - "auto"
+          - "--max-concurrency"
+          - "4"
+          - "--max-pending-requests"
+          - "32"
+          - "--pending-timeout-ms"
+          - "600000"
+          - "--prefill-chunk"
+          - "1024"
+          - "--kv-dtype"
+          - "int8"
+          - "--spec"
+          - "mtp"
+          - "--draft-tokens"
+          - "3"
+          - "--lm-head-draft"
+          - "--default-max-tokens"
+          - "8192"
+          # ZDR: minimize the Responses store (0 rejected; 1 is the engine floor). See header.
+          - "--response-store-max-records"
+          - "1"
         env:
-          - { name: VLLM_PORT, value: "8000" }
-          - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
-          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
-          - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
-          # ZDR: pin log level to INFO — DEBUG/TRACE would log prompt text and token IDs (issue #98).
-          - { name: VLLM_LOGGING_LEVEL, value: INFO }
-          # Persistent torch.compile cache dir (qwen38-vllm-cache PVC on NVMe) — skips recompile on cold start.
-          - { name: VLLM_CACHE_ROOT, value: /vllm-cache }
+          - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+          - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
         ports:
           - containerPort: 8000
         resources:
-          # HAMi hard VRAM cap: vLLM sees `nvidia.com/gpumem` MB as its TOTAL device memory (confirmed:
-          # vLLM logged "total capacity 31.25 GiB" at a 32000 cap), so it can't OOM co-resident models.
-          # 32000 was too tight -> profile_cudagraph_memory() OOM at ~31GiB (model 18.77 + activation peak
-          # + KV + graph-capture buffer at 8192 ctx). Raised to 44000 for real headroom -> keeps CUDA
-          # graphs (NO --enforce-eager, full speed). KV fp8_e4m3 (never e5m2). HAMi webhook auto-injects
-          # schedulerName hami-scheduler. EVERY GPU pod MUST set gpumem (HAMi defaultMemory:0 = whole card).
-          # host `memory` request kept low (8Gi) so multiple model pods fit in 46GB host RAM (no swap).
-          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "44000", cpu: "8", memory: 24Gi }
+          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "40000", cpu: "8", memory: 24Gi }
           requests: { cpu: "4", memory: 8Gi }
         volumeMounts:
-          # Persist vLLM's torch.compile/inductor cache on NVMe so a scale-from-zero cold start
-          # reuses compiled kernels instead of re-paying ~85s of compilation on every wake.
-          - { name: vllm-cache, mountPath: /vllm-cache }
+          - { name: dshm, mountPath: /dev/shm }
     volumes:
-      - name: vllm-cache
-        persistentVolumeClaim:
-          claimName: qwen38-vllm-cache
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi
   router:
     gateway:
       refs:
         - name: kserve-llm-gw
           namespace: default
     route: {}
-    # EPP left at the stable v0.9.0 preset. The EPP-0.10 flowControl "transparent waiting room" path
-    # churned (pod SIGTERM'd ~every 30s under 0.10's new 30s drain-timeout; deep source research couldn't
-    # pin the deleter — bleeding-edge instability). Scale-from-zero wake will instead use a KEDA trigger on
-    # a gateway request metric (first request to an idle model 503s -> client retries -> served). Revisit
-    # EPP-0.10 Flow Control when it's in a tagged llm-d release. See #31.
     scheduler: {}
