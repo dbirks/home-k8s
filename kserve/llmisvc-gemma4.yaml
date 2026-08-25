@@ -51,7 +51,7 @@ spec:
           - "--trust-remote-code"
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
-          - "--max-model-len=16384"
+          - "--max-model-len=131072"   # raised 16384 -> 131072 (native 262144; capped, gemma VL KV heavier, #100)
           - "--chat-template=/mnt/models/Gemma-4-31B-IT-NVFP4/chat_template.jinja"
           - "--enable-auto-tool-choice"
           - "--tool-call-parser=gemma4"

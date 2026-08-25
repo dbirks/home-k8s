@@ -86,7 +86,11 @@ spec:
           - "--trust-remote-code"
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
-          - "--max-model-len=8192"
+          # Context raised 8192 -> native max 262144 (256K) for agentic clients (Claude Code needs
+          # far more than 8k; see #100). Measured-safe: the KV pool holds ~281k tokens at gpumem 44000
+          # / util 0.85, so a full 262144-token sequence fits (concurrency drops to ~1 only at full
+          # length; short/regen requests still batch normally since KV is allocated by actual length).
+          - "--max-model-len=262144"
           # Tool calling. This model's chat_template.jinja emits the Qwen3-Coder XML format
           # (<tool_call><function=NAME><parameter=P>value</parameter></function></tool_call>), so the
           # matching parser is qwen3_coder — NOT hermes (hermes expects JSON inside the tags and would

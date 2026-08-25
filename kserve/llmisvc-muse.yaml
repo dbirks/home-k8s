@@ -57,7 +57,7 @@ spec:
           - "--trust-remote-code"
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
-          - "--max-model-len=8192"
+          - "--max-model-len=131072"   # raised 8192 -> native max 131072 (#100)
           # Muse-Glimmer emits OpenAI-Harmony channel format (analysis + final + to=self tool routing).
           # Without these, raw channel tokens bleed into message.content (ugly for clients). The custom
           # muse-glimmer image ships matching `muse_glimmer` parsers; this splits reasoning_content from

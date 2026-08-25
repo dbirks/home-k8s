@@ -50,7 +50,7 @@ spec:
           - "--trust-remote-code"
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
-          - "--max-model-len=8192"
+          - "--max-model-len=262144"   # raised 8192 -> native max 262144 (256K); same KV profile as qwen3.8 (#100)
           # Tool calling: Qwen3-Coder XML format (verified in chat_template.jinja), parser qwen3_coder
           # (NOT hermes). Without these, tool_choice:"auto" 400s. See #99.
           - "--enable-auto-tool-choice"
