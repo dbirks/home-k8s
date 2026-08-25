@@ -25,6 +25,12 @@ metadata:
   name: llm-public-gw-proxy
   namespace: llm-portal
 spec:
+  # ZDR (issue #98 / ZDR.md): disable Envoy proxy access logs on the public LLM data plane.
+  # Prometheus proxy metrics stay ON (aggregate counters, needed by KEDA scale-from-zero); only the
+  # per-request access log stream is turned off so no request line/headers are emitted to stdout.
+  telemetry:
+    accessLog:
+      disable: true
   provider:
     type: Kubernetes
     kubernetes:

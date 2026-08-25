@@ -25,6 +25,13 @@ metadata:
   name: llm-ai-gw-proxy
   namespace: default
 spec:
+  # ZDR (issue #98 / ZDR.md): disable Envoy proxy access logs on the AI-gateway data plane (this is
+  # the proxy that terminates the endpoint-picker ext-proc for every request). Prometheus proxy
+  # metrics stay ON (:19001 scrape feeds the KEDA scale-from-zero trigger); only per-request access
+  # logging is disabled.
+  telemetry:
+    accessLog:
+      disable: true
   provider:
     type: Kubernetes
     kubernetes:

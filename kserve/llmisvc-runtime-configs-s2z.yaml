@@ -138,11 +138,11 @@ spec:
 
         # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
         # Older versions still need the blanket --disable-uvicorn-access-log.
-        ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+        ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
         echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
         if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-          ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         fi
         echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 
@@ -475,11 +475,11 @@ spec:
 
         # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
         # Older versions still need the blanket --disable-uvicorn-access-log.
-        ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+        ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
         echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
         if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-          ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         fi
         echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 
@@ -815,11 +815,11 @@ spec:
 
         # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
         # Older versions still need the blanket --disable-uvicorn-access-log.
-        ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+        ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
         echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
         if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-          ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         fi
         echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 
@@ -1062,11 +1062,11 @@ spec:
 
           # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
           # Older versions still need the blanket --disable-uvicorn-access-log.
-          ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
           VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
           echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
           if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-            ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+            ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
           fi
           echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 
@@ -1340,11 +1340,11 @@ spec:
 
           # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
           # Older versions still need the blanket --disable-uvicorn-access-log.
-          ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
           VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
           echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
           if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-            ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+            ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
           fi
           echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 
@@ -1619,11 +1619,11 @@ spec:
 
           # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
           # Older versions still need the blanket --disable-uvicorn-access-log.
-          ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
           VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
           echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
           if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-            ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+            ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
           fi
           echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 
@@ -2481,11 +2481,11 @@ spec:
 
         # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
         # Older versions still need the blanket --disable-uvicorn-access-log.
-        ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+        ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
         echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
         if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-          ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         fi
         echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 
@@ -2850,11 +2850,11 @@ spec:
 
         # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
         # Older versions still need the blanket --disable-uvicorn-access-log.
-        ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+        ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
         echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
         if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-          ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         fi
         echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 
@@ -3129,11 +3129,11 @@ spec:
 
         # --disable-access-log-for-endpoints landed in vLLM 0.16.0 (vllm-project/vllm#30011).
         # Older versions still need the blanket --disable-uvicorn-access-log.
-        ACCESS_LOG_ARGS="--disable-uvicorn-access-log"
+        ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         VLLM_VERSION=$(vllm --version 2>/dev/null | tail -1 | awk '{print $NF}')
         echo "[access-log-detect] vllm version='${VLLM_VERSION}'"
         if [[ "$VLLM_VERSION" =~ ^[0-9]+\.[0-9]+ ]] && [ "$(printf '%s\n%s\n' "0.16.0" "${VLLM_VERSION}" | sort -V | head -1)" = "0.16.0" ]; then
-          ACCESS_LOG_ARGS="--disable-access-log-for-endpoints /health,/metrics,/ping"
+          ACCESS_LOG_ARGS="--disable-uvicorn-access-log --no-enable-log-requests --no-enable-log-outputs --no-enable-prefix-caching"
         fi
         echo "[access-log-detect] selected ACCESS_LOG_ARGS='${ACCESS_LOG_ARGS}'"
 

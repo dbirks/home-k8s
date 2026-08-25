@@ -87,11 +87,21 @@ spec:
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
           - "--max-model-len=8192"
+          # --- ZDR (zero-data-retention), issue #98 / ZDR.md. Verified supported by this image
+          # (python3 -m vllm.entrypoints.openai.api_server --help). No request/output logging, no
+          # Uvicorn access log, and NO cross-request prefix/KV reuse (completed-request prompt-derived
+          # KV state is not retained). Do not remove without revisiting the ZDR policy.
+          - "--no-enable-log-requests"
+          - "--no-enable-log-outputs"
+          - "--disable-uvicorn-access-log"
+          - "--no-enable-prefix-caching"
         env:
           - { name: VLLM_PORT, value: "8000" }
           - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
           - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
           - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+          # ZDR: pin log level to INFO — DEBUG/TRACE would log prompt text and token IDs (issue #98).
+          - { name: VLLM_LOGGING_LEVEL, value: INFO }
           # Persistent torch.compile cache dir (qwen38-vllm-cache PVC on NVMe) — skips recompile on cold start.
           - { name: VLLM_CACHE_ROOT, value: /vllm-cache }
         ports:
