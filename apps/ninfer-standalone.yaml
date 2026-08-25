@@ -240,8 +240,13 @@ spec:
       name: ninfer-envoy-request-rate
       metadata:
         serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+        # VERIFIED label-based form: Envoy Gateway exposes the cluster name as the
+        # `envoy_cluster_name` LABEL (not baked into __name__). upstream_cx_none_healthy
+        # increments when a request hits the cluster with no healthy endpoint (WAKE 0->1);
+        # upstream_rq_total increments under live traffic (STAY WARM). Note: the cluster
+        # series exists in Prometheus only after the cluster has been warmed once.
         query: >-
-          sum(rate(envoy_cluster_httproute_llm_portal_ninfer_route_rule_0_upstream_cx_none_healthy{job="envoy-gw"}[1m]))
-          + sum(rate(envoy_cluster_httproute_llm_portal_ninfer_route_rule_0_upstream_rq_total{job="envoy-gw"}[1m]))
+          sum(rate(envoy_cluster_upstream_cx_none_healthy{envoy_cluster_name="httproute/llm-portal/ninfer-route/rule/0",job="envoy-gw"}[1m]))
+          + sum(rate(envoy_cluster_upstream_rq_total{envoy_cluster_name="httproute/llm-portal/ninfer-route/rule/0",job="envoy-gw"}[1m]))
         threshold: "5"
         activationThreshold: "0.001"
