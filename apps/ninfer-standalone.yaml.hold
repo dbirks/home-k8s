@@ -1,0 +1,247 @@
+# qwen3.8-27b-ninfer — NInfer engine hosted on llm.birks.dev, BYPASSING the KServe/llm-d EPP.
+# ============================================================================================
+# DESIGN (issue #105). NInfer is fast direct-to-engine (~187 tok/s, TTFT 275ms, native 262144
+# ctx, OpenAI /v1 + tools + SSE) but exposes NO vLLM-format Prometheus /metrics. The llm-d EPP
+# (endpoint picker / *-router-scheduler) scores endpoint load from those metrics; with none, its
+# saturation detector marks the NInfer endpoint "fully saturated (fail-closed)" and EVICTS every
+# gateway request ("ServiceUnavailable - request evicted from queue"). That is why making NInfer
+# the InferencePool-backed default qwen3.8-27b broke the gateway (reverted in 641e42c).
+#
+# NOTE: the EPP is ALREADY FailOpen in the KServe preset (kserve/llmisvc-runtime-configs-s2z.yaml
+# line 2052, endpointPickerRef.failureMode: FailOpen). FailOpen only covers ext_proc CONNECTION
+# failures; the eviction here is a SUCCESSFUL ext_proc response that denies the request, so FailOpen
+# does NOT help. There is no supported knob to disable the saturation detector in the shipped EPP
+# v0.10.0 preset (would need an unsupported inline scheduler config = the bleeding-edge path already
+# rolled back per MEMORY). So we BYPASS the EPP entirely rather than try to disable it.
+#
+# HOW THIS BYPASSES THE EPP: this is a RAW Deployment + Service (NOT an LLMInferenceService), so
+# NO InferencePool and NO EPP are ever created. A plain Gateway-API HTTPRoute on the existing public
+# gateway (llm-public-gw) routes a DEDICATED PATH PREFIX (/ninfer) straight to the NInfer Service,
+# rewriting /ninfer -> / so the engine sees /v1/... . No EPP, no AI-gateway ext_proc body-buffer hop.
+#   Client:  base_url = https://llm.birks.dev/ninfer/v1   model = qwen3.8-27b-ninfer
+# (OpenAI surface only — NInfer serves /v1; there is no /anthropic EAG translation on this path.)
+#
+# ADDITIVE + SAFE: touches nothing the working vLLM default qwen3.8-27b uses. Different PVC
+# (qwen38-ninfer-model, already SHA-verified by kserve/qwen38-ninfer-weights.yaml), different
+# Deployment/Service, a NEW path on the SAME public gateway (the existing /v1, /anthropic, /,
+# /grafana routes are unchanged and strictly-more/less-specific so nothing is shadowed), and its
+# OWN SecurityPolicy + KEDA ScaledObject. Reversible by deleting these objects.
+#
+# AUTH: same apiKeyAuth model as the vllm-openai route (apps/llm-routes.yaml) — one SecurityPolicy
+# targeting this HTTPRoute, credentialRefs the shared llm-apikeys Secret (llm-portal ns). Same
+# coworker keys work; Authorization: Bearer llm_... .
+#
+# SCALE-TO-ZERO: KEDA ScaledObject on the NInfer Deployment (minReplicaCount 0). The EPP ext_proc
+# wake metric does NOT exist here (no EPP), so the trigger reads the llm-public-gw Envoy's per-cluster
+# stats for THIS route's backend cluster: upstream_cx_none_healthy (increments when a request hits the
+# cluster at 0 replicas -> wakes) UNION upstream_rq_total (increments under live traffic -> stays warm,
+# no flap). Cold start is only ~6s, so the first post-idle request's retry is cheap. Always-on
+# (replicas:1) is deliberately NOT used: it would pin ~40GB VRAM + a host-RAM slot against the ~46GB
+# 2-model co-residence wall and could tip the node when Qwen3.8+Muse are already resident.
+#
+# !! VERIFY THE METRIC NAME BEFORE RELYING ON SCALE-FROM-ZERO !!  Envoy Gateway bakes the backend
+# cluster name into the metric (this repo's EPP metric is likewise baked, not a label). The cluster
+# name is derived from the HTTPRoute (httproute/<ns>/<name>/rule/<n>); the flattened name below is the
+# EXPECTED form but MUST be confirmed against live stats once the route exists:
+#   POD=$(kubectl -n envoy-gateway-system get po -l gateway.envoyproxy.io/owning-gateway-name=llm-public-gw -o name | head -1)
+#   kubectl -n envoy-gateway-system exec $POD -c envoy -- curl -s localhost:19001/stats/prometheus | grep -i ninfer
+# Adjust the ScaledObject query metric names to match what that prints.
+---
+# ---- NInfer engine (raw Deployment; exact validated PodSpec from commit 15fd6f6, the last NInfer
+#      config before the revert: image, space-separated args, 262144 ctx, max-concurrency 8, MTP
+#      spec decode, int8 KV, ZDR response-store floor, dshm, HAMi gpumem 40000, runtimeClassName nvidia).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ninfer
+  namespace: default
+  labels:
+    app.kubernetes.io/name: ninfer
+spec:
+  replicas: 1                     # KEDA ScaledObject below owns this (idles to 0); 1 = initial
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ninfer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ninfer
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false   # avoid injected NINFER_*/service-link env colliding with engine
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+      containers:
+        - name: main
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+          image: ghcr.io/dbirks/ninfer:latest
+          # ninfer-serve uses SPACE-separated args (--flag value), NOT --flag=value.
+          command: ["ninfer-serve"]
+          args:
+            - "/mnt/models/qwen3_8_27b_nvfp4.ninfer"   # positional: PVC mounted at /mnt/models
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--model-id"
+            - "qwen3.8-27b-ninfer"                      # public model name (distinct from the vLLM default)
+            - "--device"
+            - "0"
+            - "--max-context"
+            - "262144"                                  # model native max (plain RoPE); KV auto ~481k tok
+            - "--kv-capacity"
+            - "auto"
+            - "--max-concurrency"
+            - "8"
+            - "--max-pending-requests"
+            - "32"
+            - "--pending-timeout-ms"
+            - "600000"
+            - "--prefill-chunk"
+            - "1024"
+            - "--kv-dtype"
+            - "int8"
+            - "--spec"
+            - "mtp"
+            - "--draft-tokens"
+            - "3"
+            - "--lm-head-draft"
+            - "--default-max-tokens"
+            - "8192"
+            # ZDR (#98): minimize the Responses store (0 rejected; 1 is the engine floor).
+            - "--response-store-max-records"
+            - "1"
+          env:
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
+          ports:
+            - containerPort: 8000
+          resources:
+            # HAMi hard VRAM cap 40000 MB (webhook auto-injects schedulerName hami-scheduler). host
+            # memory request kept low so it fits the 46GB host-RAM co-residence budget when awake.
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "40000", cpu: "8", memory: 24Gi }
+            requests: { cpu: "4", memory: 8Gi }
+          volumeMounts:
+            - { name: model, mountPath: /mnt/models }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: qwen38-ninfer-model        # existing, SHA-verified (kserve/qwen38-ninfer-weights.yaml)
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+---
+# ---- Service the HTTPRoute targets (ClusterIP; in default ns alongside the pod).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ninfer
+  namespace: default
+  labels:
+    app.kubernetes.io/name: ninfer
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ninfer
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+# ---- Public path route: /ninfer on llm-public-gw -> rewrite to / -> NInfer Service (cross-ns).
+# Same gateway the coworker traffic already enters (Cloudflare Tunnel -> llm-public-gw). The /ninfer
+# prefix is disjoint from /v1, /anthropic, /grafana and more specific than the portal catch-all /,
+# so no existing route is shadowed. URLRewrite strips /ninfer so the engine sees /v1/... .
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ninfer-route
+  namespace: llm-portal
+spec:
+  parentRefs:
+    - name: llm-public-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /ninfer
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /       # /ninfer/v1/chat/completions -> /v1/chat/completions
+      backendRefs:
+        - name: ninfer
+          namespace: default
+          port: 8000
+---
+# ---- Allow the llm-portal HTTPRoute to reference the NInfer Service in default (cross-namespace).
+apiVersion: gateway.networking.k8s.io/v1
+kind: ReferenceGrant
+metadata:
+  name: ninfer-route-to-default-svc
+  namespace: default
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: llm-portal
+  to:
+    - group: ""
+      kind: Service
+      name: ninfer
+---
+# ---- API-key auth on the /ninfer route ONLY (same pattern + same key Secret as vllm-openai).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: ninfer-apikey-auth
+  namespace: llm-portal
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: ninfer-route
+  apiKeyAuth:
+    credentialRefs:
+      - name: llm-apikeys        # shared aggregate key Secret (apps/llm-apikeys.enc.yaml)
+    extractFrom:
+      - headers:
+          - Authorization
+    forwardClientIDHeader: X-Client-Id
+---
+# ---- Scale-to-zero for the NInfer Deployment (raw KEDA; the EPP wake metric doesn't exist here).
+# Trigger = llm-public-gw Envoy per-cluster stats for this route's backend cluster:
+#   upstream_cx_none_healthy  -> increments when a request hits the cluster at 0 replicas (WAKE 0->1)
+#   upstream_rq_total         -> increments under live traffic (STAYS WARM; prevents flap-to-zero)
+# Summed so either keeps it up. See the header's !! VERIFY THE METRIC NAME !! note — confirm the
+# flattened cluster name (httproute/llm-portal/ninfer-route/rule/0) against live /stats/prometheus.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ninfer
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: ninfer
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: prometheus
+      name: ninfer-envoy-request-rate
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+        query: >-
+          sum(rate(envoy_cluster_httproute_llm_portal_ninfer_route_rule_0_upstream_cx_none_healthy{job="envoy-gw"}[1m]))
+          + sum(rate(envoy_cluster_httproute_llm_portal_ninfer_route_rule_0_upstream_rq_total{job="envoy-gw"}[1m]))
+        threshold: "5"
+        activationThreshold: "0.001"
