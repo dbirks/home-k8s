@@ -82,6 +82,13 @@ spec:
       timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: qwen38-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
+    # qwen3.8-27b-ninfer = same base model on the NInfer engine (kserve/llmisvc-qwen38-ninfer.yaml),
+    # staged for on-card validation before any promotion to the default. See #100.
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b-ninfer }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
+      backendRefs:
+        - { name: qwen38-ninfer-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: muse-glimmer-30b }]
       timeouts: { request: 1800s, backendRequest: 1800s }
