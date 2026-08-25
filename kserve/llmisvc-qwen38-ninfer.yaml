@@ -51,24 +51,41 @@ spec:
         image: ghcr.io/dbirks/ninfer:latest
         # NInfer serves OpenAI-compatible /v1 on --port. KServe's InferencePool/EPP + workload Service
         # target 8000 (NOT ninfer's 8080 Compose default).
+        # ninfer-serve uses SPACE-separated args (--flag value), NOT --flag=value (verified from its
+        # usage output — it rejects `--host=0.0.0.0` as an unknown argument). Each flag/value is a
+        # separate argv element.
         command: ["ninfer-serve"]
         args:
-          - "/mnt/models/qwen3_8_27b_nvfp4.ninfer"   # KServe mounts the PVC root at /mnt/models
-          - "--host=0.0.0.0"
-          - "--port=8000"
-          - "--model-id=qwen3.8-27b-ninfer"          # public alias == model.name above
-          - "--device=0"
-          - "--max-context=131072"
-          - "--kv-capacity=auto"                     # sizes KV within the HAMi-capped VRAM
-          - "--max-concurrency=4"
-          - "--max-pending-requests=32"
-          - "--pending-timeout-ms=600000"
-          - "--prefill-chunk=1024"
-          - "--kv-dtype=int8"                        # int8 group-64 KV (supported by this artifact)
-          - "--spec=mtp"                             # MTP speculative decode
-          - "--draft-tokens=3"
+          - "/mnt/models/qwen3_8_27b_nvfp4.ninfer"   # positional: KServe mounts the PVC root at /mnt/models
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+          - "--model-id"
+          - "qwen3.8-27b-ninfer"                     # public alias == model.name above
+          - "--device"
+          - "0"
+          - "--max-context"
+          - "131072"
+          - "--kv-capacity"
+          - "auto"                                   # sizes KV within the HAMi-capped VRAM
+          - "--max-concurrency"
+          - "4"
+          - "--max-pending-requests"
+          - "32"
+          - "--pending-timeout-ms"
+          - "600000"
+          - "--prefill-chunk"
+          - "1024"
+          - "--kv-dtype"
+          - "int8"                                   # int8 group-64 KV (supported by this artifact)
+          - "--spec"
+          - "mtp"                                    # MTP speculative decode
+          - "--draft-tokens"
+          - "3"
           - "--lm-head-draft"
-          - "--default-max-tokens=8192"
+          - "--default-max-tokens"
+          - "8192"
           # NInfer's Qwen3.8-NVFP4 MTP acceptance is ~46-49% (its README) vs ~67-71% for other
           # profiles, so the spec speedup is weaker here. Benchmark MTP vs --spec off on this card.
         env:
