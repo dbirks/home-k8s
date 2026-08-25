@@ -90,7 +90,7 @@ spec:
           - "--kv-capacity"
           - "auto"
           - "--max-concurrency"
-          - "4"
+          - "8"                                      # 8-wide; KV pool ~481k tok fits 8 typical requests
           - "--max-pending-requests"
           - "32"
           - "--pending-timeout-ms"

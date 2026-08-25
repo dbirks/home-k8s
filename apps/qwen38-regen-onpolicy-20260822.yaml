@@ -59,10 +59,11 @@ data:
     # down to ~9 in-flight. It also keeps regen OUT of the coworker-facing gateway path (serving is
     # priority). Single-replica model, so hitting the workload Service directly (no EPP) is correct.
     GW=http://envoy-default-llm-ai-gw-1404bca3.envoy-gateway-system.svc.cluster.local/v1/chat/completions
-    # Repointed to the preserved vLLM engine: the default qwen3.8-27b is now NInfer, which the regen
-    # must not use (its detokenize step needs vLLM-returned token_ids). See #100.
-    ENG=http://qwen38-vllm-llm-kserve-workload-svc.default.svc.cluster.local:8000/v1/chat/completions
-    MODEL=qwen3.8-27b-vllm
+    # Points at the NInfer default qwen3.8-27b (user request). NInfer serves OpenAI chat/completions;
+    # the script's token_id detokenize is review-only and tolerates absent token_ids, so the
+    # regenerated content is saved regardless. Concurrency matched to ninfer --max-concurrency (8).
+    ENG=http://qwen38-llm-kserve-workload-svc.default.svc.cluster.local:8000/v1/chat/completions
+    MODEL=qwen3.8-27b
     DS=/dataset/qwen38-onpolicy-v1
     mkdir -p "$DS" /output/logs
 
@@ -106,14 +107,14 @@ data:
     # max-tokens 6144 leaves ~2048 prompt headroom under the served model's 8192 context (see header).
     # --max-retries 3: retries now only cover rare genuine engine errors (a prompt+max_tokens>8192 row
     # deterministically 400s, so retrying it is wasted slots) instead of the old 60s-timeout 504 storm.
-    echo "[$(date)] starting on-policy regen (concurrency 16, max-tokens 6144, direct-to-engine)"
+    echo "[$(date)] starting on-policy regen (concurrency 8, max-tokens 6144, direct-to-engine)"
     for spec in opc-python:25000 typescript-instruct:25000; do
         ds=${spec%%:*}; lim=${spec##*:}
         echo "=== [$(date)] regen $ds (limit $lim) ==="
         python3 "$SCRIPTS/response_regeneration/script.py" \
             --dataset "$ds" --limit "$lim" \
             --endpoint "$ENG" --model "$MODEL" \
-            --max-tokens 6144 --concurrency 16 --max-retries 3 \
+            --max-tokens 6144 --concurrency 8 --max-retries 3 \
             --outfile "$DS/regen_${ds}.jsonl" --resume 2>&1 | tail -40
     done
     cat "$DS"/regen_*.jsonl > "$DS/all.jsonl" 2>/dev/null || true
@@ -124,7 +125,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-regen-onpolicy-20260825
+  name: qwen38-regen-onpolicy-20260826
   namespace: default
 spec:
   backoffLimit: 4
