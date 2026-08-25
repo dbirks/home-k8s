@@ -114,3 +114,13 @@ spec:
       timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: laguna-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
+    # qwen3.8-27b-ninfer = NInfer engine via an AIServiceBackend (apps/ninfer-standalone.yaml),
+    # bypassing the EPP/InferencePool (NInfer has no vLLM metrics -> EPP fail-closes, #105). backendRef
+    # is the AIServiceBackend `ninfer-backend` (no group/kind -> defaults; the CRD only allows
+    # group/kind for InferencePool). MUST stay the LAST rule -> rule index 7, which the ninfer KEDA
+    # wake metric (rule_7 ext_proc streams_started) depends on.
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b-ninfer }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
+      backendRefs:
+        - { name: ninfer-backend }
