@@ -86,6 +86,11 @@ spec:
           - "--lm-head-draft"
           - "--default-max-tokens"
           - "8192"
+          # ZDR (#98): do not retain completions in the process-local Responses store (default 1024
+          # records / 256 MiB). 0 = disable. --request-log-jsonl is intentionally NOT set (it would
+          # append full-precision request records to disk).
+          - "--response-store-max-records"
+          - "0"
           # NInfer's Qwen3.8-NVFP4 MTP acceptance is ~46-49% (its README) vs ~67-71% for other
           # profiles, so the spec speedup is weaker here. Benchmark MTP vs --spec off on this card.
         env:
