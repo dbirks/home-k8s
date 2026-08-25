@@ -78,14 +78,16 @@ data:
   # and are selected by the request-body `model` field (AIGatewayRoute model-name
   # routing) — so every path is "" (no per-model path prefix any more).
   # A reasoning model's snippets carry a max_tokens reminder. id = vLLM served-model-name.
+  # `context` = the model's real --max-model-len (kserve/llmisvc-*.yaml), advertised as a
+  # client hint so agents budget correctly. Qwen coding models serve 262144; the rest 131072.
   ONBOARDING_MODELS: |
     [
-      {"id":"qwen3.8-27b","label":"Qwen3.8-27B","kind":"coding","path":""},
-      {"id":"muse-glimmer-30b","label":"Muse-Glimmer 30B","kind":"reasoning","path":""},
-      {"id":"qwen3.6-27b","label":"Qwen3.6-27B","kind":"coding","path":""},
-      {"id":"qwen3.6-35b-a3b","label":"Qwen3.6-35B-A3B","kind":"reasoning","path":""},
-      {"id":"gemma-4-31b","label":"Gemma 4 31B","kind":"reasoning","path":""},
-      {"id":"laguna-s-2.1","label":"Laguna-S 2.1","kind":"reasoning","path":""}
+      {"id":"qwen3.8-27b","label":"Qwen3.8-27B","kind":"coding","path":"","context":262144},
+      {"id":"muse-glimmer-30b","label":"Muse-Glimmer 30B","kind":"reasoning","path":"","context":131072},
+      {"id":"qwen3.6-27b","label":"Qwen3.6-27B","kind":"coding","path":"","context":262144},
+      {"id":"qwen3.6-35b-a3b","label":"Qwen3.6-35B-A3B","kind":"reasoning","path":"","context":131072},
+      {"id":"gemma-4-31b","label":"Gemma 4 31B","kind":"reasoning","path":"","context":131072},
+      {"id":"laguna-s-2.1","label":"Laguna-S 2.1","kind":"reasoning","path":"","context":131072}
     ]
 ---
 apiVersion: apps/v1

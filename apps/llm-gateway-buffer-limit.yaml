@@ -1,0 +1,46 @@
+# Raise the Envoy client connection buffer limit on the LLM gateways.
+#
+# WHY: Envoy Gateway defaults the per-connection buffer to 32 KiB. The Envoy AI
+# Gateway routes by the request-body `model`, so its ext_proc filter buffers the
+# ENTIRE request body before it can translate/route. A large agentic request
+# (Claude Code sends a system prompt + tool schemas, ~30-40KB) overflows the
+# 32KiB buffer and Envoy returns 413 Payload Too Large (seen as response_code
+# 413 / via_upstream from the llm-ai-gw side). A tiny request stays under 32KiB
+# and works, which is the 200-vs-413 split observed with Claude Code.
+#
+# FIX (per envoyproxy/ai-gateway#1212): a ClientTrafficPolicy raising
+# spec.connection.bufferLimit. Set on BOTH LLM gateways: the request enters at
+# llm-public-gw and is proxied to llm-ai-gw, and both proxies apply the limit.
+# Do NOT use BackendTrafficPolicy.requestBuffer — that explicit buffer filter is
+# incompatible with SSE streaming (Claude Code streams), whereas the connection
+# bufferLimit is not. A ClientTrafficPolicy's targetRefs must be in the policy's
+# own namespace, hence two policies.
+#
+# 50Mi matches the AI-Gateway maintainers' suggested default and leaves ample
+# room for large tool/system payloads without being unbounded.
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: llm-ai-gw-buffer-limit
+  namespace: default
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: llm-ai-gw
+  connection:
+    bufferLimit: 50Mi
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: llm-public-gw-buffer-limit
+  namespace: llm-portal
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: llm-public-gw
+  connection:
+    bufferLimit: 50Mi
