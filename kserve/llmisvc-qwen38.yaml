@@ -87,6 +87,13 @@ spec:
           - "--kv-cache-dtype=fp8_e4m3"
           - "--gpu-memory-utilization=0.85"
           - "--max-model-len=8192"
+          # Tool calling. This model's chat_template.jinja emits the Qwen3-Coder XML format
+          # (<tool_call><function=NAME><parameter=P>value</parameter></function></tool_call>), so the
+          # matching parser is qwen3_coder — NOT hermes (hermes expects JSON inside the tags and would
+          # fail to parse these calls). Without --enable-auto-tool-choice + a parser, tool_choice:"auto"
+          # 400s ("requires --enable-auto-tool-choice and --tool-call-parser to be set"). See #99.
+          - "--enable-auto-tool-choice"
+          - "--tool-call-parser=qwen3_coder"
           # --- ZDR (zero-data-retention), issue #98 / ZDR.md. Verified supported by this image
           # (python3 -m vllm.entrypoints.openai.api_server --help). No request/output logging, no
           # Uvicorn access log, and NO cross-request prefix/KV reuse (completed-request prompt-derived
