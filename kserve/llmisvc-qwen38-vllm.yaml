@@ -1,0 +1,87 @@
+# Preserved vLLM-served Qwen3.8-27B under the model name `qwen3.8-27b-vllm`.
+#
+# The default `qwen3.8-27b` (kserve/llmisvc-qwen38.yaml) is now the NInfer engine; this file keeps
+# the exact prior vLLM behavior (NVFP4 W4A4, 262144 ctx, qwen3_coder tools, ZDR flags, fp8_e4m3 KV)
+# as an A/B baseline and instant fallback. Same weights PVC (qwen38-quant-workspace). Distinct
+# LLMISVC name -> distinct InferencePool `qwen38-vllm-llm-inference-pool` + its own KEDA wake metric.
+# Shares the kserve-llm-gw Gateway (defined in llmisvc-qwen38.yaml). Scale-to-zero.
+#
+# The on-policy regen job targets THIS model (proven engine + returns token_ids for its detokenize step).
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata:
+  name: qwen38-vllm-llm
+  namespace: default
+spec:
+  model:
+    uri: pvc://qwen38-quant-workspace
+    name: qwen3.8-27b-vllm
+  scaling:
+    minReplicas: 1
+    maxReplicas: 1
+    keda:
+      idleReplicaCount: 0
+      cooldownPeriod: 120
+      pollingInterval: 15
+      triggers:
+        - type: prometheus
+          name: qwen38-vllm-epp-request-rate
+          metadata:
+            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+            # <POOL> = sanitized LLMISVC name qwen38-vllm-llm -> qwen38_vllm_llm.
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_vllm_llm_inference_pool_default_ext_proc_upstream_rq_total{job="envoy-gw"}[1m]))'
+            threshold: "5"
+            activationThreshold: "0.001"
+  template:
+    runtimeClassName: nvidia
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+    containers:
+      - name: main
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+        image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+          - "--model=/mnt/models/runs/Qwen3.6-27B-NVFP4-c1-screen/Qwen3.8-27B-nvfp-w4g16"
+          - "--served-model-name=qwen3.8-27b-vllm"
+          - "--port=8000"
+          - "--trust-remote-code"
+          - "--kv-cache-dtype=fp8_e4m3"
+          - "--gpu-memory-utilization=0.85"
+          - "--max-model-len=262144"
+          - "--enable-auto-tool-choice"
+          - "--tool-call-parser=qwen3_coder"
+          # ZDR (issue #98 / ZDR.md): no request/output logging, no access log, no prefix reuse.
+          - "--no-enable-log-requests"
+          - "--no-enable-log-outputs"
+          - "--disable-uvicorn-access-log"
+          - "--no-enable-prefix-caching"
+        env:
+          - { name: VLLM_PORT, value: "8000" }
+          - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
+          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
+          - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
+          - { name: VLLM_LOGGING_LEVEL, value: INFO }
+          - { name: VLLM_CACHE_ROOT, value: /vllm-cache }
+        ports:
+          - containerPort: 8000
+        resources:
+          limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "44000", cpu: "8", memory: 24Gi }
+          requests: { cpu: "4", memory: 8Gi }
+        volumeMounts:
+          - { name: vllm-cache, mountPath: /vllm-cache }
+    volumes:
+      - name: vllm-cache
+        persistentVolumeClaim:
+          claimName: qwen38-vllm-cache
+  router:
+    gateway:
+      refs:
+        - name: kserve-llm-gw
+          namespace: default
+    route: {}
+    scheduler: {}

@@ -89,6 +89,13 @@ spec:
       timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: qwen38-ninfer-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
+    # qwen3.8-27b-vllm = preserved vLLM engine (kserve/llmisvc-qwen38-vllm.yaml), the A/B baseline
+    # + fallback for the NInfer default. The regen job targets this one.
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b-vllm }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
+      backendRefs:
+        - { name: qwen38-vllm-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: muse-glimmer-30b }]
       timeouts: { request: 1800s, backendRequest: 1800s }

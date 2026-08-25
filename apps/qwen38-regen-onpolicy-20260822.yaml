@@ -59,8 +59,10 @@ data:
     # down to ~9 in-flight. It also keeps regen OUT of the coworker-facing gateway path (serving is
     # priority). Single-replica model, so hitting the workload Service directly (no EPP) is correct.
     GW=http://envoy-default-llm-ai-gw-1404bca3.envoy-gateway-system.svc.cluster.local/v1/chat/completions
-    ENG=http://qwen38-llm-kserve-workload-svc.default.svc.cluster.local:8000/v1/chat/completions
-    MODEL=qwen3.8-27b
+    # Repointed to the preserved vLLM engine: the default qwen3.8-27b is now NInfer, which the regen
+    # must not use (its detokenize step needs vLLM-returned token_ids). See #100.
+    ENG=http://qwen38-vllm-llm-kserve-workload-svc.default.svc.cluster.local:8000/v1/chat/completions
+    MODEL=qwen3.8-27b-vllm
     DS=/dataset/qwen38-onpolicy-v1
     mkdir -p "$DS" /output/logs
 
@@ -122,7 +124,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: qwen38-regen-onpolicy-20260824
+  name: qwen38-regen-onpolicy-20260825
   namespace: default
 spec:
   backoffLimit: 4
