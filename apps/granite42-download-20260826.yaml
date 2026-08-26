@@ -1,0 +1,54 @@
+# One-off: download IBM granite-4.2-30b (dense decoder-only, ~30B, bf16, 11 safetensors shards ~58.6GB)
+# to the durable granite-models PVC, as the source for NVFP4 AutoRound quantization (W4A4 + W4A16).
+#
+# Pure network/disk, NO GPU -> won't disturb the serving qwen3.8-27b engine or the regen job. Resumable
+# (snapshot_download resumes partial files). Retire to .hold once complete (the granite-models PVC persists).
+# Node had 371GB free on local-path at creation, so the ~59GB pull is well clear of disk-pressure.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: granite42-download-20260826
+  namespace: default
+spec:
+  backoffLimit: 8
+  activeDeadlineSeconds: 86400
+  ttlSecondsAfterFinished: 259200      # auto-GC 3d after finish (incident lesson: don't leave stale jobs)
+  template:
+    metadata:
+      labels: { app: granite42-download }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              pip install -q --no-cache-dir "huggingface_hub[hf_transfer]"
+              export HF_HUB_ENABLE_HF_TRANSFER=1
+              DST=/data/granite-4.2-30b
+              echo "[$(date)] downloading ibm-granite/granite-4.2-30b -> $DST"
+              python3 - <<'PY'
+              from huggingface_hub import snapshot_download
+              p = snapshot_download(
+                  "ibm-granite/granite-4.2-30b",
+                  local_dir="/data/granite-4.2-30b",
+                  max_workers=8,
+                  ignore_patterns=["*.pth", "original/*", "*.gguf"],
+              )
+              print("snapshot at", p)
+              PY
+              echo "[$(date)] done: $(du -sh /data/granite-4.2-30b | cut -f1)"
+              ls -la /data/granite-4.2-30b | head -40
+          env:
+            - { name: HF_HOME, value: /data/.hfhome }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits: { cpu: "4", memory: 8Gi }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: granite-models } }

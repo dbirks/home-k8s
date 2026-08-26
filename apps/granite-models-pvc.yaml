@@ -1,0 +1,17 @@
+# Durable, standalone owner for the granite-models PVC. Holds the bf16 source weights of
+# ibm-granite/granite-4.2-30b (~59GB) plus the NVFP4 AutoRound quant outputs (W4A4 + W4A16).
+#
+# WHY STANDALONE (incident lesson, 2026-08-19): PVCs defined inside dated one-off Job manifests get
+# pruned by Flux when those Jobs are retired to .hold, which nearly deleted model data (reclaim=Delete).
+# This PVC lives on its own so retiring the download/quant Jobs never touches the weights.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: granite-models
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 200Gi
