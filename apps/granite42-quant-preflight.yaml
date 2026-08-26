@@ -1,0 +1,33 @@
+# PREFLIGHT gate for the granite-4.2-30b quant: meta-device Linear inventory (no real weights) + a
+# CUDA/SM120 + toolchain-install sanity check. Cheap (~small VRAM), safe to run WHILE qwen3.8 is still
+# serving (zero downtime) — validates the module map + auto-round install BEFORE the ~2h GPU runs.
+# Retire to .hold once GREEN (the granite-quant-scripts ConfigMap lives separately and stays).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: granite42-quant-preflight
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 259200
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: preflight
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "preflight"]
+          env:
+            - { name: GRANITE_MODEL, value: "/data/granite-4.2-30b" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "4", memory: 12Gi, nvidia.com/gpumem: 8000 }
+            requests: { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: granite-models } }
+        - { name: scripts, configMap: { name: granite-quant-scripts, defaultMode: 0755 } }

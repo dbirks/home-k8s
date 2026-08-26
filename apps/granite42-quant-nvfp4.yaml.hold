@@ -1,0 +1,41 @@
+# NVFP4 (W4A4) AutoRound quant of granite-4.2-30b — Blackwell FP4 tensor cores. smoke (validate the
+# pipeline) then default (the real FULL-quality artifact, CORESIDENT_LITE=0: nsamples 128/seqlen 2048/bs 4).
+#
+# PARKED .hold. Un-hold ONLY AFTER: (1) preflight GREEN, (2) qwen3.8-27b scaled to 0 + regen paused so
+# the node RAM + full card are free. Then rename to .yaml + commit. Run this BEFORE the W4A16 job — never
+# both at once. Output -> /data/runs/granite-4.2-30b-NVFP4-AutoRound-default on the granite-models PVC.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: granite42-quant-nvfp4-20260826
+  namespace: default
+spec:
+  backoffLimit: 0                 # long GPU run — never auto-retry; fix + re-fire by name bump
+  activeDeadlineSeconds: 21600    # up to 6h
+  ttlSecondsAfterFinished: 259200
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      priorityClassName: system-node-critical
+      containers:
+        - name: quantize
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "quantize"]
+          env:
+            - { name: GRANITE_MODEL, value: "/data/granite-4.2-30b" }
+            - { name: QUANT_SCHEME, value: "NVFP4" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+            - { name: CORESIDENT_LITE, value: "0" }   # FULL best-quality calib (qwen scaled to 0 first)
+          resources:
+            # qwen3.8 down -> node RAM free. 40Gi cap covers the ~27GB full-profile peak (muse reference)
+            # while protecting the 46GB no-swap node. gpumem 60000 MiB: whole card free, headroom for bs=4.
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 40Gi, nvidia.com/gpumem: 60000 }
+            requests: { cpu: "4", memory: 12Gi }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: granite-models } }
+        - { name: scripts, configMap: { name: granite-quant-scripts, defaultMode: 0755 } }
