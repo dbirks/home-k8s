@@ -1,0 +1,286 @@
+# ibm-granite/granite-4.2-30b  ->  AutoRound NVFP4 (W4A4) + W4A16, compressed-tensors, for vLLM on SM120.
+#
+# PARKED as .hold until (1) the granite42-download-20260826 Job finishes (~59GB bf16 on the granite-models
+# PVC) and (2) a host-RAM strategy is chosen (see CO-RESIDENCE below). Rename to .yaml + commit to run.
+#
+# WHY SIMPLER THAN muse-quant: granite-4.2-30b is a DENSE, TEXT-ONLY GraniteForCausalLM (GQA/RoPE/SwiGLU/
+# RMSNorm, 64 layers, hidden 4096, 32 heads / 8 KV, vocab 100352, tie_word_embeddings=FALSE). No vision
+# tower, no MoE, no Mamba -> standard NVFP4 dense quant. No MLLM-template dance, and the serving image's
+# transformers 5.15.0 already knows GraniteForCausalLM so NO transformers-from-source is needed.
+#
+# TOOLCHAIN: image vllm/vllm-openai:muse-glimmer-x86_64-cu130 (ALREADY on the node; SM120 torch, vllm
+# 0.26.1-dev, transformers 5.15.0, granite reasoning parser present -> serves the output too). auto-round
+# pip-installed at runtime from the dbirks/auto-round fork main (post-0.14.2 opt_rtn NVFP4 fix, PR #2100).
+#
+# STORAGE: reuses the durable granite-models PVC. MODEL points at the ALREADY-DOWNLOADED local dir
+# (/data/granite-4.2-30b) so nothing re-downloads. Output -> /data/runs/<name>.
+#
+# CO-RESIDENCE WITH SERVING qwen3.8-27b (the binding constraint = 46.3GiB host RAM, NO swap):
+#   The muse reference ran req 24Gi / limit 40Gi with the GPU+node DEDICATED (serving down). Co-resident
+#   with qwen3.8 that OOMs the node. Options (pick ONE before un-holding):
+#     (B, recommended) enable node swap (apps/node-swap.yaml.hold), then req 12Gi / limit 36Gi / gpumem 45000.
+#     (C) no swap: req 10Gi / limit 24Gi / gpumem 45000 + PAUSE the regen job + babysit `kubectl top node`.
+#     (A) scale qwen3.8 to 0 for the ~1-2h compute window (cleanest, but drops serving — contradicts the
+#         "keep Qwen serving" goal, so it's the fallback).
+#   The manifests below are set to Option C numbers (safest no-swap co-resident). gpumem 45000 hard-isolates
+#   the quant from qwen3.8's 44GB slice (44+45 < 96GB card). Run PREFLIGHT first (cheap) to gate.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: granite-quant-scripts
+  namespace: default
+data:
+  prep.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    PY="$(command -v python3 || command -v python)"
+    export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+    mkdir -p /data/artifacts /data/runs
+    echo "=== [$(date)] torch/transformers BEFORE ==="
+    "$PY" -c "import torch;print('torch',torch.__version__,'cuda?',torch.cuda.is_available())" || true
+    "$PY" -c "import transformers;print('transformers',transformers.__version__)" || true
+    if ! command -v git >/dev/null 2>&1; then (apt-get update -qq && apt-get install -y -qq git) >/dev/null 2>&1 || true; fi
+    # transformers 5.15.0 in this image already supports GraniteForCausalLM -> do NOT reinstall it.
+    if command -v git >/dev/null 2>&1; then
+      AR_SPEC="auto-round @ git+https://github.com/dbirks/auto-round.git@main"
+    else
+      echo "WARN: git unavailable; PyPI auto-round wheel (lacks post-0.14.2 NVFP4 opt_rtn fix)"; AR_SPEC="auto-round"
+    fi
+    echo "=== [$(date)] installing ${AR_SPEC} + deps ==="
+    "$PY" -m pip install --no-cache-dir "$AR_SPEC" datasets accelerate 2>&1 | tail -15
+    "$PY" -m pip freeze > /data/artifacts/pip-freeze.txt 2>/dev/null || true
+    echo "=== [$(date)] stage: ${1:-preflight} ==="
+    case "${1:-preflight}" in
+      preflight)        "$PY" /scripts/preflight.py ;;
+      quantize)         export QUANT_MODE=smoke;   "$PY" /scripts/quantize.py
+                        export QUANT_MODE=default; "$PY" /scripts/quantize.py ;;
+      quantize-default) export QUANT_MODE=default; "$PY" /scripts/quantize.py ;;
+      *) echo "unknown stage ${1:-}"; exit 2 ;;
+    esac
+    echo "=== [$(date)] stage ${1:-preflight} complete ==="
+  preflight.py: |
+    #!/usr/bin/env python3
+    """Cheap non-destructive gate: CUDA/SM120, package provenance, granite config load, and a
+    META-DEVICE Linear inventory (no weights, no GPU/RAM). Writes /data/artifacts/granite-preflight.json."""
+    import inspect, json, os, platform
+    from importlib.metadata import version as _v
+    from pathlib import Path
+    MODEL = os.environ.get("GRANITE_MODEL", "/data/granite-4.2-30b")
+    ART = Path("/data/artifacts"); ART.mkdir(parents=True, exist_ok=True)
+    R = {"model": MODEL, "python": platform.python_version()}
+    def ver(d):
+        try: return _v(d)
+        except Exception as e: return f"unknown({e!r})"
+    R["versions"] = {m: ver(m) for m in ["torch","transformers","auto-round","compressed-tensors","datasets","safetensors","accelerate"]}
+    try:
+        import torch
+        R["cuda"] = {"available": torch.cuda.is_available()}
+        if torch.cuda.is_available():
+            R["cuda"].update(name=torch.cuda.get_device_name(0), cc=list(torch.cuda.get_device_capability(0)),
+                             vram_gib=round(torch.cuda.get_device_properties(0).total_memory/1024**3,1))
+    except Exception as e:
+        R["cuda_error"] = repr(e)
+    try:
+        import auto_round
+        from auto_round import AutoRound
+        R["auto_round"] = {"version": getattr(auto_round,"__version__","?"), "signature": str(inspect.signature(AutoRound))}
+    except Exception as e:
+        R["auto_round_error"] = repr(e)
+    try:
+        from transformers import AutoConfig
+        cfg = AutoConfig.from_pretrained(MODEL, trust_remote_code=True)
+        R["hf_config"] = {"class": cfg.__class__.__name__, "model_type": getattr(cfg,"model_type",None),
+                          "architectures": getattr(cfg,"architectures",None),
+                          "num_hidden_layers": getattr(cfg,"num_hidden_layers",None),
+                          "hidden_size": getattr(cfg,"hidden_size",None),
+                          "tie_word_embeddings": getattr(cfg,"tie_word_embeddings",None)}
+        R["moe_hints"] = {k: getattr(cfg,k) for k in ["num_experts","num_local_experts","num_experts_per_tok"] if hasattr(cfg,k)} or "none (dense)"
+    except Exception as e:
+        R["hf_config_error"] = repr(e)
+    try:
+        import torch, transformers as tf
+        from accelerate import init_empty_weights
+        from transformers import AutoConfig
+        cfg = AutoConfig.from_pretrained(MODEL, trust_remote_code=True)
+        with init_empty_weights():
+            model = tf.AutoModelForCausalLM.from_config(cfg, trust_remote_code=True)
+        rows, g = [], {"decoder": [], "head_embed": [], "other": []}
+        for name, m in model.named_modules():
+            if isinstance(m, torch.nn.Linear):
+                rows.append(f"{name}\t{m.in_features}\t{m.out_features}\t{m.bias is not None}")
+                l = name.lower()
+                if "lm_head" in l or "embed_tokens" in l: g["head_embed"].append(name)
+                elif ".layers." in name: g["decoder"].append(name)
+                else: g["other"].append(name)
+        (ART/"granite-linear-module-inventory.tsv").write_text("name\tin\tout\tbias\n"+"\n".join(rows)+"\n")
+        R["linear_counts"] = {k: len(v) for k,v in g.items()}
+        R["other_linears_sample"] = g["other"][:50]   # REVIEW any unclassified Linears before quantizing
+    except Exception as e:
+        R["meta_inventory_error"] = repr(e)
+    (ART/"granite-preflight.json").write_text(json.dumps(R, indent=2, default=str))
+    print(json.dumps(R, indent=2, default=str))
+    print("\nPREFLIGHT_ERRORS:", [k for k in R if k.endswith("_error")])
+    if "hf_config_error" in R:
+        raise SystemExit("FATAL: cannot load granite config — check the local download path/completeness.")
+  quantize.py: |
+    #!/usr/bin/env python3
+    """AutoRound NVFP4 (W4A4) or W4A16 quant of granite-4.2-30b (dense) -> compressed-tensors.
+    QUANT_MODE in {smoke,default,best}. Protects lm_head + embed_tokens (tie_word_embeddings=false).
+    Verifies the export is 4-bit before declaring success."""
+    import json, os
+    from pathlib import Path
+    MODEL  = os.environ.get("GRANITE_MODEL", "/data/granite-4.2-30b")
+    MODE   = os.environ.get("QUANT_MODE", "smoke")
+    SCHEME = os.environ.get("QUANT_SCHEME", "NVFP4")   # NVFP4 (W4A4, Blackwell) | W4A16 (int4 weight-only)
+    RUN_TAG= os.environ.get("RUN_TAG", "")
+    CALIB  = os.environ.get("CALIB_DATASET", "NeelNanda/pile-10k")
+    ART    = Path("/data/artifacts")
+    OUT    = Path(os.environ.get("QUANT_OUT", f"/data/runs/granite-4.2-30b-{SCHEME}{RUN_TAG}-AutoRound-{MODE}"))
+    ART.mkdir(parents=True, exist_ok=True); OUT.mkdir(parents=True, exist_ok=True)
+    MODES = {
+        "smoke":   dict(nsamples=8,   seqlen=512,  batch_size=1, iters=0,    low_gpu_mem_usage=True),
+        "default": dict(nsamples=128, seqlen=2048, batch_size=2, iters=200,  low_gpu_mem_usage=True),
+        "best":    dict(nsamples=512, seqlen=2048, batch_size=2, iters=1000, low_gpu_mem_usage=True),
+    }
+    if MODE not in MODES: raise SystemExit(f"bad QUANT_MODE={MODE}")
+    P = MODES[MODE]
+    print(f"=== quantize SCHEME={SCHEME} MODE={MODE} params={P} model={MODEL} -> {OUT} ===", flush=True)
+    import torch  # noqa
+    from auto_round import AutoRound
+    from transformers import AutoConfig
+    cfg = AutoConfig.from_pretrained(MODEL, trust_remote_code=True)
+    print("model_type:", getattr(cfg,"model_type",None), "arch:", getattr(cfg,"architectures",None), flush=True)
+    # Protect the head + embeddings (bf16). tie_word_embeddings=false so lm_head is its own tensor.
+    layer_config = {"lm_head": {"bits": 16}, "model.embed_tokens": {"bits": 16}}
+    ar = AutoRound(MODEL, scheme=SCHEME, dataset=CALIB, device_map="auto", trust_remote_code=True,
+                   layer_config=layer_config, seed=42, **P)
+    _, saved = ar.quantize_and_save(output_dir=str(OUT), format="llm_compressor")
+    print("Saved:", saved, flush=True)
+    def _find_cfg(base):
+        base = Path(base)
+        if (base/"config.json").is_file(): return base
+        for p in sorted(base.rglob("config.json")): return p.parent
+        return None
+    cand = saved[0] if isinstance(saved,(list,tuple)) else saved
+    SAVED = (_find_cfg(cand) if cand else None) or _find_cfg(OUT)
+    if SAVED is None: raise SystemExit(f"FATAL: no config.json under {cand!r} or {OUT}")
+    print("resolved artifact dir:", SAVED, flush=True)
+    (ART/f"artifact-path-{SCHEME}-{MODE}.txt").write_text(str(SAVED)+"\n")
+    c = json.loads((SAVED/"config.json").read_text())
+    qc = c.get("quantization_config") or c.get("text_config",{}).get("quantization_config")
+    (ART/f"quant-config-{SCHEME}-{MODE}.json").write_text(json.dumps(qc, indent=2, default=str))
+    wbits = (((qc or {}).get("config_groups",{}).get("group_0",{}) or {}).get("weights",{}) or {}).get("num_bits")
+    fmt = (qc or {}).get("format")
+    print(f"format={fmt} weight_bits={wbits}", flush=True)
+    if not qc or wbits != 4: raise SystemExit(f"FATAL: expected 4-bit weights, got num_bits={wbits} (format {fmt})")
+    # HF config parser wants config_groups.*.format as a STRING (AutoRound writes null).
+    try:
+        _patched=False
+        for _g in (qc.get("config_groups") or {}).values():
+            if _g.get("format") in (None,""): _g["format"]=fmt; _patched=True
+        if _patched:
+            c["quantization_config"]=qc; (SAVED/"config.json").write_text(json.dumps(c, indent=2))
+            print(f"post-fix: config_groups.*.format -> {fmt}", flush=True)
+    except Exception as _e:
+        print("post-fix skipped:", repr(_e), flush=True)
+    print(f"OK [{SCHEME}/{MODE}]: {fmt} export verified at {SAVED}", flush=True)
+---
+# PREFLIGHT gate (cheap: meta-device inventory, small VRAM). Run FIRST, review artifacts, then quantize.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: granite42-quant-preflight
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 259200
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: preflight
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "preflight"]
+          env:
+            - { name: GRANITE_MODEL, value: "/data/granite-4.2-30b" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "4", memory: 12Gi, nvidia.com/gpumem: 8000 }
+            requests: { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: granite-models } }
+        - { name: scripts, configMap: { name: granite-quant-scripts, defaultMode: 0755 } }
+---
+# NVFP4 (W4A4) — Blackwell FP4 tensor cores. smoke (validate pipeline) then default (real artifact).
+# RAM capped for co-residence with serving qwen3.8 (Option C). gpumem 45000 hard-isolates from qwen3.8's 44GB.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: granite42-quant-nvfp4-20260826
+  namespace: default
+spec:
+  backoffLimit: 0                 # long GPU run — never auto-retry; fix + re-fire by name bump
+  activeDeadlineSeconds: 21600    # up to 6h
+  ttlSecondsAfterFinished: 259200
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: quantize
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "quantize"]
+          env:
+            - { name: GRANITE_MODEL, value: "/data/granite-4.2-30b" }
+            - { name: QUANT_SCHEME, value: "NVFP4" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 24Gi, nvidia.com/gpumem: 45000 }
+            requests: { cpu: "4", memory: 10Gi }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: granite-models } }
+        - { name: scripts, configMap: { name: granite-quant-scripts, defaultMode: 0755 } }
+---
+# W4A16 (int4 weight-only) — runs on any modern GPU via Marlin, less lossy than W4A4 (activations bf16).
+# Run AFTER the NVFP4 job (serialize GPU use; don't run both at once beside serving).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: granite42-quant-w4a16-20260826
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 259200
+  template:
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: quantize
+          image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
+          command: ["/bin/bash", "/scripts/prep.sh", "quantize"]
+          env:
+            - { name: GRANITE_MODEL, value: "/data/granite-4.2-30b" }
+            - { name: QUANT_SCHEME, value: "W4A16" }
+            - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+          resources:
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 24Gi, nvidia.com/gpumem: 45000 }
+            requests: { cpu: "4", memory: 10Gi }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: granite-models } }
+        - { name: scripts, configMap: { name: granite-quant-scripts, defaultMode: 0755 } }
