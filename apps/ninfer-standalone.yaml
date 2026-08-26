@@ -197,9 +197,9 @@ spec:
 # per-request counter is `..._streams_started` (one ext_proc stream per request; rule_0/qwen3.8-27b
 # read 15742 and climbs under traffic). The cluster name — and thus the metric name — bakes the RULE
 # INDEX. Appending the ninfer rule AFTER laguna (currently the last model rule, index 6) makes ninfer
-# rule index 7, so the metric is:
-#   envoy_cluster_cluster_httproute_default_llm_model_router_rule_7ext_proc_streams_started
-#   (label envoy_cluster_name="httproute/default/llm-model-router/rule/7", job="envoy-gw")
+# rule index 6, so the metric is:
+#   envoy_cluster_cluster_httproute_default_llm_model_router_rule_6ext_proc_streams_started
+#   (label envoy_cluster_name="httproute/default/llm-model-router/rule/6", job="envoy-gw")
 # job="envoy-gw" = the dedicated 15s Envoy scrape (infra/prometheus.yaml); the 60s annotation scrape
 # (job="kubernetes-pods") is too slow for scale-from-zero — use envoy-gw, same as the other models.
 #
@@ -209,7 +209,7 @@ spec:
 #   POD=$(kubectl -n envoy-gateway-system get po -l gateway.envoyproxy.io/owning-gateway-name=llm-ai-gw -o name | head -1)
 #   kubectl -n envoy-gateway-system exec $POD -c envoy -- curl -s localhost:19001/stats/prometheus \
 #     | grep llm_model_router_rule_ | grep streams_started
-# (or in Prometheus: envoy_cluster_cluster_httproute_default_llm_model_router_rule_7ext_proc_streams_started)
+# (or in Prometheus: envoy_cluster_cluster_httproute_default_llm_model_router_rule_6ext_proc_streams_started)
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -227,14 +227,14 @@ spec:
       name: ninfer-aigw-extproc-rate
       metadata:
         serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-        # rule index 7 = ninfer appended after laguna (index 6). VERIFY per the note above.
-        query: 'sum(rate(envoy_cluster_cluster_httproute_default_llm_model_router_rule_7ext_proc_streams_started{job="envoy-gw"}[1m]))'
+        # rule index 6 = ninfer appended after laguna (index 6). VERIFY per the note above.
+        query: 'sum(rate(envoy_cluster_cluster_httproute_default_llm_model_router_rule_6ext_proc_streams_started{job="envoy-gw"}[1m]))'
         threshold: "5"
         activationThreshold: "0.001"   # any rate > 0.001 (one request in [1m] ~= 0.017) wakes 0->1
 # =============================================================================================
 # DRAFT — RULE TO APPEND TO THE LIVE apps/llm-ai-gateway.yaml (do NOT apply from here; this is a
 # copy-paste snippet). Add it as the LAST rule under `spec.rules` of the `llm-model-router`
-# AIGatewayRoute, AFTER the laguna-s-2.1 rule, so it takes rule index 7:
+# AIGatewayRoute, AFTER the laguna-s-2.1 rule, so it takes rule index 6:
 #
 #     - matches:
 #         - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b-ninfer }]

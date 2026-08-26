@@ -82,13 +82,6 @@ spec:
       timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: qwen38-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
-    # qwen3.8-27b-vllm = preserved vLLM engine (kserve/llmisvc-qwen38-vllm.yaml), the A/B baseline
-    # + fallback for the NInfer default. The regen job targets this one.
-    - matches:
-        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b-vllm }]
-      timeouts: { request: 1800s, backendRequest: 1800s }
-      backendRefs:
-        - { name: qwen38-vllm-llm-inference-pool, kind: InferencePool, group: inference.networking.k8s.io }
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: muse-glimmer-30b }]
       timeouts: { request: 1800s, backendRequest: 1800s }
@@ -117,8 +110,8 @@ spec:
     # qwen3.8-27b-ninfer = NInfer engine via an AIServiceBackend (apps/ninfer-standalone.yaml),
     # bypassing the EPP/InferencePool (NInfer has no vLLM metrics -> EPP fail-closes, #105). backendRef
     # is the AIServiceBackend `ninfer-backend` (no group/kind -> defaults; the CRD only allows
-    # group/kind for InferencePool). MUST stay the LAST rule -> rule index 7, which the ninfer KEDA
-    # wake metric (rule_7 ext_proc streams_started) depends on.
+    # group/kind for InferencePool). MUST stay the LAST rule -> rule index 6 (after the qwen3.8-27b-vllm
+    # rule was removed), which the ninfer KEDA wake metric (rule_6 ext_proc streams_started) depends on.
     - matches:
         - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b-ninfer }]
       timeouts: { request: 1800s, backendRequest: 1800s }
