@@ -123,6 +123,17 @@ data:
     print("\nPREFLIGHT_ERRORS:", [k for k in R if k.endswith("_error")])
     if "hf_config_error" in R:
         raise SystemExit("FATAL: cannot load granite config — check the local download path/completeness.")
+    # Gate: expect the clean dense map (64 layers x 7 linears = 448 decoder), a separate lm_head
+    # (tie=false), and NO unclassified linears. Fail loud so we never quantize an unexpected topology.
+    lc = R.get("linear_counts", {})
+    if lc:
+        if lc.get("decoder") != 448:
+            raise SystemExit(f"FATAL: expected 448 decoder linears, got {lc.get('decoder')} ({lc})")
+        if lc.get("head_embed", 0) < 1:
+            raise SystemExit(f"FATAL: no lm_head/embed_tokens linear found ({lc})")
+        if lc.get("other"):
+            raise SystemExit(f"FATAL: unclassified linears present, review before quantizing: {R.get('other_linears_sample')}")
+        print("INVENTORY OK: dense, 448 decoder linears, separate head/embed, no strays")
   quantize.py: |
     #!/usr/bin/env python3
     """AutoRound NVFP4 (W4A4) or W4A16 quant of granite-4.2-30b (dense) -> compressed-tensors.
@@ -138,13 +149,18 @@ data:
     ART    = Path("/data/artifacts")
     OUT    = Path(os.environ.get("QUANT_OUT", f"/data/runs/granite-4.2-30b-{SCHEME}{RUN_TAG}-AutoRound-{MODE}"))
     ART.mkdir(parents=True, exist_ok=True); OUT.mkdir(parents=True, exist_ok=True)
+    # CORESIDENT_LITE=1 (qwen3.8 stays serving): smaller calib -> host-RAM peak ~14-16GB (fits under
+    # an 18Gi cap beside qwen's ~23GB on the 46GB node). =0 (qwen scaled to 0): FULL profile, best quality.
+    LITE = os.environ.get("CORESIDENT_LITE", "0") == "1"
     MODES = {
         "smoke":   dict(nsamples=8,   seqlen=512,  batch_size=1, iters=0,    low_gpu_mem_usage=True),
-        "default": dict(nsamples=128, seqlen=2048, batch_size=2, iters=200,  low_gpu_mem_usage=True),
+        "default": (dict(nsamples=64,  seqlen=1024, batch_size=1, iters=200, low_gpu_mem_usage=True) if LITE
+                    else dict(nsamples=128, seqlen=2048, batch_size=2, iters=200, low_gpu_mem_usage=True)),
         "best":    dict(nsamples=512, seqlen=2048, batch_size=2, iters=1000, low_gpu_mem_usage=True),
     }
     if MODE not in MODES: raise SystemExit(f"bad QUANT_MODE={MODE}")
     P = MODES[MODE]
+    print(f"CORESIDENT_LITE={LITE} -> profile {P}", flush=True)
     print(f"=== quantize SCHEME={SCHEME} MODE={MODE} params={P} model={MODEL} -> {OUT} ===", flush=True)
     import torch  # noqa
     from auto_round import AutoRound
@@ -172,8 +188,11 @@ data:
     (ART/f"quant-config-{SCHEME}-{MODE}.json").write_text(json.dumps(qc, indent=2, default=str))
     wbits = (((qc or {}).get("config_groups",{}).get("group_0",{}) or {}).get("weights",{}) or {}).get("num_bits")
     fmt = (qc or {}).get("format")
-    print(f"format={fmt} weight_bits={wbits}", flush=True)
+    ign = (qc or {}).get("ignore", [])
+    print(f"format={fmt} weight_bits={wbits} ignore={ign}", flush=True)
     if not qc or wbits != 4: raise SystemExit(f"FATAL: expected 4-bit weights, got num_bits={wbits} (format {fmt})")
+    # tie_word_embeddings=false -> lm_head is a real tensor; confirm it stayed BF16 (in the ignore set).
+    if not any("lm_head" in x for x in ign): raise SystemExit(f"FATAL: lm_head not protected in export ignore={ign}")
     # HF config parser wants config_groups.*.format as a STRING (AutoRound writes null).
     try:
         _patched=False
@@ -241,8 +260,13 @@ spec:
             - { name: GRANITE_MODEL, value: "/data/granite-4.2-30b" }
             - { name: QUANT_SCHEME, value: "NVFP4" }
             - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+            # "1" = qwen3.8 stays serving (lite calib, ~14-16GB host RAM). Set "0" AND raise memory
+            # limit to 42Gi if you scale qwen3.8 to 0 first (FULL calib, best quality).
+            - { name: CORESIDENT_LITE, value: "1" }
           resources:
-            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 24Gi, nvidia.com/gpumem: 45000 }
+            # memory 18Gi cap protects the 46GB no-swap node: OOM-kills the quant container (not the
+            # node) if it ever exceeds. gpumem 30000 MiB (HAMi) hard-isolates from qwen3.8's 44GB slice.
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 18Gi, nvidia.com/gpumem: 30000 }
             requests: { cpu: "4", memory: 10Gi }
           volumeMounts:
             - { name: models, mountPath: /data }
@@ -275,8 +299,13 @@ spec:
             - { name: GRANITE_MODEL, value: "/data/granite-4.2-30b" }
             - { name: QUANT_SCHEME, value: "W4A16" }
             - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
+            # "1" = qwen3.8 stays serving (lite calib, ~14-16GB host RAM). Set "0" AND raise memory
+            # limit to 42Gi if you scale qwen3.8 to 0 first (FULL calib, best quality).
+            - { name: CORESIDENT_LITE, value: "1" }
           resources:
-            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 24Gi, nvidia.com/gpumem: 45000 }
+            # memory 18Gi cap protects the 46GB no-swap node: OOM-kills the quant container (not the
+            # node) if it ever exceeds. gpumem 30000 MiB (HAMi) hard-isolates from qwen3.8's 44GB slice.
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 18Gi, nvidia.com/gpumem: 30000 }
             requests: { cpu: "4", memory: 10Gi }
           volumeMounts:
             - { name: models, mountPath: /data }
