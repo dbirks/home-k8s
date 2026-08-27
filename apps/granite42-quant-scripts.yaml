@@ -134,10 +134,13 @@ data:
     # an 18Gi cap beside qwen's ~23GB on the 46GB node). =0 (qwen scaled to 0): FULL profile, best quality.
     LITE = os.environ.get("CORESIDENT_LITE", "0") == "1"
     MODES = {
-        "smoke":   dict(nsamples=8,   seqlen=512,  batch_size=1, iters=0,    low_gpu_mem_usage=True),
+        # low_gpu_mem_usage: FULL run (qwen at 0, whole 96GB card free) -> FALSE = load the model into
+        # VRAM, keep HOST RAM flat (~27GB, muse reference). TRUE streams the model THROUGH host RAM and
+        # leaked ~1.75GB/layer -> node hang (2026-08-26). LITE (co-resident) keeps True to spare VRAM.
+        "smoke":   dict(nsamples=8,   seqlen=512,  batch_size=1, iters=0,    low_gpu_mem_usage=False),
         "default": (dict(nsamples=64,  seqlen=1024, batch_size=1, iters=200, low_gpu_mem_usage=True) if LITE
-                    else dict(nsamples=128, seqlen=2048, batch_size=4, iters=200, low_gpu_mem_usage=True)),
-        "best":    dict(nsamples=512, seqlen=2048, batch_size=4, iters=1000, low_gpu_mem_usage=True),
+                    else dict(nsamples=128, seqlen=2048, batch_size=4, iters=200, low_gpu_mem_usage=False)),
+        "best":    dict(nsamples=512, seqlen=2048, batch_size=4, iters=1000, low_gpu_mem_usage=False),
     }
     if MODE not in MODES: raise SystemExit(f"bad QUANT_MODE={MODE}")
     P = MODES[MODE]
