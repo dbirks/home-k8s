@@ -7,7 +7,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: granite42-quant-nvfp4-20260826d   # d = 34Gi cap after freeing host RAM (semantic-router+openhands parked)
+  name: granite42-quant-nvfp4-20260826e   # e = 46Gi cap (cgroup page-cache reclaim, not premature OOM; watchdog protects node)
   namespace: default
 spec:
   backoffLimit: 0                 # long GPU run — never auto-retry; fix + re-fire by name bump
@@ -32,7 +32,7 @@ spec:
           resources:
             # qwen3.8 down -> node RAM free. 40Gi cap covers the ~27GB full-profile peak (muse reference)
             # while protecting the 46GB no-swap node. gpumem 60000 MiB: whole card free, headroom for bs=4.
-            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 34Gi, nvidia.com/gpumem: 90000 }
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 46Gi, nvidia.com/gpumem: 90000 }
             requests: { cpu: "4", memory: 12Gi }
           volumeMounts:
             - { name: models, mountPath: /data }
