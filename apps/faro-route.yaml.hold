@@ -1,0 +1,55 @@
+# Public /faro route -> Alloy faro.receiver (browser RUM ingest for resume-updater).
+# DRAFT / not yet reconciled (.hold). Rename to faro-route.yaml to let Flux pick it up.
+#
+# Same public entry as /v1, /anthropic, /grafana: Cloudflare Tunnel -> Envoy Gateway
+# `llm-public-gw` (ns llm-portal, apps/llm-public-gateway.yaml). No Cloudflare dashboard
+# change needed — this is just another path on the existing llm.birks.dev host.
+#
+# The Faro Web SDK POSTs to https://llm.birks.dev/faro/collect. faro.receiver serves its
+# endpoint at /collect, so we rewrite the /faro prefix away before hitting Alloy:
+#   /faro/collect  --(ReplacePrefixMatch /faro -> /)-->  /collect
+#
+# /faro is a longer prefix than the portal `/` catch-all, so Gateway-API precedence routes
+# it here (same trick as /v1 and /grafana). NO apiKeyAuth SecurityPolicy is attached — this
+# is an intentionally public browser ingest endpoint (protected by CORS + faro.receiver rate
+# limiting + Cloudflare). Do NOT attach vllm-apikey-auth here.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: faro
+  namespace: llm-portal          # must match the Gateway ns (listener allowedRoutes: Same)
+spec:
+  parentRefs:
+    - name: llm-public-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /faro
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /        # /faro/collect -> /collect
+      backendRefs:
+        - name: alloy-faro
+          namespace: monitoring
+          port: 12347
+---
+# Allow the llm-portal HTTPRoute to reference the alloy-faro Service in `monitoring`.
+apiVersion: gateway.networking.k8s.io/v1
+kind: ReferenceGrant
+metadata:
+  name: llm-portal-httproute-to-alloy-faro
+  namespace: monitoring
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: llm-portal
+  to:
+    - group: ""
+      kind: Service
+      name: alloy-faro
