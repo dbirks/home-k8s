@@ -30,7 +30,7 @@ spec:
             - { name: CALIB_DATASET, value: "NeelNanda/pile-10k" }
             - { name: CORESIDENT_LITE, value: "0" }   # FULL best-quality calib (qwen scaled to 0 first)
           resources:
-            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 30Gi, nvidia.com/gpumem: 90000 }
+            limits: { nvidia.com/gpu: 1, cpu: "8", memory: 34Gi, nvidia.com/gpumem: 90000 }
             requests: { cpu: "4", memory: 12Gi }
           volumeMounts:
             - { name: models, mountPath: /data }
