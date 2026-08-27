@@ -150,7 +150,10 @@ data:
     print("model_type:", getattr(cfg,"model_type",None), "arch:", getattr(cfg,"architectures",None), flush=True)
     # Protect the head + embeddings (bf16). tie_word_embeddings=false so lm_head is its own tensor.
     layer_config = {"lm_head": {"bits": 16}, "model.embed_tokens": {"bits": 16}}
-    ar = AutoRound(MODEL, scheme=SCHEME, dataset=CALIB, device_map="auto", trust_remote_code=True,
+    # device_map=0 (GPU-ONLY), NOT "auto": qwen is scaled to 0 so the whole 96GB card is free, and
+    # "auto" spills layers into HOST RAM which tipped the 46GB no-swap node into a hard hang (2026-08-26).
+    # GPU-only + low_gpu_mem_usage streams blocks -> host RAM stays low (muse ref peaked ~27GB this way).
+    ar = AutoRound(MODEL, scheme=SCHEME, dataset=CALIB, device_map=0, trust_remote_code=True,
                    layer_config=layer_config, seed=42, **P)
     _, saved = ar.quantize_and_save(output_dir=str(OUT), format="llm_compressor")
     print("Saved:", saved, flush=True)

@@ -18,7 +18,8 @@ spec:
       restartPolicy: Never
       runtimeClassName: nvidia
       enableServiceLinks: false
-      priorityClassName: system-node-critical
+      # NO system-node-critical: that priority stops the kubelet/OOM-killer from shedding this pod
+      # under memory pressure, which wedged the whole node (2026-08-26). Let it be evictable instead.
       containers:
         - name: quantize
           image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
