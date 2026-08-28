@@ -54,6 +54,23 @@ spec:
                 | base64 -d > /tmp/ple_patch.py
               python3 /tmp/ple_patch.py "$WK"
               echo "[flashnext] instrumentation applied"
+              # ROOT-CAUSE FIX (#112): we excluded the 43 ple-bf16-*.safetensors at download (95GB the
+              # INT4 overlay replaces), but the model index still references them -> the PLE-offload
+              # child's weight loader raised FileNotFoundError (swallowed -> looked like a CUDA hang).
+              # The ngram shard data comes from VLLM_PLE_QUANT_DIR (INT4); the PLE scales live in the
+              # PRESENT carry-model-bf16 files. So drop the ple-bf16 refs from the index (idempotent).
+              python3 - <<'PYIDX'
+              import json
+              p = "/data/mixed-nvfp4-fp8/model.safetensors.index.json"
+              d = json.load(open(p)); wm = d["weight_map"]; n0 = len(wm)
+              d["weight_map"] = {k: v for k, v in wm.items() if "ple-bf16" not in v}
+              removed = n0 - len(d["weight_map"])
+              if removed:
+                  json.dump(d, open(p, "w"))
+                  print(f"[#112 index-fix] removed {removed} ple-bf16 tensor refs (INT4 overlay provides them)")
+              else:
+                  print("[#112 index-fix] index already clean")
+              PYIDX
               echo "[flashnext] === PREFLIGHT (evidence bundle) ==="
               grep -E 'Seccomp|CapEff|CapBnd|NoNewPrivs' /proc/self/status || true
               python3 - <<'PY'
