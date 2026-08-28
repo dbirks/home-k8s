@@ -1,12 +1,19 @@
-# One-off: download RadixArk/Qwen3.8-Flash-Next-NVFP4 (~126GiB, public/ungated) to the durable
-# flashnext-models PVC as the source for single-GPU serving (PLE mmap'd off-GPU, blazux patch).
-# Pure network/disk, NO GPU -> does not disturb the serving qwen3.8-27b engine. Resumable.
-# HF_HUB_DISABLE_XET=1: Xet transfer stalls on this repo (per blazux download-weights.sh); plain HTTPS
-# is reliable. Retire to .hold once complete (the flashnext-models PVC persists). Node had ~316GB free.
+# One-off: download the primitive-ai Qwen3.8-Flash-Next artifacts for single-GPU serving on our
+# RTX PRO 6000 (SM120) — validated on our exact card by primitive-ai.
+#
+#  (1) primitive-ai/Qwen3.8-Flash-Next-mixed-NVFP4-FP8 (183.7GB) MINUS its 95GB BF16 PLE shards
+#      (ple-bf16-*.safetensors) -> ~89GB of experts(NVFP4)+tail(FP8)+carry+configs (resident on GPU).
+#      The built-in PLE is skipped because the INT4 overlay below replaces it.
+#  (2) primitive-ai/Qwen3.8-Flash-Next-PLE-quant -> ples_int4/ (32GB, 128 INT4 shards mmap'd off-GPU,
+#      host RSS ~32.9GB reclaimable page cache -> fits our 46GB node) + the two overlay files
+#      (worker_image_quant.py, ple_layer_quant.py) + META.json.
+#
+# Pure network/disk, NO GPU -> does not disturb serving. Resumable. HF_HUB_DISABLE_XET=1 (Xet stalls).
+# Replaces the earlier RadixArk attempt (SGLang-oriented, PLE resident, weaker for us). Node ~316GB free.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: flashnext-download-20260828
+  name: flashnext-download-20260828b
   namespace: default
 spec:
   backoffLimit: 10
@@ -27,13 +34,25 @@ spec:
               set -euo pipefail
               pip install -q --no-cache-dir "huggingface_hub[cli]"
               export HF_HUB_DISABLE_XET=1
-              DST=/data/qwen38-flash-next
-              echo "[$(date)] downloading RadixArk/Qwen3.8-Flash-Next-NVFP4 -> $DST"
-              hf download RadixArk/Qwen3.8-Flash-Next-NVFP4 --local-dir "$DST" --max-workers 8
-              echo "[$(date)] done: $(du -sh $DST | cut -f1)"
-              echo "=== PLE shards (should be 10 x model-plefp8-*.safetensors) ==="
-              ls -la "$DST"/model-plefp8-*.safetensors 2>/dev/null | wc -l
-              ls "$DST"/model.safetensors.index.json >/dev/null && echo "index.json present"
+              # reclaim the aborted RadixArk attempt
+              rm -rf /data/qwen38-flash-next || true
+              MODEL=/data/mixed-nvfp4-fp8
+              PLE=/data/ple-quant
+              echo "[$(date)] (1) model (excluding BF16 PLE shards) -> $MODEL"
+              hf download primitive-ai/Qwen3.8-Flash-Next-mixed-NVFP4-FP8 \
+                --local-dir "$MODEL" --max-workers 8 \
+                --exclude "ple-bf16-*.safetensors"
+              echo "[$(date)] (2) INT4 PLE overlay + worker files -> $PLE"
+              hf download primitive-ai/Qwen3.8-Flash-Next-PLE-quant \
+                --local-dir "$PLE" --max-workers 8
+              echo "[$(date)] done. sizes:"
+              du -sh "$MODEL" "$PLE" "$PLE"/ples_int4 2>/dev/null || true
+              echo "=== model shards (expect NO ple-bf16-*) ==="
+              ls "$MODEL"/*.safetensors 2>/dev/null | sed 's#.*/##' | sort | head -60
+              echo "=== overlay files ==="
+              ls -la "$PLE"/*.py "$PLE"/ples_int4/META.json 2>/dev/null
+              echo "=== int4 ple shard count (expect 128) ==="
+              ls "$PLE"/ples_int4/shard_*.safetensors 2>/dev/null | wc -l
           env:
             - { name: HF_HOME, value: /data/.hfhome }
             - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
