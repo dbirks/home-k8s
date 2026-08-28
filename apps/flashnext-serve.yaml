@@ -41,11 +41,19 @@ spec:
           args:
             - |
               set -euo pipefail
-              cp -f /data/ple-quant/worker_image_quant.py \
-                /usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
+              WK=/usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
+              cp -f /data/ple-quant/worker_image_quant.py "$WK"
               cp -f /data/ple-quant/ple_layer_quant.py \
                 /usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py
-              echo "[flashnext] overlay files installed"
+              echo "[flashnext] overlay files installed; applying #112 child-death instrumentation"
+              # Task 2 (#112): make the PLE-offload child's death OBSERVABLE. (1) wait_for_ready reports
+              # the child exitcode/signal the instant it dies instead of blocking the full timeout.
+              # (2) proc_main dup2's fd 2 to a file so a C-level CUDA/libvgpu abort's stderr is captured.
+              # Patch script is base64 (bulletproof vs YAML/bash/indentation); see apps/ commit for source.
+              echo 'aW1wb3J0IHN5cywgcmUKcCA9IHN5cy5hcmd2WzFdCnMgPSBvcGVuKHApLnJlYWQoKQoKIyAxKSB3YWl0X2Zvcl9yZWFkeTogcmVwb3J0IHRoZSBjaGlsZCdzIGV4aXRjb2RlL3NpZ25hbCB0aGUgaW5zdGFudCBpdCBkaWVzICh3aGl0ZXNwYWNlLXRvbGVyYW50KQpwYXQgPSByZS5jb21waWxlKAogICAgcidpZiBub3QgcmVhZGVyXC5wb2xsXChlbnZzXC5WTExNX1BMRV9PRkZMT0FEX1JFQURZX1RJTUVPVVRcKTpccypcbicKICAgIHInXHMqcmFpc2UgVGltZW91dEVycm9yXChccypcbicKICAgIHInXHMqIlBMRSBvZmZsb2FkIHdvcmtlciBkaWQgbm90IGJlY29tZSByZWFkeSB3aXRoaW4gIlxzKlxuJwogICAgcidccypmIlx7ZW52c1wuVkxMTV9QTEVfT0ZGTE9BRF9SRUFEWV9USU1FT1VUXH1zXC4iXHMqXG4nCiAgICByJ1xzKlwpJwopCnJlcGwgPSAoCiAgICAnaW1wb3J0IHRpbWUgYXMgX3RcbicKICAgICcgICAgICAgIF9kbCA9IF90LnRpbWUoKSArIGVudnMuVkxMTV9QTEVfT0ZGTE9BRF9SRUFEWV9USU1FT1VUXG4nCiAgICAnICAgICAgICB3aGlsZSBub3QgcmVhZGVyLnBvbGwoMi4wKTpcbicKICAgICcgICAgICAgICAgICBpZiBub3QgaGFuZGxlLnByb2MuaXNfYWxpdmUoKTpcbicKICAgICcgICAgICAgICAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKGYiWyMxMTJdIFBMRSBvZmZsb2FkIENISUxEIERJRUQgYmVmb3JlIFJFQURZOiAnCiAgICAnZXhpdGNvZGU9e2hhbmRsZS5wcm9jLmV4aXRjb2RlfSAobmVnPS1zaWduYWw7IC02PVNJR0FCUlQgLTExPVNJR1NFR1YgLTk9U0lHS0lMTCkiKVxuJwogICAgJyAgICAgICAgICAgIGlmIF90LnRpbWUoKSA+IF9kbDpcbicKICAgICcgICAgICAgICAgICAgICAgcmFpc2UgVGltZW91dEVycm9yKCJQTEUgb2ZmbG9hZCB3b3JrZXIgZGlkIG5vdCBiZWNvbWUgcmVhZHkgd2l0aGluIHRpbWVvdXQiKScKKQpzLCBuMSA9IHBhdC5zdWJuKHJlcGwsIHMpCgojIDIpIHByb2NfbWFpbjogZHVwMiBmZDIgdG8gYSBmaWxlIHNvIGEgQy1sZXZlbCAoQ1VEQS9saWJ2Z3B1KSBhYm9ydCdzIHN0ZGVyciBpcyBjYXB0dXJlZAphbmNob3IgPSAnZGVjb3JhdGVfbG9ncygiUGxlT2ZmbG9hZFdvcmtlciIpJwpuMiA9IHMuY291bnQoYW5jaG9yKQppbmogPSAoCiAgICBhbmNob3IgKyAnXG4nCiAgICAnICAgICAgICBpbXBvcnQgb3MgYXMgX28xMTJcbicKICAgICcgICAgICAgIHRyeTpcbicKICAgICcgICAgICAgICAgICBfZmQgPSBfbzExMi5vcGVuKCIvZGF0YS9wbGUtY2hpbGQtc3RkZXJyLmxvZyIsIF9vMTEyLk9fV1JPTkxZIHwgX28xMTIuT19DUkVBVCB8IF9vMTEyLk9fVFJVTkMsIDBvNjQ0KVxuJwogICAgJyAgICAgICAgICAgIF9vMTEyLmR1cDIoX2ZkLCAyKVxuJwogICAgJyAgICAgICAgICAgIF9vMTEyLndyaXRlKF9mZCwgYiJbcGxlLWNoaWxkXSBwcm9jX21haW4gcmVhY2hlZDsgZmQyIHJlZGlyZWN0ZWRcXG4iKVxuJwogICAgJyAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBfZTpcbicKICAgICcgICAgICAgICAgICBwcmludCgiW3BsZS1jaGlsZF0gcmVkaXJlY3QgZmFpbGVkIiwgX2UpJwopCnMgPSBzLnJlcGxhY2UoYW5jaG9yLCBpbmosIDEpCgpvcGVuKHAsICd3Jykud3JpdGUocykKcHJpbnQoZiJbIzExMiBwYXRjaF0gd2FpdF9mb3JfcmVhZHlfcmVwbGFjZWQ9e24xfSBwcm9jX21haW5fYW5jaG9yX2ZvdW5kPXtuMn0iKQo=' \
+                | base64 -d > /tmp/ple_patch.py
+              python3 /tmp/ple_patch.py "$WK"
+              echo "[flashnext] instrumentation applied"
               echo "[flashnext] === PREFLIGHT (evidence bundle) ==="
               grep -E 'Seccomp|CapEff|CapBnd|NoNewPrivs' /proc/self/status || true
               python3 - <<'PY'
