@@ -50,29 +50,11 @@ spec:
   # NOTE: cold-load is ~3min, longer than most client timeouts, so the first request after idle likely
   # needs a retry (scale-up still fires). Swap the trigger query if saturation isn't the right wake
   # signal. Revert to always-on = replace this whole scaling block with `replicas: 1`.
-  scaling:
-    minReplicas: 1
-    maxReplicas: 1
-    keda:
-      idleReplicaCount: 0
-      cooldownPeriod: 120
-      pollingInterval: 15
-      triggers:
-        # Wake signal = the Envoy ext-proc request RATE to qwen's InferencePool. ext-proc is called
-        # for routing on EVERY incoming request BEFORE the engine, so this rises >0 even at 0 engine
-        # replicas → KEDA activates (0->1). Falls to 0 after ~2min of no requests → scale to idle (0).
-        # (Chosen over flow_control_pool_saturation, which reads 1 whenever the engine is down → flaps.)
-        - type: prometheus
-          name: qwen-epp-request-rate
-          metadata:
-            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-            # Wake trigger scoped to the dedicated 15s Envoy scrape (job="envoy-gw", infra/prometheus.yaml)
-            # so a [1m] rate() window holds ~4 samples -> snappier wake (~30s vs ~2m). Do NOT drop below [1m]
-            # or widen the scrape past ~15s: rate() needs >=2 samples in the window (a [1m] window over the
-            # old 60s annotation scrape returned EMPTY and broke scale-from-zero, 2026-08-21).
-            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_llm_inference_pool_default_ext_proc_upstream_rq_total{job="envoy-gw"}[1m]))'
-            threshold: "5"
-            activationThreshold: "0.001"
+  # ── FLASH-NEXT BRING-UP WINDOW (2026-08-28): TEMPORARILY PINNED OFF ───────────────────────────
+  # Pinned to 0 to free the whole card + host RAM for the Qwen3.8-Flash-Next smoke test (it needs
+  # ~89GB VRAM + ~33GB host RAM — cannot co-reside). RESTORE scale-to-zero after the test by reverting
+  # this hunk to the `scaling:` block (git history) and reconciling.
+  replicas: 0
   template:                                      # PodSpec for the vLLM engine pod
     runtimeClassName: nvidia
     securityContext:                              # preset defaults to runAsNonRoot:true; our vLLM

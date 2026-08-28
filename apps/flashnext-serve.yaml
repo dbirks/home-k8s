@@ -1,0 +1,94 @@
+# Qwen3.8-Flash-Next NVFP4 single-GPU serving on the RTX PRO 6000 (SM120), via the primitive-ai
+# INT4-PLE mmap overlay. STANDALONE Deployment+Service first (prove it boots + smoke test); gateway/
+# portal/KEDA orchestration is a SEPARATE follow-up once serving is confirmed.
+#
+# CO-RESIDENCE: needs ~89GB VRAM + ~33GB host RAM (INT4 PLE mmap, reclaimable page cache). CANNOT
+# co-reside with any other model — every llm.birks.dev catalog engine + the regen job must be at 0
+# while this runs (qwen38-llm pinned replicas:0, regen parked). Do NOT wire into the shared KEDA
+# catalog without a co-residence guard (a stray concurrent wake = node OOM).
+#
+# Recipe (primitive-ai, validated on this exact card): stock vLLM image + two overlay .py files
+# mounted over vLLM's PLE modules (subPath from the flashnext-models PVC) + INT4 PLE dir at /ples_int4.
+# MAX_JOBS=1 caps the FlashInfer CUTLASS NVFP4 JIT nvcc RAM spike (~8GB) — critical on 46GB no-swap.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flashnext
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }        # single GPU workload — never two pods on the card at once
+  selector:
+    matchLabels: { app: flashnext }
+  template:
+    metadata:
+      labels: { app: flashnext }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false        # avoid the k8s `vllm`/VLLM_PORT env clash
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:qwen38-flash-next
+          command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+          args:
+            - --model=/data/mixed-nvfp4-fp8
+            - --served-model-name=qwen3.8-flash-next
+            - --host=0.0.0.0
+            - --port=8000
+            - --distributed-executor-backend=mp
+            - --gpu-memory-utilization=0.95   # weights ~88.8GiB (primitive-ai) + tiny KV @ 1 seq/32K
+            - --max-model-len=32768         # smoke test; raise to 131072/262144 once stable
+            - --max-num-seqs=1
+            - --no-enable-prefix-caching     # GDN cached path errors with prefix caching
+            - --enable-auto-tool-choice
+            - --tool-call-parser=qwen3_coder
+            - --reasoning-parser=qwen3
+          env:
+            - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_int4 }   # INT4 mmap PLE (32GB, off-GPU)
+            - { name: VLLM_PLE_CPU_OFFLOAD, value: "1" }
+            - { name: VLLM_PLE_OFFLOAD_READY_TIMEOUT, value: "3600" }
+            - { name: VLLM_GDN_DECODE_KERNEL, value: triton }        # GDN FP8 layers require triton
+            - { name: MAX_JOBS, value: "1" }                          # cap NVFP4 JIT nvcc RAM spike ~8GB
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: VLLM_CACHE_ROOT, value: /data/.vllm_cache }     # persist JIT/torch cache across restarts
+            - { name: HOME, value: /data/.home }                      # flashinfer workspace under here, persisted
+          ports:
+            - { name: http, containerPort: 8000 }
+          resources:
+            # HAMi: essentially the whole 96GB card (nothing else co-resident). host RAM: request low
+            # (real anon RSS ~15GB incl. the MAX_JOBS=1 compile); NO tight limit — the ~33GB INT4-PLE
+            # page cache is reclaimable and cgroup-charged, so a low cap would premature-OOM it (granite
+            # lesson). 44Gi limit lets the cgroup reclaim its own cache before OOM on the 46GB node.
+            requests: { cpu: "6", memory: 16Gi }
+            limits: { nvidia.com/gpu: 1, nvidia.com/gpumem: 97800, memory: 44Gi }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 120       # weights ~78GB load + JIT compile; boot ~333s
+            periodSeconds: 15
+            failureThreshold: 40           # ~10min grace to become ready
+          volumeMounts:
+            # whole PVC at /data (NO subPath for data dirs — subPath is flaky on local-path per CLAUDE.md)
+            - { name: models, mountPath: /data }
+            # the ONLY subPaths are the two single-file overlays onto vLLM's PLE modules in site-packages
+            - name: models
+              mountPath: /usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
+              subPath: ple-quant/worker_image_quant.py
+              readOnly: true
+            - name: models
+              mountPath: /usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py
+              subPath: ple-quant/ple_layer_quant.py
+              readOnly: true
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: flashnext-models } }
+        - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 3Gi } }   # small: TP=1 barely uses shm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flashnext
+  namespace: default
+spec:
+  selector: { app: flashnext }
+  ports:
+    - { name: http, port: 8000, targetPort: 8000 }
