@@ -47,10 +47,16 @@ spec:
       tag: "10.11.11"
       pullPolicy: IfNotPresent
 
-    # Single node + RWO config volume: Recreate avoids two pods briefly contending
-    # the SQLite DB during rollouts (a known cause of DB corruption).
+    # Single node + RWO config volume: maxSurge=0 tears the old pod down BEFORE
+    # the new one starts, so the two never contend the SQLite DB / RWO volumes
+    # during a rollout (concurrent DB access is a known corruption cause).
+    # (Equivalent to Recreate, but avoids the "rollingUpdate forbidden under
+    # Recreate" server-side-apply conflict with the pre-existing Deployment.)
     deploymentStrategy:
-      type: Recreate
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 0
+        maxUnavailable: 1
 
     # ---- GPU transcoding (NVENC) --------------------------------------------
     # Share the RTX PRO 6000 the same way GPU sidecars do in this repo: make the
