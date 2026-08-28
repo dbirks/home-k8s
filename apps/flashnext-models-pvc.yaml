@@ -1,0 +1,16 @@
+# Durable, standalone owner for the qwen38-flash-next NVFP4 checkpoint (RadixArk/Qwen3.8-Flash-Next-NVFP4,
+# ~126GiB). Holds the 10 model-plefp8-*.safetensors PLE shards (47.7GiB, mmap'd off-GPU at serve time)
+# plus the ~78GiB of resident weights. Standalone (incident lesson) so retiring the download/serve
+# manifests never prunes the weights. On fast NVMe (local-path) — the serve path mmaps the PLE shards
+# directly from this mount at every decode step, so it MUST be local NVMe, not network storage.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flashnext-models
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 200Gi
