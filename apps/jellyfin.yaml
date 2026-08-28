@@ -1,3 +1,24 @@
+---
+# Media library PVC on the SPINNING DISK (local-path-hdd, ~3.7TB HDD).
+# Defined explicitly (not chart-managed) because switching an existing PVC's
+# storageClass/size is immutable: the previous chart-created `jellyfin-media`
+# (100Gi on NVMe local-path) cannot be migrated in place, so we create a fresh
+# HDD-backed claim and point the chart at it via persistence.media.existingClaim.
+# The old `jellyfin-media` PVC is orphaned by this change; delete it manually to
+# reclaim NVMe (see repo notes) — its data is discarded (library re-downloaded).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jellyfin-media-hdd
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 2Ti
+---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -8,8 +29,8 @@ spec:
   chart:
     spec:
       chart: jellyfin
-      # Current version found here:
-      # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/Chart.yaml#L11
+      # Latest RELEASED jellyfin-helm chart (master's 3.3.0 is unpublished).
+      # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/Chart.yaml
       version: 3.2.0
       sourceRef:
         kind: HelmRepository
@@ -20,7 +41,40 @@ spec:
   # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/values.yaml
   values:
     image:
-      tag: 2025060205-amd64
+      # Latest STABLE Jellyfin server (10.11.x line). 12.0 is RC-only as of 2026-08.
+      # Multi-arch tag; node is amd64.
+      repository: docker.io/jellyfin/jellyfin
+      tag: "10.11.11"
+      pullPolicy: IfNotPresent
+
+    # Single node + RWO config volume: Recreate avoids two pods briefly contending
+    # the SQLite DB during rollouts (a known cause of DB corruption).
+    deploymentStrategy:
+      type: Recreate
+
+    # ---- GPU transcoding (NVENC) --------------------------------------------
+    # Share the RTX PRO 6000 the same way GPU sidecars do in this repo: make the
+    # card VISIBLE via env WITHOUT claiming an nvidia.com/gpu resource limit, so
+    # the vLLM serving stack keeps ownership of the GPU resource. NVENC still
+    # needs to be turned on in the Jellyfin dashboard (Playback -> Transcoding ->
+    # NVIDIA NVENC) — that is a one-time manual step after first login.
+    runtimeClassName: nvidia
+
+    jellyfin:
+      env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "all"
+
+    # Modest limits to protect the 46GB no-swap node. No CPU limit so software
+    # transcode bursts (fallback) are not throttled.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 4Gi
 
     ingress:
       enabled: true
@@ -30,12 +84,30 @@ spec:
           paths:
             - path: /
               pathType: ImplementationSpecific
+
+    # ---- Storage split ------------------------------------------------------
+    # DB (SQLite library.db lives under /config/data) and cache are isolated on
+    # separate FAST NVMe volumes; the bulky media library sits on the HDD. This
+    # isolation is the fix for the recurring SQLite corruption (DB no longer
+    # shares a busy volume with media/transcode I/O). Postgres is NOT used:
+    # Jellyfin 10.11's external-DB support is experimental (plugin-only) and not
+    # production-viable yet; official Postgres support is roadmapped for 12.0+.
     persistence:
       config:
+        # SQLite DB + server config -> NVMe (fast, fsync-safe).
         enabled: true
         size: 5Gi
         storageClass: local-path
-      media:
+      cache:
+        # Transcode temp + image cache -> its own NVMe PVC (keeps churn off the
+        # DB volume and off node ephemeral storage).
         enabled: true
-        size: 100Gi
+        type: pvc
+        size: 20Gi
         storageClass: local-path
+      media:
+        # Movies/library -> HDD, via the explicit claim defined above.
+        enabled: true
+        type: pvc
+        existingClaim: jellyfin-media-hdd
+        readOnly: false
