@@ -29,20 +29,31 @@ spec:
       containers:
         - name: vllm
           image: vllm/vllm-openai:qwen38-flash-next
-          command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+          # Copy the two primitive-ai overlay files into vLLM's site-packages at startup, then exec the
+          # server. (single-file subPath mounts fail "not a directory" on local-path — CLAUDE.md warns of
+          # this; site-packages is writable in the running container, so cp is the robust fix. Baking them
+          # into a custom image is the eventual gap-fill: ghcr.io/dbirks/vllm-flashnext:sm120.)
+          command: ["/bin/bash", "-lc"]
           args:
-            - --model=/data/mixed-nvfp4-fp8
-            - --served-model-name=qwen3.8-flash-next
-            - --host=0.0.0.0
-            - --port=8000
-            - --distributed-executor-backend=mp
-            - --gpu-memory-utilization=0.95   # weights ~88.8GiB (primitive-ai) + tiny KV @ 1 seq/32K
-            - --max-model-len=32768         # smoke test; raise to 131072/262144 once stable
-            - --max-num-seqs=1
-            - --no-enable-prefix-caching     # GDN cached path errors with prefix caching
-            - --enable-auto-tool-choice
-            - --tool-call-parser=qwen3_coder
-            - --reasoning-parser=qwen3
+            - |
+              set -euo pipefail
+              cp -f /data/ple-quant/worker_image_quant.py \
+                /usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
+              cp -f /data/ple-quant/ple_layer_quant.py \
+                /usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py
+              echo "[flashnext] overlay files installed"
+              exec python3 -m vllm.entrypoints.openai.api_server \
+                --model=/data/mixed-nvfp4-fp8 \
+                --served-model-name=qwen3.8-flash-next \
+                --host=0.0.0.0 --port=8000 \
+                --distributed-executor-backend=mp \
+                --gpu-memory-utilization=0.95 \
+                --max-model-len=32768 \
+                --max-num-seqs=1 \
+                --no-enable-prefix-caching \
+                --enable-auto-tool-choice \
+                --tool-call-parser=qwen3_coder \
+                --reasoning-parser=qwen3
           env:
             - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_int4 }   # INT4 mmap PLE (32GB, off-GPU)
             - { name: VLLM_PLE_CPU_OFFLOAD, value: "1" }
@@ -67,17 +78,9 @@ spec:
             periodSeconds: 15
             failureThreshold: 40           # ~10min grace to become ready
           volumeMounts:
-            # whole PVC at /data (NO subPath for data dirs — subPath is flaky on local-path per CLAUDE.md)
+            # whole PVC at /data (NO subPath — subPath is broken on local-path per CLAUDE.md). The two
+            # overlay .py files are cp'd from /data/ple-quant into site-packages by the startup command.
             - { name: models, mountPath: /data }
-            # the ONLY subPaths are the two single-file overlays onto vLLM's PLE modules in site-packages
-            - name: models
-              mountPath: /usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
-              subPath: ple-quant/worker_image_quant.py
-              readOnly: true
-            - name: models
-              mountPath: /usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py
-              subPath: ple-quant/ple_layer_quant.py
-              readOnly: true
             - { name: dshm, mountPath: /dev/shm }
       volumes:
         - { name: models, persistentVolumeClaim: { claimName: flashnext-models } }
