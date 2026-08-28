@@ -119,6 +119,13 @@ spec:
             - { name: VLLM_CACHE_ROOT, value: /data/.vllm_cache }
             - { name: HOME, value: /data/.home }
             - { name: VLLM_LOGGING_LEVEL, value: DEBUG }   # DEBUG: surface offload/child machinery
+            # ROOT-CAUSE FIX #2 (#112): the GPU worker <-> PLE-offload worker registration exchanges a
+            # CUDA IPC memory handle (CpuGpuSemaphore.from_ipc_tensor). HAMi's libvgpu virtualizes device
+            # memory per-process and does NOT proxy cudaIpc* handles between two processes on one vGPU ->
+            # the handshake deadlocks (offload worker blocks at pull_socket.recv(); GPU worker can't
+            # export/import the handle). CUDA_DISABLE_CONTROL=true makes libvgpu pass through to the real
+            # device (no memory-control interception) so CUDA IPC works. Safe here: whole card is ours.
+            - { name: CUDA_DISABLE_CONTROL, value: "true" }
           ports:
             - { name: http, containerPort: 8000 }
           resources:
