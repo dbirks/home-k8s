@@ -50,6 +50,7 @@ spec:
                 --gpu-memory-utilization=0.95 \
                 --max-model-len=32768 \
                 --max-num-seqs=1 \
+                --enforce-eager \
                 --no-enable-prefix-caching \
                 --enable-auto-tool-choice \
                 --tool-call-parser=qwen3_coder \
