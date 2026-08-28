@@ -1,0 +1,122 @@
+# Qwen3.8-Flash-Next NVFP4 single-GPU serving on the RTX PRO 6000 (SM120), via the primitive-ai
+# INT4-PLE mmap overlay. SPAWN-DEBUG VARIANT (issue #112 troubleshooting plan, Task 1): open the
+# K8s/HAMi subprocess gate that stops the PLE-offload child from spawning.
+#
+# The n-gram PLE table (128 INT4 shards, 30GB on this local-path NVMe PVC) is mmap'd OFF-GPU — that's
+# how it fits one 96GB card. Only ~84GB of weights live in VRAM. CANNOT co-reside with any other
+# model (~89GB VRAM + ~33GB host RAM), so the whole catalog must be at 0 while this runs.
+#
+# Task-1 knobs vs the plain serve: hostIPC (primitive-ai used `docker run --ipc=host`), SYS_PTRACE +
+# seccompProfile Unconfined (the offload child's IPC likely uses pidfd_getfd, seccomp-filtered under
+# the default K8s profile — prime suspect for the silent child death), --no-enable-flashinfer-autotune,
+# gpu-mem 0.92, enforce-eager kept for THIS diagnostic only (drop once the graph patch e6284ba is in).
+# A preflight logs Seccomp/CapEff/pidfd/libvgpu state for the per-boot evidence bundle.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flashnext
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: flashnext }
+  template:
+    metadata:
+      labels: { app: flashnext }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      hostIPC: true                      # DEBUG: match primitive-ai `--ipc=host`; the offload child may
+                                         # hand PLE rows back over host-IPC shared memory
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:qwen38-flash-next
+          securityContext:
+            capabilities:
+              add: ["SYS_PTRACE"]        # DEBUG: allow the child spawn / fd-passing machinery
+            seccompProfile:
+              type: Unconfined           # DEBUG: prime suspect — default seccomp blocks pidfd_getfd
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              cp -f /data/ple-quant/worker_image_quant.py \
+                /usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
+              cp -f /data/ple-quant/ple_layer_quant.py \
+                /usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py
+              echo "[flashnext] overlay files installed"
+              echo "[flashnext] === PREFLIGHT (evidence bundle) ==="
+              grep -E 'Seccomp|CapEff|CapBnd|NoNewPrivs' /proc/self/status || true
+              python3 - <<'PY'
+              import os, ctypes, ctypes.util
+              print("[preflight] pid", os.getpid())
+              # pidfd_open (child-spawn/fd machinery uses pidfd_*); if seccomp blocks it we see EPERM
+              try:
+                  fd = os.pidfd_open(os.getpid()); print("[preflight] pidfd_open OK"); os.close(fd)
+              except Exception as e:
+                  print("[preflight] pidfd_open FAILED:", repr(e))
+              # pidfd_getfd via raw syscall (438) — the one seccomp most often filters
+              libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+              try:
+                  pfd = os.pidfd_open(os.getpid())
+                  r = libc.syscall(438, pfd, 0, 0)  # pidfd_getfd(self, fd0, 0)
+                  import os as _o; err = ctypes.get_errno()
+                  print("[preflight] pidfd_getfd ret", r, "errno", err, "(1=EPERM=seccomp-blocked)")
+                  os.close(pfd)
+              except Exception as e:
+                  print("[preflight] pidfd_getfd probe error:", repr(e))
+              PY
+              echo "[flashnext] libvgpu.so mapped in parent?"; (grep -i vgpu /proc/self/maps | head -2 || echo "  (not mapped in parent)")
+              echo "[flashnext] === starting server ==="
+              exec python3 -m vllm.entrypoints.openai.api_server \
+                --model=/data/mixed-nvfp4-fp8 \
+                --served-model-name=qwen3.8-flash-next \
+                --host=0.0.0.0 --port=8000 \
+                --distributed-executor-backend=mp \
+                --gpu-memory-utilization=0.92 \
+                --max-model-len=32768 \
+                --max-num-seqs=1 \
+                --enforce-eager \
+                --no-enable-prefix-caching \
+                --no-enable-flashinfer-autotune \
+                --enable-auto-tool-choice \
+                --tool-call-parser=qwen3_coder \
+                --reasoning-parser=qwen3
+          env:
+            - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_int4 }
+            - { name: VLLM_PLE_CPU_OFFLOAD, value: "1" }
+            - { name: VLLM_PLE_OFFLOAD_READY_TIMEOUT, value: "600" }
+            - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }
+            - { name: VLLM_GDN_DECODE_KERNEL, value: triton }
+            - { name: MAX_JOBS, value: "1" }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: VLLM_CACHE_ROOT, value: /data/.vllm_cache }
+            - { name: HOME, value: /data/.home }
+            - { name: VLLM_LOGGING_LEVEL, value: DEBUG }   # DEBUG: surface offload/child machinery
+          ports:
+            - { name: http, containerPort: 8000 }
+          resources:
+            requests: { cpu: "6", memory: 16Gi }
+            limits: { nvidia.com/gpu: 1, nvidia.com/gpumem: 97800, memory: 44Gi }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 40
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: flashnext-models } }
+        - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }   # bigger for host-IPC PLE handoff
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flashnext
+  namespace: default
+spec:
+  selector: { app: flashnext }
+  ports:
+    - { name: http, port: 8000, targetPort: 8000 }
