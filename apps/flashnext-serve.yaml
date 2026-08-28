@@ -58,7 +58,12 @@ spec:
           env:
             - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_int4 }   # INT4 mmap PLE (32GB, off-GPU)
             - { name: VLLM_PLE_CPU_OFFLOAD, value: "1" }
-            - { name: VLLM_PLE_OFFLOAD_READY_TIMEOUT, value: "3600" }
+            - { name: VLLM_PLE_OFFLOAD_READY_TIMEOUT, value: "600" }  # fail in 10m, not a 1h hang, if the child dies
+            # CRITICAL: the PLE-offload child is spawned via vLLM get_mp_context(), which defaults to
+            # FORK. Forking a process that already holds a CUDA context crashes the child silently at
+            # GPU registration (VRAM stays 0, worker blocks on the never-arriving READY pipe). spawn
+            # gives the child a clean CUDA init. This was the root cause of the boot hang (2026-08-28).
+            - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }
             - { name: VLLM_GDN_DECODE_KERNEL, value: triton }        # GDN FP8 layers require triton
             - { name: MAX_JOBS, value: "1" }                          # cap NVFP4 JIT nvcc RAM spike ~8GB
             - { name: HF_HUB_OFFLINE, value: "1" }
