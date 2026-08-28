@@ -13,10 +13,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: flashnext-download-20260828b
+  name: flashnext-download-20260828c
   namespace: default
 spec:
-  backoffLimit: 10
+  backoffLimit: 20
   activeDeadlineSeconds: 172800
   ttlSecondsAfterFinished: 259200
   template:
@@ -42,9 +42,12 @@ spec:
               hf download primitive-ai/Qwen3.8-Flash-Next-mixed-NVFP4-FP8 \
                 --local-dir "$MODEL" --max-workers 8 \
                 --exclude "ple-bf16-*.safetensors"
-              echo "[$(date)] (2) INT4 PLE overlay + worker files -> $PLE"
+              echo "[$(date)] (2) INT4 PLE overlay + worker files -> $PLE (skip the 49GB ples_fp8/ variant)"
               hf download primitive-ai/Qwen3.8-Flash-Next-PLE-quant \
-                --local-dir "$PLE" --max-workers 8
+                --local-dir "$PLE" --max-workers 8 \
+                --exclude "ples_fp8/*"
+              # reclaim the redundant FP8 variant if a prior run pulled it
+              rm -rf "$PLE"/ples_fp8 || true
               echo "[$(date)] done. sizes:"
               du -sh "$MODEL" "$PLE" "$PLE"/ples_int4 2>/dev/null || true
               echo "=== model shards (expect NO ple-bf16-*) ==="
