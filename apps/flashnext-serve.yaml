@@ -1,16 +1,15 @@
 # Qwen3.8-Flash-Next NVFP4 single-GPU serving on the RTX PRO 6000 (SM120), via the primitive-ai
-# INT4-PLE mmap overlay. SPAWN-DEBUG VARIANT (issue #112 troubleshooting plan, Task 1): open the
-# K8s/HAMi subprocess gate that stops the PLE-offload child from spawning.
+# INT4-PLE mmap overlay. WORKING config (issue #112 solved 2026-08-28). Debug scaffolding removed.
 #
-# The n-gram PLE table (128 INT4 shards, 30GB on this local-path NVMe PVC) is mmap'd OFF-GPU — that's
-# how it fits one 96GB card. Only ~84GB of weights live in VRAM. CANNOT co-reside with any other
-# model (~89GB VRAM + ~33GB host RAM), so the whole catalog must be at 0 while this runs.
+# The n-gram PLE table (128 INT4 shards, 30GB on this local-path NVMe PVC) is mmap'd OFF-GPU; only
+# ~84GB of weights live in VRAM. Owns the whole card — the rest of the catalog must be at 0.
 #
-# Task-1 knobs vs the plain serve: hostIPC (primitive-ai used `docker run --ipc=host`), SYS_PTRACE +
-# seccompProfile Unconfined (the offload child's IPC likely uses pidfd_getfd, seccomp-filtered under
-# the default K8s profile — prime suspect for the silent child death), --no-enable-flashinfer-autotune,
-# gpu-mem 0.92, enforce-eager kept for THIS diagnostic only (drop once the graph patch e6284ba is in).
-# A preflight logs Seccomp/CapEff/pidfd/libvgpu state for the per-boot evidence bundle.
+# Two fixes that made it serve (see #112): (1) the model index still referenced the 43 ple-bf16-*
+# files we excluded at download -> the offload child's loader raised a swallowed FileNotFoundError;
+# an idempotent startup step drops those refs (ngram data comes from the INT4 quant dir; PLE scales
+# live in the present carry-model-bf16 files). (2) the GPU worker <-> PLE-offload worker registration
+# exchanges a CUDA IPC handle, which HAMi's libvgpu won't proxy between two procs on one vGPU ->
+# CUDA_DISABLE_CONTROL=true makes libvgpu pass through so CUDA IPC works.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,38 +26,20 @@ spec:
     spec:
       runtimeClassName: nvidia
       enableServiceLinks: false
-      hostIPC: true                      # DEBUG: match primitive-ai `--ipc=host`; the offload child may
-                                         # hand PLE rows back over host-IPC shared memory
       containers:
         - name: vllm
-          image: vllm/vllm-openai:qwen38-flash-next
-          securityContext:
-            capabilities:
-              add: ["SYS_PTRACE"]        # DEBUG: allow the child spawn / fd-passing machinery
-            seccompProfile:
-              type: Unconfined           # DEBUG: prime suspect — default seccomp blocks pidfd_getfd
+          image: vllm/vllm-openai:qwen38-flash-next   # TODO: swap to ghcr.io/dbirks/vllm-flashnext:sm120 (overlay baked in) once published
           command: ["/bin/bash", "-lc"]
           args:
             - |
               set -euo pipefail
-              WK=/usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
-              cp -f /data/ple-quant/worker_image_quant.py "$WK"
+              # Install the primitive-ai INT4-PLE overlay (until the baked image lands).
+              cp -f /data/ple-quant/worker_image_quant.py \
+                /usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
               cp -f /data/ple-quant/ple_layer_quant.py \
                 /usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py
-              echo "[flashnext] overlay files installed; applying #112 child-death instrumentation"
-              # Task 2 (#112): make the PLE-offload child's death OBSERVABLE. (1) wait_for_ready reports
-              # the child exitcode/signal the instant it dies instead of blocking the full timeout.
-              # (2) proc_main dup2's fd 2 to a file so a C-level CUDA/libvgpu abort's stderr is captured.
-              # Patch script is base64 (bulletproof vs YAML/bash/indentation); see apps/ commit for source.
-              echo 'aW1wb3J0IHN5cywgcmUKcCA9IHN5cy5hcmd2WzFdCnMgPSBvcGVuKHApLnJlYWQoKQoKIyAxKSB3YWl0X2Zvcl9yZWFkeTogcmVwb3J0IHRoZSBjaGlsZCdzIGV4aXRjb2RlL3NpZ25hbCB0aGUgaW5zdGFudCBpdCBkaWVzICh3aGl0ZXNwYWNlLXRvbGVyYW50KQpwYXQgPSByZS5jb21waWxlKAogICAgcidpZiBub3QgcmVhZGVyXC5wb2xsXChlbnZzXC5WTExNX1BMRV9PRkZMT0FEX1JFQURZX1RJTUVPVVRcKTpccypcbicKICAgIHInXHMqcmFpc2UgVGltZW91dEVycm9yXChccypcbicKICAgIHInXHMqIlBMRSBvZmZsb2FkIHdvcmtlciBkaWQgbm90IGJlY29tZSByZWFkeSB3aXRoaW4gIlxzKlxuJwogICAgcidccypmIlx7ZW52c1wuVkxMTV9QTEVfT0ZGTE9BRF9SRUFEWV9USU1FT1VUXH1zXC4iXHMqXG4nCiAgICByJ1xzKlwpJwopCnJlcGwgPSAoCiAgICAnaW1wb3J0IHRpbWUgYXMgX3RcbicKICAgICcgICAgICAgIF9kbCA9IF90LnRpbWUoKSArIGVudnMuVkxMTV9QTEVfT0ZGTE9BRF9SRUFEWV9USU1FT1VUXG4nCiAgICAnICAgICAgICB3aGlsZSBub3QgcmVhZGVyLnBvbGwoMi4wKTpcbicKICAgICcgICAgICAgICAgICBpZiBub3QgaGFuZGxlLnByb2MuaXNfYWxpdmUoKTpcbicKICAgICcgICAgICAgICAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKGYiWyMxMTJdIFBMRSBvZmZsb2FkIENISUxEIERJRUQgYmVmb3JlIFJFQURZOiAnCiAgICAnZXhpdGNvZGU9e2hhbmRsZS5wcm9jLmV4aXRjb2RlfSAobmVnPS1zaWduYWw7IC02PVNJR0FCUlQgLTExPVNJR1NFR1YgLTk9U0lHS0lMTCkiKVxuJwogICAgJyAgICAgICAgICAgIGlmIF90LnRpbWUoKSA+IF9kbDpcbicKICAgICcgICAgICAgICAgICAgICAgcmFpc2UgVGltZW91dEVycm9yKCJQTEUgb2ZmbG9hZCB3b3JrZXIgZGlkIG5vdCBiZWNvbWUgcmVhZHkgd2l0aGluIHRpbWVvdXQiKScKKQpzLCBuMSA9IHBhdC5zdWJuKHJlcGwsIHMpCgojIDIpIHByb2NfbWFpbjogZHVwMiBmZDIgdG8gYSBmaWxlIHNvIGEgQy1sZXZlbCAoQ1VEQS9saWJ2Z3B1KSBhYm9ydCdzIHN0ZGVyciBpcyBjYXB0dXJlZAphbmNob3IgPSAnZGVjb3JhdGVfbG9ncygiUGxlT2ZmbG9hZFdvcmtlciIpJwpuMiA9IHMuY291bnQoYW5jaG9yKQppbmogPSAoCiAgICBhbmNob3IgKyAnXG4nCiAgICAnICAgICAgICBpbXBvcnQgb3MgYXMgX28xMTJcbicKICAgICcgICAgICAgIHRyeTpcbicKICAgICcgICAgICAgICAgICBfZmQgPSBfbzExMi5vcGVuKCIvZGF0YS9wbGUtY2hpbGQtc3RkZXJyLmxvZyIsIF9vMTEyLk9fV1JPTkxZIHwgX28xMTIuT19DUkVBVCB8IF9vMTEyLk9fVFJVTkMsIDBvNjQ0KVxuJwogICAgJyAgICAgICAgICAgIF9vMTEyLmR1cDIoX2ZkLCAyKVxuJwogICAgJyAgICAgICAgICAgIF9vMTEyLndyaXRlKF9mZCwgYiJbcGxlLWNoaWxkXSBwcm9jX21haW4gcmVhY2hlZDsgZmQyIHJlZGlyZWN0ZWRcXG4iKVxuJwogICAgJyAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBfZTpcbicKICAgICcgICAgICAgICAgICBwcmludCgiW3BsZS1jaGlsZF0gcmVkaXJlY3QgZmFpbGVkIiwgX2UpJwopCnMgPSBzLnJlcGxhY2UoYW5jaG9yLCBpbmosIDEpCgpvcGVuKHAsICd3Jykud3JpdGUocykKcHJpbnQoZiJbIzExMiBwYXRjaF0gd2FpdF9mb3JfcmVhZHlfcmVwbGFjZWQ9e24xfSBwcm9jX21haW5fYW5jaG9yX2ZvdW5kPXtuMn0iKQo=' \
-                | base64 -d > /tmp/ple_patch.py
-              python3 /tmp/ple_patch.py "$WK"
-              echo "[flashnext] instrumentation applied"
-              # ROOT-CAUSE FIX (#112): we excluded the 43 ple-bf16-*.safetensors at download (95GB the
-              # INT4 overlay replaces), but the model index still references them -> the PLE-offload
-              # child's weight loader raised FileNotFoundError (swallowed -> looked like a CUDA hang).
-              # The ngram shard data comes from VLLM_PLE_QUANT_DIR (INT4); the PLE scales live in the
-              # PRESENT carry-model-bf16 files. So drop the ple-bf16 refs from the index (idempotent).
+              # Drop the phantom ple-bf16 refs from the index (idempotent) — INT4 overlay provides the
+              # ngram data; PLE scales live in the present carry-model-bf16 files. (#112 root cause #1)
               python3 - <<'PYIDX'
               import json
               p = "/data/mixed-nvfp4-fp8/model.safetensors.index.json"
@@ -66,66 +47,34 @@ spec:
               d["weight_map"] = {k: v for k, v in wm.items() if "ple-bf16" not in v}
               removed = n0 - len(d["weight_map"])
               if removed:
-                  json.dump(d, open(p, "w"))
-                  print(f"[#112 index-fix] removed {removed} ple-bf16 tensor refs (INT4 overlay provides them)")
+                  json.dump(d, open(p, "w")); print(f"[flashnext] index-fix: removed {removed} ple-bf16 refs")
               else:
-                  print("[#112 index-fix] index already clean")
+                  print("[flashnext] index-fix: already clean")
               PYIDX
-              echo "[flashnext] === PREFLIGHT (evidence bundle) ==="
-              grep -E 'Seccomp|CapEff|CapBnd|NoNewPrivs' /proc/self/status || true
-              python3 - <<'PY'
-              import os, ctypes, ctypes.util
-              print("[preflight] pid", os.getpid())
-              # pidfd_open (child-spawn/fd machinery uses pidfd_*); if seccomp blocks it we see EPERM
-              try:
-                  fd = os.pidfd_open(os.getpid()); print("[preflight] pidfd_open OK"); os.close(fd)
-              except Exception as e:
-                  print("[preflight] pidfd_open FAILED:", repr(e))
-              # pidfd_getfd via raw syscall (438) — the one seccomp most often filters
-              libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
-              try:
-                  pfd = os.pidfd_open(os.getpid())
-                  r = libc.syscall(438, pfd, 0, 0)  # pidfd_getfd(self, fd0, 0)
-                  import os as _o; err = ctypes.get_errno()
-                  print("[preflight] pidfd_getfd ret", r, "errno", err, "(1=EPERM=seccomp-blocked)")
-                  os.close(pfd)
-              except Exception as e:
-                  print("[preflight] pidfd_getfd probe error:", repr(e))
-              PY
-              echo "[flashnext] libvgpu.so mapped in parent?"; (grep -i vgpu /proc/self/maps | head -2 || echo "  (not mapped in parent)")
-              echo "[flashnext] === starting server ==="
+              echo "[flashnext] starting server"
               exec python3 -m vllm.entrypoints.openai.api_server \
                 --model=/data/mixed-nvfp4-fp8 \
                 --served-model-name=qwen3.8-flash-next \
                 --host=0.0.0.0 --port=8000 \
                 --distributed-executor-backend=mp \
                 --gpu-memory-utilization=0.92 \
-                --max-model-len=32768 \
-                --max-num-seqs=1 \
-                --enforce-eager \
-                --no-enable-prefix-caching \
+                --max-model-len=262144 \
                 --no-enable-flashinfer-autotune \
+                -cc.cudagraph_mode=PIECEWISE \
                 --enable-auto-tool-choice \
                 --tool-call-parser=qwen3_coder \
                 --reasoning-parser=qwen3
           env:
-            - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_int4 }
+            - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_int4 }   # INT4 mmap PLE (off-GPU)
             - { name: VLLM_PLE_CPU_OFFLOAD, value: "1" }
-            - { name: VLLM_PLE_OFFLOAD_READY_TIMEOUT, value: "600" }
-            - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }
-            - { name: VLLM_GDN_DECODE_KERNEL, value: triton }
-            - { name: MAX_JOBS, value: "1" }
+            - { name: VLLM_PLE_OFFLOAD_READY_TIMEOUT, value: "900" }
+            - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }         # #112: clean CUDA init in offload child
+            - { name: VLLM_GDN_DECODE_KERNEL, value: triton }              # GDN FP8 layers require triton
+            - { name: MAX_JOBS, value: "1" }                               # cap NVFP4 JIT nvcc RAM spike ~8GB
+            - { name: CUDA_DISABLE_CONTROL, value: "true" }                # #112: HAMi passthrough so CUDA IPC works
             - { name: HF_HUB_OFFLINE, value: "1" }
             - { name: VLLM_CACHE_ROOT, value: /data/.vllm_cache }
             - { name: HOME, value: /data/.home }
-            - { name: VLLM_LOGGING_LEVEL, value: DEBUG }   # DEBUG: surface offload/child machinery
-            # ROOT-CAUSE FIX #2 (#112): the GPU worker <-> PLE-offload worker registration exchanges a
-            # CUDA IPC memory handle (CpuGpuSemaphore.from_ipc_tensor). HAMi's libvgpu virtualizes device
-            # memory per-process and does NOT proxy cudaIpc* handles between two processes on one vGPU ->
-            # the handshake deadlocks (offload worker blocks at pull_socket.recv(); GPU worker can't
-            # export/import the handle). CUDA_DISABLE_CONTROL=true makes libvgpu pass through to the real
-            # device (no memory-control interception) so CUDA IPC works. Safe here: whole card is ours.
-            - { name: CUDA_DISABLE_CONTROL, value: "true" }
           ports:
             - { name: http, containerPort: 8000 }
           resources:
@@ -133,15 +82,15 @@ spec:
             limits: { nvidia.com/gpu: 1, nvidia.com/gpumem: 97800, memory: 44Gi }
           readinessProbe:
             httpGet: { path: /health, port: 8000 }
-            initialDelaySeconds: 120
+            initialDelaySeconds: 150       # ~78GB weight load + INT4 PLE + PIECEWISE graph capture
             periodSeconds: 15
-            failureThreshold: 40
+            failureThreshold: 60
           volumeMounts:
             - { name: models, mountPath: /data }
             - { name: dshm, mountPath: /dev/shm }
       volumes:
         - { name: models, persistentVolumeClaim: { claimName: flashnext-models } }
-        - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 8Gi } }   # bigger for host-IPC PLE handoff
+        - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 4Gi } }
 ---
 apiVersion: v1
 kind: Service
