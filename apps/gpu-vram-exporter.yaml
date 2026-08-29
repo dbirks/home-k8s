@@ -1,0 +1,185 @@
+# Per-process GPU VRAM exporter (2026-08-29) — the "measured" source for the portal /gpu page.
+#
+# WHY: HAMi's per-container metric (hami_container_device_memory_bytes) goes to 0 for any pod running
+# with CUDA_DISABLE_CONTROL=true (needed for Qwen3.8-Flash-Next's CUDA IPC — see #112), so Flash-Next's
+# VRAM can't be attributed from HAMi. DCGM can't do per-pod on a HAMi-shared card either (every pod
+# mirrors the whole-card total). NVML's nvmlDeviceGetComputeRunningProcesses reports the REAL physical
+# per-process memory regardless of libvgpu, so this reads it directly and maps host-PID -> pod (via
+# /proc/<pid>/cgroup) -> a Prometheus gauge. One measured series that covers ALL models incl. Flash-Next.
+#
+# Same on-node pattern as apps/gpu-power-limit.yaml: runtimeClassName nvidia + NVIDIA_VISIBLE_DEVICES
+# + privileged, requests NO nvidia.com/gpu (co-exists, never contends for the device / no HAMi conflict).
+# hostPID:true so NVML's host PIDs resolve against /proc for the cgroup->pod map. Single-GPU node, so
+# the driver>=500 "all-GPUs" NVML quirk is moot. Scraped via the annotation-based kubernetes-pods job.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-vram-exporter
+  namespace: default
+---
+# Least-privilege: read pods in `default` (where all GPU workloads run) to map pod UID -> name/namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-vram-exporter
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-vram-exporter
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-vram-exporter
+subjects:
+  - kind: ServiceAccount
+    name: gpu-vram-exporter
+    namespace: default
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-vram-exporter-src
+  namespace: default
+data:
+  exporter.py: |
+    #!/usr/bin/env python3
+    """NVML per-process GPU memory -> Prometheus, mapped to pod via cgroup. Survives CUDA_DISABLE_CONTROL."""
+    import os, re, time, sys
+    import pynvml
+    from prometheus_client import start_http_server, Gauge
+    from kubernetes import client, config
+
+    NAMESPACE = os.environ.get("SCAN_NAMESPACE", "default")
+    PORT = int(os.environ.get("PORT", "9401"))
+    INTERVAL = int(os.environ.get("INTERVAL", "15"))
+
+    config.load_incluster_config()
+    core = client.CoreV1Api()
+    pynvml.nvmlInit()
+
+    # per-pod summed VRAM (bytes), and a whole-card physical total for cross-checking the hero.
+    g_pod = Gauge("gpu_pod_memory_bytes", "Per-pod GPU memory (NVML compute procs, summed)", ["namespace", "pod"])
+    g_total = Gauge("gpu_device_memory_used_bytes", "Whole-card physical VRAM used (NVML)", ["gpu_uuid"])
+    g_unmapped = Gauge("gpu_unmapped_memory_bytes", "GPU memory from procs not mapped to a pod")
+
+    # systemd cgroup driver: ...pod<uid>.slice with dashes replaced by underscores; also plain pod<uid>.
+    UID_RE = re.compile(r"pod([0-9a-f]{8})[-_]([0-9a-f]{4})[-_]([0-9a-f]{4})[-_]([0-9a-f]{4})[-_]([0-9a-f]{12})")
+
+    def pid_pod_uid(pid):
+        try:
+            with open(f"/proc/{pid}/cgroup") as f:
+                m = UID_RE.search(f.read())
+            return "-".join(m.groups()) if m else None
+        except Exception:
+            return None
+
+    def uid_map():
+        out = {}
+        try:
+            for p in core.list_namespaced_pod(NAMESPACE).items:
+                out[p.metadata.uid] = p.metadata.name
+        except Exception as e:
+            print(f"[gpu-vram-exporter] pod list failed: {e!r}", flush=True)
+        return out
+
+    def procs(dev):
+        for fn in ("nvmlDeviceGetComputeRunningProcesses_v3", "nvmlDeviceGetComputeRunningProcesses"):
+            try:
+                return getattr(pynvml, fn)(dev)
+            except Exception:
+                continue
+        return []
+
+    start_http_server(PORT)
+    handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(pynvml.nvmlDeviceGetCount())]
+    print(f"[gpu-vram-exporter] serving :{PORT}, {len(handles)} GPU(s), ns={NAMESPACE}", flush=True)
+    while True:
+        try:
+            umap = uid_map()
+            per_pod, unmapped = {}, 0
+            for h in handles:
+                try:
+                    g_total.labels(gpu_uuid=pynvml.nvmlDeviceGetUUID(h)).set(
+                        pynvml.nvmlDeviceGetMemoryInfo(h).used)
+                except Exception:
+                    pass
+                for pr in procs(h):
+                    mem = getattr(pr, "usedGpuMemory", None)
+                    if not mem:
+                        continue
+                    name = umap.get(pid_pod_uid(pr.pid))
+                    if name:
+                        per_pod[name] = per_pod.get(name, 0) + mem
+                    else:
+                        unmapped += mem
+            g_pod.clear()
+            for name, mem in per_pod.items():
+                g_pod.labels(namespace=NAMESPACE, pod=name).set(mem)
+            g_unmapped.set(unmapped)
+        except Exception as e:
+            print(f"[gpu-vram-exporter] loop error: {e!r}", flush=True)
+        time.sleep(INTERVAL)
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-vram-exporter
+  namespace: default
+  labels:
+    app: gpu-vram-exporter
+spec:
+  selector:
+    matchLabels:
+      app: gpu-vram-exporter
+  template:
+    metadata:
+      labels:
+        app: gpu-vram-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9401"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gpu-vram-exporter
+      runtimeClassName: nvidia
+      hostPID: true                 # NVML returns HOST pids -> need host /proc for the cgroup->pod map
+      enableServiceLinks: false
+      tolerations:
+        - operator: Exists          # single-node control-plane; tolerate all taints
+      containers:
+        - name: exporter
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true        # read other pods' /proc/<pid>/cgroup (same posture as power-cap DS)
+          env:
+            - { name: NVIDIA_VISIBLE_DEVICES, value: all }
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: utility }   # injects libnvidia-ml (NVML)
+            - { name: SCAN_NAMESPACE, value: default }
+            - { name: PORT, value: "9401" }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              pip install -q --no-cache-dir nvidia-ml-py prometheus_client kubernetes
+              exec python3 /src/exporter.py
+          ports:
+            - { name: metrics, containerPort: 9401 }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 256Mi }
+          volumeMounts:
+            - { name: src, mountPath: /src }
+      volumes:
+        - name: src
+          configMap:
+            name: gpu-vram-exporter-src
