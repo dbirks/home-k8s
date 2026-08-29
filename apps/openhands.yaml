@@ -62,7 +62,7 @@ spec:
     # Chart's appVersion is pinned to 1.2.0 (last bumped when the chart was
     # added); override to the image tag we actually want to run.
     image:
-      tag: "1.15.0"
+      tag: "1.16.0"
 
     # Give the StatefulSet's single fullname a predictable, short name
     # instead of the chart default (release name + "agent-canvas" combined).

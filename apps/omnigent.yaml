@@ -164,8 +164,8 @@ spec:
       serviceAccountName: omnigent-server
       containers:
         - name: omnigent
-          # v0.10.0, official Kubernetes image (sandbox provider SDK pre-bundled)
-          image: ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.10.0
+          # v0.11.0, official Kubernetes image (sandbox provider SDK pre-bundled)
+          image: ghcr.io/omnigent-ai/omnigent-server-kubernetes:v0.11.0
           imagePullPolicy: Always
           command:
             - python
