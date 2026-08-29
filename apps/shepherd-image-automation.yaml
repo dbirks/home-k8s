@@ -85,7 +85,7 @@ spec:
         name: fluxcdbot
         email: fluxcdbot@users.noreply.github.com
       messageTemplate: |
-        chore(shepherd): {{range .Updated.Images}}{{println .}}{{end}}
+        chore(images): {{range .Updated.Images}}{{println .}}{{end}}
     push:
       branch: main
   update:

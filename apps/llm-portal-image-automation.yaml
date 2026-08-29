@@ -1,0 +1,40 @@
+# llm.birks.dev portal — Flux image automation.
+#
+# WHY: the portal image was a MANUAL pin (stuck on an old sha while /gpu, the Hermes guide, etc. sat
+# undeployed) — the `$imagepolicy` marker in apps/llm-portal.yaml was aspirational; no ImagePolicy of
+# that name existed. This adds it so pushes to the portal repo's main auto-roll onto the cluster.
+#
+# The portal CI (dbirks/kubernetes-llm-api-key-portal .github/workflows/release.yml) publishes, on each
+# push to main, tags: `sha-<gitsha>`, `main`, and a sortable `<YYYYMMDDHHMMSS>-<gitsha>` timestamp tag.
+# We select the newest by that timestamp prefix. Public GHCR package -> scanned anonymously, no secret.
+#
+# The existing shepherd ImageUpdateAutomation (apps/shepherd-image-automation.yaml) already scans ./apps
+# with the Setters strategy, so it will bump the marker in apps/llm-portal.yaml once this ImagePolicy
+# exists — no separate ImageUpdateAutomation needed. Requires image-reflector + image-automation
+# controllers (already installed for shepherd; see flux-system/gotk-components.yaml).
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: llm-portal
+  namespace: flux-system
+spec:
+  image: ghcr.io/dbirks/kubernetes-llm-api-key-portal
+  interval: 2m0s
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: llm-portal
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: llm-portal
+  # match the <14-digit-timestamp>-<gitsha> tag and sort numerically by the timestamp (newest wins).
+  # (NOT the `sha-<gitsha>` or `main` tags — those aren't monotonically sortable.)
+  filterTags:
+    pattern: '^(?P<ts>[0-9]{14})-[0-9a-f]+$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc

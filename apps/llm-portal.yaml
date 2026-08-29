@@ -111,7 +111,8 @@ spec:
       serviceAccountName: llm-portal   # least-privilege Secret CRUD in this ns
       containers:
         - name: portal
-          # pinned image tag (public ghcr, multi-arch). # {"$imagepolicy": "flux-system:llm-portal"}
+          # pinned image tag (public ghcr, multi-arch); Flux image automation bumps the line below.
+          # {"$imagepolicy": "flux-system:llm-portal"}
           image: ghcr.io/dbirks/kubernetes-llm-api-key-portal:sha-505d54ad2894d28c386de62154ad824088791f03
           ports:
             - containerPort: 8080
