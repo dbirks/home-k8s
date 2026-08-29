@@ -28,16 +28,14 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          image: vllm/vllm-openai:qwen38-flash-next   # TODO: swap to ghcr.io/dbirks/vllm-flashnext:sm120 (overlay baked in) once published
+          # Baked overlay image (primitive-ai INT4-PLE files COPY'd into site-packages) built by GHA on
+          # the dbirks/vllm fork (branch flashnext-sm120). Base: vllm/vllm-openai:qwen38-flash-next.
+          image: ghcr.io/dbirks/vllm-flashnext:sm120@sha256:f7186f70baf43061c042dfc8e9b296b75476f287b7c8d8394a7d2e287ed61e82
           command: ["/bin/bash", "-lc"]
           args:
             - |
               set -euo pipefail
-              # Install the primitive-ai INT4-PLE overlay (until the baked image lands).
-              cp -f /data/ple-quant/worker_image_quant.py \
-                /usr/local/lib/python3.12/dist-packages/vllm/v1/ple_offload/worker.py
-              cp -f /data/ple-quant/ple_layer_quant.py \
-                /usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py
+              # Overlay files are baked into the image now — only the data-side index-fix remains.
               # Drop the phantom ple-bf16 refs from the index (idempotent) — INT4 overlay provides the
               # ngram data; PLE scales live in the present carry-model-bf16 files. (#112 root cause #1)
               python3 - <<'PYIDX'
