@@ -66,3 +66,13 @@ spec:
     kind: OCIRepository
     name: ai-gateway
     namespace: flux-system
+  values:
+    # Use our forked extproc image: v1.0.0 + a backported StreamReasoningContent
+    # UnmarshalJSON so vLLM's plain-string reasoning_content is parsed (not dropped),
+    # restoring streaming `thinking` blocks on the Anthropic /v1/messages path.
+    # Source: github.com/dbirks/ai-gateway @ v1.0.0-reasoning-fix. Controller stays
+    # upstream v1.0.0 (only the injected extProc image is overridden).
+    extProc:
+      image:
+        repository: ghcr.io/dbirks/ai-gateway-extproc
+        tag: v1.0.0-reasoning-fix
