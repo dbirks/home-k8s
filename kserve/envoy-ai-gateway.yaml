@@ -79,4 +79,4 @@ spec:
         # would not re-pull. Bump this when rebuilding the fork. 745ee45 also maps the
         # bare `reasoning` delta field (what the Flash-Next vLLM build emits) onto
         # ReasoningContent, on top of the plain-string unmarshal fix.
-        tag: v1.0.0-reasoning-fix-745ee45def1b58ff2a06f75305264225df1180f3
+        tag: v1.0.0-reasoning-fix-aab7c58a7ed19b724d29b9559e315a718a9e0d44
