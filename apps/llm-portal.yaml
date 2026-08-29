@@ -71,6 +71,8 @@ data:
   KUBERNETES_SECRET_NAME: "llm-apikeys" # the ONE aggregate Secret Envoy Gateway apiKeyAuth reads (portal upserts client-<id> entries)
   MODELS_NAMESPACE: "default"        # enables /models page: lists LLMInferenceServices in this ns (read-only RBAC in apps/llm-portal-models-rbac.yaml)
   PROMETHEUS_URL: "http://prometheus-server.monitoring.svc.cluster.local:80"   # enables /gpu page: queries HAMi GPU-memory metrics (HTTP, cross-ns svc; no extra RBAC)
+  # Deployment-backed models (raw Deployments, not KServe LLMISVCs) added to /models + /gpu catalog.
+  EXTRA_MODELS: '[{"id":"qwen3.8-27b-ninfer","deployment":"ninfer","label":"Qwen3.8-27B (NInfer)","kind":"coding","context":262144},{"id":"qwen3.8-flash-next","deployment":"flashnext","label":"Qwen3.8-Flash-Next","kind":"reasoning","context":262144}]'
   GRAFANA_URL: "https://llm.birks.dev/grafana/d/llm-serving/llm-serving-overview"   # deep link to the LLM-serving dashboard (Grafana nav link, new tab)
   # The e-gineering mark now ships baked into the image (//go:embed default logo,
   # alt defaults to "e-gineering") — no BRAND_LOGO_FILE / mounted ConfigMap needed.
