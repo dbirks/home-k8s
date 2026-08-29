@@ -42,7 +42,7 @@ spec:
           runAsNonRoot: false
           runAsUser: 0
           allowPrivilegeEscalation: true
-        image: vllm/vllm-openai:v0.28.0
+        image: vllm/vllm-openai:muse-glimmer-x86_64-cu130
         command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
         args:
           - "--model=/mnt/models/Gemma-4-31B-IT-NVFP4"
@@ -50,9 +50,8 @@ spec:
           - "--port=8000"
           - "--trust-remote-code"
           - "--kv-cache-dtype=fp8_e4m3"
-          - "--gpu-memory-utilization=0.93"   # v0.28.0 overhead + heavy gemma-VL KV; max out util within the 44G HAMi cap
-          - "--max-num-batched-tokens=8192"   # restore pre-v0.28.0 default (was raised to 16384, PR #51726) to reclaim KV
-          - "--max-model-len=65536"   # 131072 -> 65536: gemma-4 VL fp8 KV is ~93 KiB/token; 131072 needs 11.65 GiB KV, won't fit 44G on v0.28.0 (#100)
+          - "--gpu-memory-utilization=0.85"
+          - "--max-model-len=131072"   # raised 16384 -> 131072 (native 262144; capped, gemma VL KV heavier, #100)
           - "--chat-template=/mnt/models/Gemma-4-31B-IT-NVFP4/chat_template.jinja"
           - "--enable-auto-tool-choice"
           - "--tool-call-parser=gemma4"
@@ -66,7 +65,7 @@ spec:
         env:
           - { name: VLLM_PORT, value: "8000" }
           - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
-          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0a" }   # cu129 stock v0.28.0 = compute_120a (was 12.0f, a CUDA-13/cu130 target)
+          - { name: FLASHINFER_CUDA_ARCH_LIST, value: "12.0f" }
           - { name: VLLM_NVFP4_GEMM_BACKEND, value: flashinfer-cutlass }
           # ZDR: pin log level to INFO — DEBUG/TRACE would log prompt text and token IDs (issue #98).
           - { name: VLLM_LOGGING_LEVEL, value: INFO }
