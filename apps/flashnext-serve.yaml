@@ -99,3 +99,67 @@ spec:
   selector: { app: flashnext }
   ports:
     - { name: http, port: 8000, targetPort: 8000 }
+---
+# ============================================================================================
+# GATEWAY WIRING (on-demand catalog member) — reachable at https://llm.birks.dev/v1 as model
+# `qwen3.8-flash-next`, same NInfer/AIServiceBackend pattern (apps/ninfer-standalone.yaml, #105).
+# Backend(FQDN) -> AIServiceBackend(OpenAI) -> a rule on the llm-model-router AIGatewayRoute
+# (apps/llm-ai-gateway.yaml, appended AFTER the ninfer rule = rule index 7). Auth inherited from
+# the /v1 vllm-apikey-auth SecurityPolicy. Scale-to-zero via KEDA on that rule's ext_proc metric.
+#
+# CO-RESIDENCE (one card): flashnext requests the WHOLE card (gpumem 97800), so HAMi will NOT
+# schedule it while any other model holds VRAM (and vice versa) — safe PASSIVE mutual exclusion,
+# no OOM. With the regen job stopped (parked .hold), nothing pins qwen3.8-27b, so all models idle
+# to 0 when unused and whichever is requested cold-starts on the free card. A request to flashnext
+# while another model is still resident stays Pending until that model idles (~2min cooldown), then
+# schedules — "hit whatever, it brings up". flashnext cold start is ~5min (weight load + PLE + graph
+# capture), so the first request after idle needs a patient client / retry.
+# ============================================================================================
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: flashnext-backend
+  namespace: default
+spec:
+  endpoints:
+    - fqdn:
+        hostname: flashnext.default.svc.cluster.local
+        port: 8000
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: flashnext-backend
+  namespace: default
+spec:
+  schema:
+    name: OpenAI
+  backendRef:
+    group: gateway.envoyproxy.io
+    kind: Backend
+    name: flashnext-backend
+---
+# Scale-to-zero: wake on the llm-model-router per-rule ext_proc for the flashnext rule. flashnext is
+# appended AFTER ninfer (rule 6) -> rule index 7. VERIFY the index after applying the route edit:
+#   kubectl -n envoy-gateway-system exec <llm-ai-gw envoy pod> -c envoy -- \
+#     curl -s localhost:19001/stats/prometheus | grep llm_model_router_rule_ | grep streams_started
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: flashnext
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: flashnext
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  pollingInterval: 15
+  cooldownPeriod: 300          # flashnext cold start is slow; don't thrash it down too eagerly
+  triggers:
+    - type: prometheus
+      name: flashnext-aigw-extproc-rate
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+        query: 'sum(rate(envoy_cluster_cluster_httproute_default_llm_model_router_rule_7ext_proc_streams_started{job="envoy-gw"}[1m]))'
+        threshold: "5"
+        activationThreshold: "0.001"

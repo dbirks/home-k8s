@@ -50,10 +50,21 @@ spec:
   # NOTE: cold-load is ~3min, longer than most client timeouts, so the first request after idle likely
   # needs a retry (scale-up still fires). Swap the trigger query if saturation isn't the right wake
   # signal. Revert to always-on = replace this whole scaling block with `replicas: 1`.
-  # ── FLASH-NEXT DEBUG WINDOW (2026-08-28, issue #112): TEMPORARILY PINNED OFF ──────────────────
-  # Pinned to 0 to free the whole card for the Qwen3.8-Flash-Next PLE-offload-child spawn debug.
-  # RESTORE scale-to-zero by reverting this hunk to the `scaling:` block (git history).
-  replicas: 0
+  scaling:
+    minReplicas: 1
+    maxReplicas: 1
+    keda:
+      idleReplicaCount: 0
+      cooldownPeriod: 120
+      pollingInterval: 15
+      triggers:
+        - type: prometheus
+          name: qwen-epp-request-rate
+          metadata:
+            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen38_llm_inference_pool_default_ext_proc_upstream_rq_total{job="envoy-gw"}[1m]))'
+            threshold: "5"
+            activationThreshold: "0.001"
   template:                                      # PodSpec for the vLLM engine pod
     runtimeClassName: nvidia
     securityContext:                              # preset defaults to runAsNonRoot:true; our vLLM

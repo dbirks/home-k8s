@@ -117,3 +117,12 @@ spec:
       timeouts: { request: 1800s, backendRequest: 1800s }
       backendRefs:
         - { name: ninfer-backend }
+    # qwen3.8-flash-next = the primitive-ai INT4-PLE mmap vLLM engine (apps/flashnext-serve.yaml, #112),
+    # a raw Deployment+Service via AIServiceBackend (same EPP-bypass pattern as ninfer). Owns the whole
+    # card (on-demand; passive VRAM mutual-exclusion with the other models). Appended LAST -> rule index
+    # 7, which the flashnext KEDA wake metric (rule_7 ext_proc streams_started) depends on — keep it last.
+    - matches:
+        - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-flash-next }]
+      timeouts: { request: 1800s, backendRequest: 1800s }
+      backendRefs:
+        - { name: flashnext-backend }
