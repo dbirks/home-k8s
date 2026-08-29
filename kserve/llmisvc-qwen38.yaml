@@ -104,7 +104,7 @@ spec:
           - "--no-enable-log-requests"
           - "--no-enable-log-outputs"
           - "--disable-uvicorn-access-log"
-          - "--no-enable-prefix-caching"
+          # prefix caching ON (2026-08-29): user chose performance > full ZDR — cross-request KV reuse enabled; log-suppression privacy flags kept.
         env:
           - { name: VLLM_PORT, value: "8000" }
           - { name: VLLM_ATTENTION_BACKEND, value: FLASHINFER }
