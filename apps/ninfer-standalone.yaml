@@ -74,7 +74,7 @@ spec:
             runAsNonRoot: false
             runAsUser: 0
             allowPrivilegeEscalation: true
-          image: ghcr.io/dbirks/ninfer:latest
+          image: ghcr.io/dbirks/ninfer:20260829   # rebased onto upstream master (100 commits: prefix caching + context cache, fp8 KV, completed adapters). Dated pin forces re-pull past cached :latest.
           # ninfer-serve uses SPACE-separated args (--flag value), NOT --flag=value.
           command: ["ninfer-serve"]
           args:
