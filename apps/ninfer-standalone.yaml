@@ -92,9 +92,9 @@ spec:
             - "--kv-capacity"
             - "auto"
             - "--max-concurrency"
-            - "32"
+            - "8"                        # HARD engine cap: ninfer-serve rejects >8 ("--max-concurrency must be in [1,8]"). ~550 tok/s @8 is the ceiling.
             - "--max-pending-requests"
-            - "64"
+            - "32"
             - "--pending-timeout-ms"
             - "600000"
             - "--prefill-chunk"
