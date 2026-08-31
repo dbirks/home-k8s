@@ -65,7 +65,7 @@ spec:
                 --tool-call-parser=qwen3_coder \
                 --reasoning-parser=qwen3
           env:
-            - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_int4 }   # INT4 mmap PLE (off-GPU)
+            - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_nvfp4 }  # NVFP4 g16 e2m1 mmap PLE (#112): ~27GB vs int4 30GB, less host-RAM/page-cache pressure. Rollback: /data/ple-quant/ples_int4
             - { name: VLLM_PLE_CPU_OFFLOAD, value: "1" }
             - { name: VLLM_PLE_OFFLOAD_READY_TIMEOUT, value: "900" }
             - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }         # #112: clean CUDA init in offload child
