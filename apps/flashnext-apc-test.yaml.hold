@@ -1,0 +1,113 @@
+# flashnext-apc-test — OFF-PROD qualification harness for the APC (prefix-caching) candidate image.
+# =====================================================================================================
+# Parked as .hold so Flux IGNORES it. This is a STANDALONE copy of the prod flashnext engine (same
+# GPU/PVC/env/flags) pinned to the APC candidate-A image, with NO gateway wiring and NO KEDA, and
+# replicas: 0. It exists so a candidate can be qualified without touching the prod `flashnext`
+# Deployment or fronting coworker traffic.
+#
+# Candidate A image (home-k8s #115): prod sm120 overlay + reviewed hybrid-align cache patches
+#   vLLM #53798 (mamba_hybrid.py seed) + #54076 hunks 1-2 (scheduler block-size source).
+#   Built on dbirks/vllm branch flashnext-apc; see docker/flashnext-apc/PATCHES.md.
+#
+# CO-RESIDENCE: flashnext owns the WHOLE card (gpumem 97800). Before running this, the prod
+# `flashnext` Deployment MUST be at 0 (it is, via KEDA, when idle) and no other model resident.
+#
+# How to run the A/B (manual, deliberate — this is a .hold, not Flux-managed):
+#   1) confirm prod flashnext + all catalog models are scaled to 0 (card free)
+#   2) kubectl apply -f apps/flashnext-apc-test.yaml.hold        # (temporary, off-GitOps test)
+#   3) kubectl scale deploy/flashnext-apc -n default --replicas=1 ; wait for Ready (~5min cold)
+#   4) kubectl port-forward -n default svc/flashnext-apc 8001:8000
+#   5) replay an identical long multi-turn prefix twice; watch GET /metrics
+#        prefix_cache_hits_total / prefix_cache_queries_total go NON-ZERO on the 2nd send,
+#        and compare TTFT / request_prefill_time histograms to the ~22s prod baseline.
+#   6) tear down: kubectl delete -f apps/flashnext-apc-test.yaml.hold
+#
+# NOTE: the live A/B for candidate A was instead run by swapping the prod `flashnext` image in
+# place (nobody was using it) — see apps/flashnext-serve.yaml history. Keep this harness for
+# candidate B / future iterations where prod must stay on the known-good image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flashnext-apc
+  namespace: default
+spec:
+  replicas: 0                       # never auto-runs; scale to 1 by hand for a test
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: flashnext-apc }
+  template:
+    metadata:
+      labels: { app: flashnext-apc }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          # APC candidate A (prod sm120 overlay + #53798 + #54076 hunks 1-2). Digest-pinned.
+          image: ghcr.io/dbirks/vllm-flashnext:apc-a@sha256:af30a6daa5ffe6964a5ced5a1de0fdb2ad72587751a7a572cb242871f47ea356
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              python3 - <<'PYIDX'
+              import json
+              p = "/data/mixed-nvfp4-fp8/model.safetensors.index.json"
+              d = json.load(open(p)); wm = d["weight_map"]; n0 = len(wm)
+              d["weight_map"] = {k: v for k, v in wm.items() if "ple-bf16" not in v}
+              removed = n0 - len(d["weight_map"])
+              if removed:
+                  json.dump(d, open(p, "w")); print(f"[flashnext-apc] index-fix: removed {removed} ple-bf16 refs")
+              else:
+                  print("[flashnext-apc] index-fix: already clean")
+              PYIDX
+              echo "[flashnext-apc] starting server"
+              exec python3 -m vllm.entrypoints.openai.api_server \
+                --model=/data/mixed-nvfp4-fp8 \
+                --served-model-name=qwen3.8-flash-next \
+                --host=0.0.0.0 --port=8000 \
+                --distributed-executor-backend=mp \
+                --gpu-memory-utilization=0.92 \
+                --max-model-len=262144 \
+                --no-enable-flashinfer-autotune \
+                -cc.cudagraph_mode=PIECEWISE \
+                --enable-prefix-caching \
+                --enable-auto-tool-choice \
+                --tool-call-parser=qwen3_coder \
+                --reasoning-parser=qwen3
+          env:
+            - { name: VLLM_PLE_QUANT_DIR, value: /data/ple-quant/ples_int4 }
+            - { name: VLLM_PLE_CPU_OFFLOAD, value: "1" }
+            - { name: VLLM_PLE_OFFLOAD_READY_TIMEOUT, value: "900" }
+            - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }
+            - { name: VLLM_GDN_DECODE_KERNEL, value: triton }
+            - { name: MAX_JOBS, value: "1" }
+            - { name: CUDA_DISABLE_CONTROL, value: "true" }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: VLLM_CACHE_ROOT, value: /data/.vllm_cache }
+            - { name: HOME, value: /data/.home }
+          ports:
+            - { name: http, containerPort: 8000 }
+          resources:
+            requests: { cpu: "6", memory: 16Gi }
+            limits: { nvidia.com/gpu: 1, nvidia.com/gpumem: 97800, memory: 44Gi }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 150
+            periodSeconds: 15
+            failureThreshold: 60
+          volumeMounts:
+            - { name: models, mountPath: /data }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: flashnext-models } }
+        - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 4Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flashnext-apc
+  namespace: default
+spec:
+  selector: { app: flashnext-apc }
+  ports:
+    - { name: http, port: 8000, targetPort: 8000 }

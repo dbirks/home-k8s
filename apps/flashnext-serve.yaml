@@ -28,9 +28,11 @@ spec:
       enableServiceLinks: false
       containers:
         - name: vllm
-          # Baked overlay image (primitive-ai INT4-PLE files COPY'd into site-packages) built by GHA on
-          # the dbirks/vllm fork (branch flashnext-sm120). Base: vllm/vllm-openai:qwen38-flash-next.
-          image: ghcr.io/dbirks/vllm-flashnext:sm120@sha256:f7186f70baf43061c042dfc8e9b296b75476f287b7c8d8394a7d2e287ed61e82
+          # APC candidate A (home-k8s #115): prod sm120 overlay + reviewed hybrid-align prefix-cache
+          # patches vLLM #53798 + #54076 hunks 1-2 (dbirks/vllm branch flashnext-apc; see
+          # docker/flashnext-apc/PATCHES.md). TRIAL SWITCH to validate prefix_cache_hits live.
+          # Known-good rollback digest: sm120@sha256:f7186f70baf43061c042dfc8e9b296b75476f287b7c8d8394a7d2e287ed61e82
+          image: ghcr.io/dbirks/vllm-flashnext:apc-a@sha256:af30a6daa5ffe6964a5ced5a1de0fdb2ad72587751a7a572cb242871f47ea356
           command: ["/bin/bash", "-lc"]
           args:
             - |
