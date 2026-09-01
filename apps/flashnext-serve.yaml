@@ -156,7 +156,7 @@ spec:
   minReplicaCount: 0
   maxReplicaCount: 1
   pollingInterval: 15
-  cooldownPeriod: 300          # flashnext cold start is slow; don't thrash it down too eagerly
+  cooldownPeriod: 600          # 10-min warm stopgap (home-k8s #104); flashnext cold start is slow anyway
   triggers:
     - type: prometheus
       name: flashnext-aigw-extproc-rate

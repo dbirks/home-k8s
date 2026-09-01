@@ -1,0 +1,111 @@
+# Alloy (Faro receiver) — browser RUM/telemetry collector for the "resume-updater" app.
+# DRAFT / not yet reconciled (.hold). Rename to alloy-faro.yaml to let Flux pick it up.
+#
+# WHY a SECOND Alloy (separate from infra/alloy.yaml):
+#   infra/alloy.yaml is a DaemonSet that tails node pod-logs (/var/log/pods) and ships
+#   them to Loki. This one is a single-replica DEPLOYMENT whose only job is to run a
+#   faro.receiver — a public-facing browser ingest endpoint. Keeping the public,
+#   unauthenticated ingest isolated from the privileged host-log tailer is cleaner and
+#   safer than bolting an extra port onto the DaemonSet.
+#
+# DATA FLOW:
+#   resume-updater frontend (@grafana/faro-web-sdk)
+#     -> POST https://llm.birks.dev/faro/collect   (Cloudflare Tunnel -> Envoy llm-public-gw)
+#        [HTTPRoute /faro rewrites to /collect, apps/faro-route.yaml.hold]
+#     -> alloy-faro Service :12347  (this file)
+#     -> faro.receiver  -> loki.write -> Loki (monitoring, existing infra/loki.yaml)
+#   View in Grafana (monitoring/grafana, Loki datasource already provisioned).
+#
+# The faro.receiver serves its ingest endpoint at PATH /collect on the listen port
+# (default 12347). Web Vitals arrive as measurements, errors as exceptions, navigations
+# and fetch spans as events — all as logfmt log lines in Loki with stream labels
+# service_name / kind / app / etc. (same shape the query-faro skill already parses).
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alloy-faro
+  namespace: monitoring
+spec:
+  interval: 5m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: alloy
+      version: "1.8.1"            # same chart/version as infra/alloy.yaml
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+      interval: 5m
+  values:
+    alloy:
+      # Expose the faro.receiver ingest port on the managed Service (chart default only
+      # exposes the 12345 UI/http port).
+      extraPorts:
+        - name: faro
+          port: 12347
+          targetPort: 12347
+          protocol: TCP
+
+      configMap:
+        create: true
+        content: |
+          // ---- Browser telemetry ingest (Grafana Faro Web SDK) ----
+          faro.receiver "resume_updater" {
+            server {
+              listen_address = "0.0.0.0"
+              listen_port    = 12347
+
+              // CORS: browsers POST cross-origin from the resume-updater origin(s).
+              // Lock this to the real origin(s); "*" only for first-light testing.
+              // TODO: replace with the deployed resume-updater origin(s), e.g.
+              //   ["https://resume.birks.dev", "https://<project>.lovable.app"]
+              cors_allowed_origins = ["*"]
+
+              // Optional shared secret. NOTE: any key shipped in browser JS is public,
+              // so this only deters casual noise, not a determined abuser. Real
+              // protection = tight CORS + rate limiting + Cloudflare in front.
+              // api_key = sys.env("FARO_API_KEY")
+
+              max_allowed_payload_size = "5MiB"
+
+              rate_limiting {
+                enabled    = true
+                strategy   = "global"
+                rate       = 50
+                burst_size = 100
+              }
+            }
+
+            // Optional: de-minify stack traces if you mount uploaded source maps.
+            // sourcemaps { location { path = "/var/sourcemaps" minified_path_prefix = "https://resume.birks.dev/" } }
+
+            output {
+              logs = [loki.write.faro.receiver]
+              // traces = [otelcol.receiver...]  // wire only if you deploy Tempo (see notes)
+            }
+          }
+
+          // ---- Ship Faro events to the existing in-cluster Loki ----
+          loki.write "faro" {
+            endpoint {
+              url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+            }
+          }
+
+    # Single-replica Deployment (not a DaemonSet) — one public ingest endpoint.
+    controller:
+      type: deployment
+      replicas: 1
+
+    # No host mounts / no pod-discovery RBAC needed for a pure receiver.
+    rbac:
+      create: false
+    serviceAccount:
+      create: true

@@ -17,7 +17,7 @@ spec:
     maxReplicas: 1
     keda:
       idleReplicaCount: 0
-      cooldownPeriod: 120
+      cooldownPeriod: 600          # 10-min warm stopgap (home-k8s #104)
       pollingInterval: 15
       triggers:
         # Wake signal = Envoy ext-proc request RATE to THIS model's InferencePool (see llmisvc-qwen38.yaml

@@ -221,7 +221,7 @@ spec:
   minReplicaCount: 0
   maxReplicaCount: 1
   pollingInterval: 15
-  cooldownPeriod: 120
+  cooldownPeriod: 600          # 10-min warm stopgap (home-k8s #104)
   triggers:
     - type: prometheus
       name: ninfer-aigw-extproc-rate

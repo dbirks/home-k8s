@@ -17,7 +17,7 @@ spec:
     maxReplicas: 1
     keda:
       idleReplicaCount: 0
-      cooldownPeriod: 120
+      cooldownPeriod: 600          # 10-min warm stopgap (home-k8s #104)
       pollingInterval: 15
       triggers:
         # <POOL> = sanitized LLMInferenceService name qwen36-a3b-llm -> qwen36_a3b_llm.
