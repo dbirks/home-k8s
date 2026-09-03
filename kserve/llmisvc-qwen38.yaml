@@ -54,10 +54,7 @@ spec:
     minReplicas: 1
     maxReplicas: 1
     keda:
-      # PINNED ALWAYS-ON 2026-09-03 07:0x UTC (GPU GSP-crash mitigation, NVIDIA bug 6426268): idleReplicaCount
-      # removed so minReplicas:1 is a hard floor -> no scale-to-zero teardown (the teardown triggered a
-      # FULLCHIP_RESET). TEMPORARY: auto-reverts to autoscaling ~3h later via a systemd --user timer that
-      # re-adds idleReplicaCount:0. See memory project_gpu_gsp_new_driver_autorecover.
+      idleReplicaCount: 0
       cooldownPeriod: 600          # 10-min warm stopgap (home-k8s #104); event-driven LRU evict is the real fix
       pollingInterval: 15
       triggers:
