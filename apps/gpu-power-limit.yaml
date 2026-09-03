@@ -13,8 +13,12 @@
 #
 # Perf caveat (see #61 / GPU notes): for LLM DECODE this workload is
 # memory-bandwidth-bound, so 600W vs 400W gave ~no throughput gain (clocks rose
-# 2020->2520 MHz but tok/s ~flat) + more heat. Kept at 600W for headroom on
-# future compute-bound work; pair with active cooling (a fan dropped temp ~10C).
+# 2020->2520 MHz but tok/s ~flat) + more heat.
+#
+# 2026-09-03: DROPPED 600W -> 400W. The card FULLCHIP-reset every ~18min today
+# (issue #46 GSP bug, dI/dt transients). This 60s enforcer had been overriding the
+# nvidia-power-cap 400W, so the card ran at the most transient-prone 600W. Back to
+# the documented 400W crash-mitigation. Go lower (350/300W) if 400W doesn't hold.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -48,7 +52,7 @@ spec:
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: utility
             - name: TARGET_WATTS
-              value: "600"
+              value: "400"
           command:
             - /bin/sh
             - -c
