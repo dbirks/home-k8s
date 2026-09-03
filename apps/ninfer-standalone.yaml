@@ -221,7 +221,7 @@ spec:
   minReplicaCount: 0
   maxReplicaCount: 1
   pollingInterval: 15
-  cooldownPeriod: 600          # 10-min warm stopgap (home-k8s #104)
+  cooldownPeriod: 7200         # keep ninfer warm 2h after last request (coworker-facing; stays up through active use, self-releases the GPU after 2h idle)
   triggers:
     - type: prometheus
       name: ninfer-aigw-extproc-rate
