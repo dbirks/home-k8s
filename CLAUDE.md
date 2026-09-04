@@ -78,6 +78,24 @@ The public coworker endpoint `llm.birks.dev` is served by a KServe LLM stack, NO
 - Talos config: `talosctl --talosconfig _newconfig/talosconfig -e 10.0.0.177 -n 10.0.0.177`
 - Kubeconfig context: `admin@home`
 
+## GPU crash recovery (FULLCHIP_RESET wedge) — the one command to remember
+
+The RTX PRO 6000 Blackwell GSP firmware periodically crashes (Xid 79/154, NVIDIA bug 6426268, issue #46). The bad outcome is a **FULLCHIP_RESET wedge**: the GPU falls off the bus, the node keeps its K8s API up but advertises `nvidia.com/gpu: 0`, `hami-device-plugin` goes RunContainerError, and every GPU pod (ninfer, qwen38, etc.) lands in `ContainerStatusUnknown`. dmesg is a wall of `NV_ERR_GPU_IN_FULLCHIP_RESET` assertions.
+
+**A warm `talosctl reboot` does NOT clear this** (the card won't re-enumerate: `load nvidia failed: no such device`). The ONLY fix is a BMC/IPMI power-cycle:
+
+```bash
+# node IP is DHCP (no reservation yet) — discover it, then power-cycle:
+NODE_IP=$(kubectl get node talos-210-73x -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+talosctl --talosconfig _newconfig/talosconfig -e "$NODE_IP" -n "$NODE_IP" reboot --mode powercycle
+```
+
+The `--mode powercycle` is the key part: it escalates to the BMC to actually cut and restore power. The node comes back in ~2-3 min, the GPU re-enumerates (`nvidia.com/gpu: 10`), and ninfer/qwen38 pods recover on their own. Clean up any leftover dead pods with `kubectl delete pods --field-selector=status.phase=Failed -A`.
+
+**Auto-recovery is installed** as a user systemd timer on David's workstation (NOT in-cluster): `~/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh`, fired every 2 min by `gpu-wedge-watchdog.timer`. It power-cycles ONLY on a confirmed, persistent wedge (`gpu cap 0` AND dmesg `GPU_IN_FULLCHIP_RESET`, held ≥120s), with a 30-min cooldown to prevent reboot loops. Logs: `~/.local/share/home-k8s-auto/gpu-wedge-watchdog.log`. Check it with `systemctl --user list-timers gpu-wedge-watchdog.timer`.
+
+**First, though, CHECK THE POWER CAP.** A recurring ~fixed-interval crash storm (every ~18 min) was caused by the `gpu-power-limit` DaemonSet re-asserting 600W and overriding the 400W `nvidia-power-cap`. Keep it at **400W** (`apps/gpu-power-limit.yaml` `TARGET_WATTS: "400"`); if crashes persist at 400W, drop to 350W → 300W. Do NOT raise it.
+
 ## Networking
 
 - DNS: Pi-hole at 10.0.0.202 (MetalLB LoadBalancer)
