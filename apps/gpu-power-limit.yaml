@@ -52,7 +52,10 @@ spec:
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: utility
             - name: TARGET_WATTS
-              value: "400"
+              # 2026-09-04: DROPPED 400W -> 350W. The card still FULLCHIP-reset at
+              # 400W (twice within ~45min under normal serving), so 400W reduced
+              # but did not eliminate the GSP crash. Next lever down is 300W.
+              value: "350"
           command:
             - /bin/sh
             - -c
