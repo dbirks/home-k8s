@@ -47,7 +47,7 @@ spec:
   chart:
     spec:
       chart: hami
-      version: "2.9.0"          # chart 2.9.0 == app 2.9.0 (verified against the repo index)
+      version: "2.10.0"          # chart 2.9.0 == app 2.9.0 (verified against the repo index)
       sourceRef:
         kind: HelmRepository
         name: hami
