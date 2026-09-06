@@ -8,7 +8,7 @@
 # For wake-on-demand, repoint the backend at the internal AI gateway (with an
 # llm_ API key) instead of ninfer:8000. Fine for now under active use.
 #
-# Image pull: ghcr.io/e-gineering/llm-collective-contributor must be pullable
+# Image pull: ghcr.io/e-gineering/llm-collective/contributor must be pullable
 # from this cluster (it contains no secrets). If it is private, add a pull secret.
 ---
 apiVersion: v1
@@ -53,7 +53,7 @@ spec:
     spec:
       containers:
         - name: contributor
-          image: ghcr.io/e-gineering/llm-collective-contributor:9058f35-1788637307 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
+          image: ghcr.io/e-gineering/llm-collective/contributor:a4257f7-1788660551 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
           env:
             - { name: KEY_FILE, value: /etc/collective-key/identity.key }
             - { name: PUBKEY_OUT, value: "" }
@@ -80,7 +80,7 @@ metadata:
   name: llm-collective-contributor
   namespace: flux-system
 spec:
-  image: ghcr.io/e-gineering/llm-collective-contributor
+  image: ghcr.io/e-gineering/llm-collective/contributor
   interval: 2m0s
 ---
 apiVersion: image.toolkit.fluxcd.io/v1
