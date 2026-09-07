@@ -1,10 +1,11 @@
-# Frigate NVR — single kids-room camera, RECORD-ONLY (no object detection).
+# Frigate NVR — single kids-room camera: 24/7 recording + CPU object detection.
 #
 # Design notes (2026-09-06):
-#   * NO GPU. Detection is disabled, so recording is a pure H.264 stream-copy to
-#     disk (no decode/encode). Attaching the RTX PRO 6000 would add contention +
-#     risk (it is the LLM-serving critical resource and periodically GSP-crashes,
-#     see CLAUDE.md) for zero benefit. Frigate runs as a tiny CPU-only pod.
+#   * NO GPU. Recording is a pure H.264 stream-copy; object detection runs on the
+#     CPU via OpenVINO (one camera at 5fps is trivial on 32 threads). Attaching
+#     the RTX PRO 6000 would add contention + risk (it is the LLM-serving critical
+#     resource and periodically GSP-crashes, see CLAUDE.md) for no real benefit at
+#     this scale, and a GPU wedge would take detection down too. Frigate stays CPU.
 #   * LATEST FRIGATE. The blakeshome chart is stale (chart 7.8.0 still ships
 #     appVersion 0.14.1), so we pin the newest chart but OVERRIDE image.tag to the
 #     latest STABLE Frigate (0.17.2; 0.18 is beta/RC only as of 2026-09).
@@ -62,9 +63,9 @@ spec:
     envFromSecrets:
       - frigate-rtsp-credentials
 
-    # Shared memory + tmpfs are RAM (node is 46GB, no swap). Record-only, one
-    # camera needs very little; keep these small to protect node RAM.
-    shmSize: 256Mi
+    # Shared memory + tmpfs are RAM (node is 46GB, no swap). One camera with
+    # detection on the 720p sub stream still needs little; keep these modest.
+    shmSize: 512Mi
     tmpfs:
       enabled: true
       sizeLimit: 512Mi
@@ -100,21 +101,32 @@ spec:
     # burst on startup / DB maintenance without throttling).
     resources:
       requests:
-        cpu: 100m
-        memory: 256Mi
+        cpu: 500m
+        memory: 512Mi
       limits:
-        memory: 1Gi
+        memory: 2Gi
 
     config: |
       # MQTT is optional; we run standalone (no Home Assistant wiring yet).
       mqtt:
         enabled: false
 
-      # A cpu detector is defined so the app starts cleanly, but detection is
-      # disabled on the camera below, so no inference actually runs.
+      # OpenVINO object detector on the CPU (SSDLite MobileNet v2, bundled in the
+      # image at /openvino-model). One camera at 5 fps is trivial for the 32-thread
+      # CPU. Deliberately NOT on the GPU: the card is unstable (FULLCHIP resets)
+      # and LLM-critical, and a GPU wedge would take detection down with it -- not
+      # worth it for a single camera. Revisit GPU/TensorRT only at many-camera scale.
       detectors:
-        cpu1:
-          type: cpu
+        ov:
+          type: openvino
+          device: CPU
+      model:
+        width: 300
+        height: 300
+        input_tensor: nhwc
+        input_pixel_format: bgr
+        path: /openvino-model/ssdlite_mobilenet_v2.xml
+        labelmap_path: /openvino-model/coco_91cl_bkgr.txt
 
       # go2rtc restream: ONE connection to the camera, reused for both live view
       # and recording. Password injected from the env var (kept out of git).
@@ -134,11 +146,24 @@ spec:
         continuous:
           days: 3
 
-      # No object detection / snapshots (explicitly off, per requirements).
+      # Object detection ON -> builds a searchable timeline of movement (who/what
+      # moved and when). Detection runs on the camera's sub stream (see below).
       detect:
-        enabled: false
+        enabled: true
+        fps: 5
+      # Snapshots give each tracked event a thumbnail in the UI timeline.
       snapshots:
-        enabled: false
+        enabled: true
+        retain:
+          default: 3
+      # Track people plus common critters/vehicles (default would be person only).
+      # These are COCO classes the bundled model knows.
+      objects:
+        track:
+          - person
+          - cat
+          - dog
+          - car
 
       # Birdseye mosaic off (saves CPU; single camera).
       birdseye:
@@ -149,11 +174,17 @@ spec:
           enabled: true
           ffmpeg:
             inputs:
-              # Pull from the go2rtc restream, not the camera directly.
+              # Main stream -> recording (pull from the go2rtc restream).
               - path: rtsp://127.0.0.1:8554/kids_room
                 input_args: preset-rtsp-restream
                 roles:
                   - record
+              # Sub stream (720p) -> object detection. Detecting on the lighter
+              # sub stream keeps CPU low; recording still uses the full 1080p.
+              - path: rtsp://127.0.0.1:8554/kids_room_sub
+                input_args: preset-rtsp-restream
+                roles:
+                  - detect
             # Record audio: the camera streams G.711 (pcm_alaw), which is not
             # mp4-compatible for stream-copy, so transcode audio to AAC (cheap,
             # CPU-only). This records sound; it is NOT audio-event detection.
@@ -165,8 +196,12 @@ spec:
             streams:
               Main: kids_room
               Sub: kids_room_sub
+          # Detect on the sub stream's native resolution (1280x720).
           detect:
-            enabled: false
+            enabled: true
+            width: 1280
+            height: 720
+            fps: 5
           audio:
             enabled: false
           # Manual PTZ: the camera is a TP-Link Tapo C200 (pan/tilt, 8 presets)
