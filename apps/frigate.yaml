@@ -166,3 +166,12 @@ spec:
             enabled: false
           audio:
             enabled: false
+          # Manual PTZ: the camera is a TP-Link Tapo C200 (pan/tilt, 8 presets)
+          # that speaks ONVIF on :2020. This enables the pan/tilt + preset
+          # controls in the Frigate UI. Autotracking is NOT enabled (it requires
+          # object detection, which is off here) -- these are manual controls.
+          onvif:
+            host: 10.0.0.142
+            port: 2020
+            user: admin1
+            password: "{FRIGATE_RTSP_PASSWORD}"
