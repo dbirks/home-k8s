@@ -12,14 +12,18 @@
 #     latest STABLE Frigate (0.17.2; 0.18 is beta/RC only as of 2026-09).
 #   * STORAGE SPLIT (mirrors apps/jellyfin.yaml): recordings -> HDD
 #     (local-path-hdd, /var/mnt/hdd-storage); the SQLite DB + config -> NVMe.
-#   * PRIVATE CONFIG. This repo is PUBLIC, so the entire camera config (room
-#     names, internal IPs, usernames, password) lives ONLY in the SOPS-encrypted
-#     apps/frigate-config.enc.yaml Secret (key config.yml). A tiny init container
-#     seeds it to a WRITABLE path on the config PVC and CONFIG_FILE points Frigate
-#     there (writable matters: Frigate rewrites the file on schema migration). The
-#     stub `config:` below is unused and deliberately contains nothing sensitive.
-#     To edit cameras: decrypt/edit the Secret, re-encrypt, commit (see README of
-#     that file / CLAUDE.md SOPS section). UI config edits are ephemeral.
+#   * PRIVATE, UI-DRIVEN CONFIG. This repo is PUBLIC, so no camera details live in
+#     git. The LIVE config is the writable file on the config PVC
+#     (/config/active-config.yml, CONFIG_FILE points there) and is edited via the
+#     Frigate UI (Settings -> Config editor) -- those edits STICK across restarts.
+#     The SOPS-encrypted apps/frigate-config.enc.yaml Secret (key config.yml) is
+#     only a first-boot / disaster-recovery BASELINE: the init container seeds it
+#     ONLY IF the PVC file is absent, so it never clobbers UI edits. The config PVC
+#     is reclaimPolicy RETAIN (see persistence note) so a prune can't delete the
+#     config + DB. The stub `config:` below is unused and holds nothing sensitive.
+#     NOTE: git DRIFTS from the live UI-edited config by design. To refresh the
+#     baseline from live: kubectl exec <pod> -- cat /config/active-config.yml, put
+#     it in the Secret (sops), re-encrypt, commit.
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -68,10 +72,11 @@ spec:
         secret:
           secretName: frigate-config
 
-    # Seed the writable config from the encrypted Secret on every start (GitOps:
-    # the Secret is the source of truth; UI edits are ephemeral). Uses the already-
-    # pulled Frigate image to avoid an extra pull. Runs before the chart's own
-    # copyconfig; both touch the /config PVC but write different files, no clash.
+    # Seed the writable config from the encrypted Secret ONLY IF ABSENT, so the
+    # PVC copy (edited live via the Frigate UI) stays the source of truth and UI
+    # edits persist. The Secret is only the first-boot / disaster-recovery baseline.
+    # Uses the already-pulled Frigate image. Runs before the chart's own copyconfig;
+    # both touch the /config PVC but write different files, no clash.
     extraInitContainers:
       - name: seed-config
         image: ghcr.io/blakeblackshear/frigate:0.17.2
@@ -79,7 +84,13 @@ spec:
         command:
           - sh
           - -c
-          - cp /secret-config/config.yml /config/active-config.yml && echo "seeded active-config.yml"
+          - |
+            if [ -f /config/active-config.yml ]; then
+              echo "active-config.yml present on PVC -> keeping the live (UI-managed) config"
+            else
+              cp /secret-config/config.yml /config/active-config.yml
+              echo "seeded active-config.yml from the encrypted baseline (first boot / recovery)"
+            fi
         volumeMounts:
           - name: secret-config
             mountPath: /secret-config
@@ -96,7 +107,10 @@ spec:
 
     persistence:
       config:
-        # SQLite DB (frigate.db) + the seeded active-config.yml -> NVMe.
+        # SQLite DB (frigate.db) + the LIVE active-config.yml (source of truth now)
+        # -> NVMe. This volume's PV is patched to reclaimPolicy RETAIN (imperative,
+        # out-of-band) so a prune/delete can't wipe the config + DB. A full cluster
+        # rebuild would provision a fresh Delete PV -> re-patch to Retain then.
         enabled: true
         storageClass: local-path
         size: 2Gi
