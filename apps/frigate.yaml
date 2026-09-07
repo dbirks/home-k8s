@@ -1,0 +1,165 @@
+# Frigate NVR — single front-door camera, RECORD-ONLY (no object detection).
+#
+# Design notes (2026-09-06):
+#   * NO GPU. Detection is disabled, so recording is a pure H.264 stream-copy to
+#     disk (no decode/encode). Attaching the RTX PRO 6000 would add contention +
+#     risk (it is the LLM-serving critical resource and periodically GSP-crashes,
+#     see CLAUDE.md) for zero benefit. Frigate runs as a tiny CPU-only pod.
+#   * LATEST FRIGATE. The blakeshome chart is stale (chart 7.8.0 still ships
+#     appVersion 0.14.1), so we pin the newest chart but OVERRIDE image.tag to the
+#     latest STABLE Frigate (0.17.2; 0.18 is beta/RC only as of 2026-09).
+#   * STORAGE SPLIT (mirrors apps/jellyfin.yaml): recordings -> HDD
+#     (local-path-hdd, /var/mnt/hdd-storage, ~2.3TB free); the SQLite DB + config
+#     -> NVMe (local-path) for fsync safety.
+#   * SECRET OUT OF GIT. The repo is PUBLIC, so the RTSP password lives only in
+#     the SOPS-encrypted apps/frigate-rtsp-credentials.enc.yaml, injected as env
+#     FRIGATE_RTSP_PASSWORD and referenced as {FRIGATE_RTSP_PASSWORD} in config.
+#
+# Camera: generic ONVIF @ 10.0.0.142 — stream1 = H.264 1920x1080@15fps (main),
+#         stream2 = H.264 1280x720 (sub). Audio is G.711 (not recorded; -an).
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: frigate
+  namespace: default
+spec:
+  interval: 5m
+  chart:
+    spec:
+      chart: frigate
+      # Latest chart: https://github.com/blakeblackshear/blakeshome-charts/blob/master/charts/frigate/Chart.yaml
+      version: 7.8.0
+      sourceRef:
+        kind: HelmRepository
+        name: blakeblackshear
+        namespace: flux-system
+      interval: 5m
+  # Default values:
+  # https://github.com/blakeblackshear/blakeshome-charts/blob/master/charts/frigate/values.yaml
+  values:
+    image:
+      repository: ghcr.io/blakeblackshear/frigate
+      # Latest STABLE Frigate (overrides the chart's 0.14.1 appVersion). Non-GPU
+      # standard image (CPU/OpenVINO); no -tensorrt variant needed.
+      tag: "0.17.2"
+      pullPolicy: IfNotPresent
+
+    strategyType: Recreate
+
+    # No GPU (see header). Frigate does not need it for record-only.
+    gpu:
+      nvidia:
+        enabled: false
+
+    env:
+      # e-gineering / Indianapolis is US Eastern (no DST offset drama with the
+      # explicit Indiana zone). Adjust if the camera clock/labels look off.
+      TZ: America/Indiana/Indianapolis
+
+    # RTSP password from the SOPS-encrypted Secret (key FRIGATE_RTSP_PASSWORD).
+    envFromSecrets:
+      - frigate-rtsp-credentials
+
+    # Shared memory + tmpfs are RAM (node is 46GB, no swap). Record-only, one
+    # camera needs very little; keep these small to protect node RAM.
+    shmSize: 256Mi
+    tmpfs:
+      enabled: true
+      sizeLimit: 512Mi
+
+    persistence:
+      config:
+        # SQLite DB (frigate.db) + writable config -> NVMe.
+        enabled: true
+        storageClass: local-path
+        size: 2Gi
+        accessMode: ReadWriteOnce
+      media:
+        # Recordings (/media/frigate) -> HDD. 3 days of 1080p15 H.264 is ~100GB;
+        # 300Gi is generous headroom (retain.days is what actually bounds usage).
+        enabled: true
+        storageClass: local-path-hdd
+        size: 300Gi
+        accessMode: ReadWriteOnce
+      data:
+        # Not needed (emptyDir default). Frigate keeps its DB under /config.
+        enabled: false
+
+    ingress:
+      enabled: true
+      ingressClassName: private
+      hosts:
+        - host: frigate.hoam.lan
+          paths:
+            - path: /
+              portName: http
+
+    # Modest, bounded footprint. No CPU limit (stream-copy is cheap but let it
+    # burst on startup / DB maintenance without throttling).
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+    config: |
+      # MQTT is optional; we run standalone (no Home Assistant wiring yet).
+      mqtt:
+        enabled: false
+
+      # A cpu detector is defined so the app starts cleanly, but detection is
+      # disabled on the camera below, so no inference actually runs.
+      detectors:
+        cpu1:
+          type: cpu
+
+      # go2rtc restream: ONE connection to the camera, reused for both live view
+      # and recording. Password injected from the env var (kept out of git).
+      go2rtc:
+        streams:
+          front_door:
+            - rtsp://admin1:{FRIGATE_RTSP_PASSWORD}@10.0.0.142:554/stream1
+          front_door_sub:
+            - rtsp://admin1:{FRIGATE_RTSP_PASSWORD}@10.0.0.142:554/stream2
+
+      # 24/7 continuous recording, retained 3 days. In Frigate 0.16+ continuous
+      # retention is `record.continuous.days` (the old `retain.mode: all` now
+      # governs event recordings only, of which we have none since detection is
+      # off). Audio dropped (-an via default record preset).
+      record:
+        enabled: true
+        continuous:
+          days: 3
+
+      # No object detection / snapshots (explicitly off, per requirements).
+      detect:
+        enabled: false
+      snapshots:
+        enabled: false
+
+      # Birdseye mosaic off (saves CPU; single camera).
+      birdseye:
+        enabled: false
+
+      cameras:
+        front_door:
+          enabled: true
+          ffmpeg:
+            inputs:
+              # Pull from the go2rtc restream, not the camera directly.
+              - path: rtsp://127.0.0.1:8554/front_door
+                input_args: preset-rtsp-restream
+                roles:
+                  - record
+          # Live view stream picker (Frigate 0.16+ schema: friendly name -> go2rtc
+          # stream). First entry is the dashboard default.
+          live:
+            streams:
+              Main: front_door
+              Sub: front_door_sub
+          detect:
+            enabled: false
+          audio:
+            enabled: false
