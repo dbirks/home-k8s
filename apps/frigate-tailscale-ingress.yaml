@@ -1,0 +1,31 @@
+# Frigate — Tailscale Ingress. Same pattern as vllm/gemma/openhands -ts.
+# host: frigate -> frigate.<tailnet>.ts.net (e.g. frigate.beluga-wyvern.ts.net),
+# reachable only over the tailnet, never the public internet. A dedicated
+# tailnet node with an auto-renewing Let's Encrypt cert for its MagicDNS name.
+#
+# Backend -> the frigate Service port `http` (5000), Frigate's UNAUTHENTICATED
+# UI port (matches the frigate.hoam.lan LAN ingress). Access is gated by the
+# tailnet itself. To require Frigate's own login instead, point this at the
+# `http-auth` port (8971) — its self-signed cert would need annotations.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frigate-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - frigate
+  rules:
+    - host: frigate
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frigate
+                port:
+                  name: http
