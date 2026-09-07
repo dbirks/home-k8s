@@ -3,7 +3,7 @@
 # and can't run H3 or compute on sm_120 — so we build a small pinned image:
 #   CUDA 12.8 base + torch cu128 (Blackwell kernels) + recent ComfyUI (H3 in core).
 # Models are NOT baked in — they mount from a PVC via --extra-model-paths-config.
-FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04
+FROM nvidia/cuda:13.3.1-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
