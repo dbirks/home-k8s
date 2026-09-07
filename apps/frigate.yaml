@@ -1,4 +1,5 @@
-# Frigate NVR — single kids-room camera: 24/7 recording + CPU object detection.
+# Frigate NVR — two Tapo C200 cameras (kids room + back door): 24/7 recording,
+# CPU object detection, and manual ONVIF PTZ.
 #
 # Design notes (2026-09-06):
 #   * NO GPU. Recording is a pure H.264 stream-copy; object detection runs on the
@@ -16,9 +17,10 @@
 #     the SOPS-encrypted apps/frigate-rtsp-credentials.enc.yaml, injected as env
 #     FRIGATE_RTSP_PASSWORD and referenced as {FRIGATE_RTSP_PASSWORD} in config.
 #
-# Camera: TP-Link Tapo C200 (kids' room) @ 10.0.0.142 — stream1 = H.264
-#         1920x1080@15fps (main), stream2 = H.264 1280x720 (sub), G.711 audio.
-#         Pan/tilt via ONVIF on :2020 (manual PTZ, see camera onvif block).
+# Cameras: two TP-Link Tapo C200s, both stream1 = H.264 1920x1080@15fps (main),
+#          stream2 = H.264 1280x720 (sub), G.711 audio, pan/tilt via ONVIF :2020.
+#            - kids_room @ 10.0.0.142
+#            - back_door @ 10.0.0.144  (same admin1 creds, shared password secret)
 # NOTE: the actual FRONT-DOOR camera is an Aqara G2H Pro on Apple HomeKit
 #       Secure Video (10.0.0.170) — no RTSP, deliberately NOT in Frigate.
 ---
@@ -63,8 +65,8 @@ spec:
     envFromSecrets:
       - frigate-rtsp-credentials
 
-    # Shared memory + tmpfs are RAM (node is 46GB, no swap). One camera with
-    # detection on the 720p sub stream still needs little; keep these modest.
+    # Shared memory + tmpfs are RAM (node is 46GB, no swap). Two cameras with
+    # detection on their 720p sub streams still need little; keep these modest.
     shmSize: 512Mi
     tmpfs:
       enabled: true
@@ -101,10 +103,10 @@ spec:
     # burst on startup / DB maintenance without throttling).
     resources:
       requests:
-        cpu: 500m
-        memory: 512Mi
+        cpu: 1000m
+        memory: 768Mi
       limits:
-        memory: 2Gi
+        memory: 3Gi
 
     config: |
       # MQTT is optional; we run standalone (no Home Assistant wiring yet).
@@ -112,10 +114,10 @@ spec:
         enabled: false
 
       # OpenVINO object detector on the CPU (SSDLite MobileNet v2, bundled in the
-      # image at /openvino-model). One camera at 5 fps is trivial for the 32-thread
-      # CPU. Deliberately NOT on the GPU: the card is unstable (FULLCHIP resets)
-      # and LLM-critical, and a GPU wedge would take detection down with it -- not
-      # worth it for a single camera. Revisit GPU/TensorRT only at many-camera scale.
+      # image at /openvino-model). Two cameras at 5 fps is trivial for the 32-thread
+      # CPU (~5ms/inference). Deliberately NOT on the GPU: the card is unstable
+      # (FULLCHIP resets) and LLM-critical, and a GPU wedge would take detection
+      # down with it. Revisit GPU/TensorRT only at many-camera scale.
       detectors:
         ov:
           type: openvino
@@ -136,6 +138,10 @@ spec:
             - rtsp://admin1:{FRIGATE_RTSP_PASSWORD}@10.0.0.142:554/stream1
           kids_room_sub:
             - rtsp://admin1:{FRIGATE_RTSP_PASSWORD}@10.0.0.142:554/stream2
+          back_door:
+            - rtsp://admin1:{FRIGATE_RTSP_PASSWORD}@10.0.0.144:554/stream1
+          back_door_sub:
+            - rtsp://admin1:{FRIGATE_RTSP_PASSWORD}@10.0.0.144:554/stream2
 
       # 24/7 continuous recording, retained 3 days. In Frigate 0.16+ continuous
       # retention is `record.continuous.days` (the old `retain.mode: all` now
@@ -165,7 +171,7 @@ spec:
           - dog
           - car
 
-      # Birdseye mosaic off (saves CPU; single camera).
+      # Birdseye mosaic off (saves CPU).
       birdseye:
         enabled: false
 
@@ -204,12 +210,45 @@ spec:
             fps: 5
           audio:
             enabled: false
-          # Manual PTZ: the camera is a TP-Link Tapo C200 (pan/tilt, 8 presets)
-          # that speaks ONVIF on :2020. This enables the pan/tilt + preset
-          # controls in the Frigate UI. Autotracking is NOT enabled (it requires
-          # object detection, which is off here) -- these are manual controls.
+          # Manual PTZ: TP-Link Tapo C200 (pan/tilt, 8 presets) via ONVIF on :2020.
+          # Enables pan/tilt + preset controls in the UI. Autotracking is left off
+          # (manual controls only), though detection is now on if we ever want it.
           onvif:
             host: 10.0.0.142
+            port: 2020
+            user: admin1
+            password: "{FRIGATE_RTSP_PASSWORD}"
+
+        # Back-door camera: identical TP-Link Tapo C200 @ 10.0.0.144 (same creds,
+        # so it reuses the same FRIGATE_RTSP_PASSWORD). Same setup as kids_room.
+        # Global record/detect/snapshots/objects blocks above apply to it too.
+        back_door:
+          enabled: true
+          ffmpeg:
+            inputs:
+              - path: rtsp://127.0.0.1:8554/back_door
+                input_args: preset-rtsp-restream
+                roles:
+                  - record
+              - path: rtsp://127.0.0.1:8554/back_door_sub
+                input_args: preset-rtsp-restream
+                roles:
+                  - detect
+            output_args:
+              record: preset-record-generic-audio-aac
+          live:
+            streams:
+              Main: back_door
+              Sub: back_door_sub
+          detect:
+            enabled: true
+            width: 1280
+            height: 720
+            fps: 5
+          audio:
+            enabled: false
+          onvif:
+            host: 10.0.0.144
             port: 2020
             user: admin1
             password: "{FRIGATE_RTSP_PASSWORD}"
