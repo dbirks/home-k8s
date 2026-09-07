@@ -1,0 +1,127 @@
+# Aqara G2H Pro -> RTSP bridge (go2rtc, hostNetwork).
+#
+# The Aqara Camera Hub G2H Pro (10.0.0.170) has NO RTSP/ONVIF (Aqara confirmed).
+# The only way to pull it is over its HomeKit protocol, which requires mDNS
+# MULTICAST discovery -- something normal pods can't do. This standalone go2rtc
+# runs with hostNetwork:true so it shares the node's LAN interface and can do
+# mDNS exactly like an Apple controller, pair with the camera (one-time, with the
+# 8-digit HomeKit setup code), and re-publish it as a plain RTSP stream that
+# Frigate consumes like any other camera.
+#
+# Pairing (one-time, after the pod is Running):
+#   POD=$(kubectl get pod -n default -l app=aqara-homekit-bridge -o name)
+#   kubectl exec -n default $POD -- wget -qO- '127.0.0.1:1984/api/homekit'      # list discovered
+#   # then POST id + url(+pin) to /api/homekit to pair (see session notes).
+# The pairing credentials are written back into /config/go2rtc.yaml on the PVC
+# (reclaimPolicy patched to Retain) so they survive restarts.
+#
+# NOTE: hostNetwork binds go2rtc's RTSP :8554 + API :1984 to the NODE. API is
+# bound to 127.0.0.1 (reachable only via `kubectl exec` into the node netns), so
+# it is NOT exposed on the LAN. RTSP :8554 is on the node; Frigate reaches it via
+# the ClusterIP Service below.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aqara-bridge-config
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 512Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aqara-bridge-seed
+  namespace: default
+data:
+  go2rtc.yaml: |
+    api:
+      # node loopback only (reachable via kubectl exec); NOT exposed on the LAN.
+      listen: "127.0.0.1:1984"
+    rtsp:
+      listen: ":8554"
+    webrtc:
+      listen: ""
+    srtp:
+      listen: ""
+    log:
+      level: info
+    # streams get added here by the one-time HomeKit pairing (PatchConfig).
+    streams: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aqara-homekit-bridge
+  namespace: default
+  labels:
+    app: aqara-homekit-bridge
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: aqara-homekit-bridge
+  template:
+    metadata:
+      labels:
+        app: aqara-homekit-bridge
+    spec:
+      # Share the node's network so go2rtc can do mDNS multicast on the LAN.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+      initContainers:
+        # Seed the writable config from the ConfigMap only if absent, so pairing
+        # credentials written back by go2rtc survive restarts.
+        - name: seed-config
+          image: docker.io/alexxit/go2rtc:1.9.10
+          command:
+            - sh
+            - -c
+            - test -f /config/go2rtc.yaml || cp /seed/go2rtc.yaml /config/go2rtc.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: seed
+              mountPath: /seed
+      containers:
+        - name: go2rtc
+          image: docker.io/alexxit/go2rtc:1.9.10
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: config
+              mountPath: /config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: aqara-bridge-config
+        - name: seed
+          configMap:
+            name: aqara-bridge-seed
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aqara-bridge
+  namespace: default
+spec:
+  selector:
+    app: aqara-homekit-bridge
+  ports:
+    - name: rtsp
+      port: 8554
+      targetPort: 8554
