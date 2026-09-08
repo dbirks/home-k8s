@@ -74,7 +74,7 @@ spec:
             runAsNonRoot: false
             runAsUser: 0
             allowPrivilegeEscalation: true
-          image: ghcr.io/dbirks/ninfer:20260829   # rebased onto upstream master (100 commits: prefix caching + context cache, fp8 KV, completed adapters). Dated pin forces re-pull past cached :latest.
+          image: ghcr.io/dbirks/ninfer:20260908   # rebased onto upstream master incl. dflash2 integration (385b30c et al.); dated pin forces re-pull past cached :latest.
           # ninfer-serve uses SPACE-separated args (--flag value), NOT --flag=value.
           command: ["ninfer-serve"]
           args:
@@ -102,9 +102,9 @@ spec:
             - "--kv-dtype"
             - "int8"
             - "--spec"
-            - "mtp"
+            - "dflash2"                     # dflash2 companion weights in the artifact (issue #121: old 20260829 image couldn't consume dflash2/feature_projection)
             - "--draft-tokens"
-            - "3"
+            - "7"                           # checkpoint-recommended draft count for dflash2 (accepts 1..15)
             - "--lm-head-draft"
             - "--default-max-tokens"
             - "8192"
