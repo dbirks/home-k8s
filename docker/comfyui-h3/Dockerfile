@@ -19,8 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Blackwell-capable torch FIRST so ComfyUI's requirements don't pull a non-cu128 build.
 RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
-# Recent ComfyUI (H3 support is in core). Pin via build-arg; default master for day-0 models.
-ARG COMFYUI_REF=master
+# ComfyUI pinned to the latest stable GitHub RELEASE (v0.35.0, published 2026-09-09),
+# not floating master. H3 support is in core. Bump COMFYUI_REF (and the image tag in
+# .github/workflows/build-comfyui-h3.yml) to move the renderer to a newer release.
+ARG COMFYUI_REF=v0.35.0
 RUN git clone https://github.com/comfyanonymous/ComfyUI /opt/ComfyUI \
     && cd /opt/ComfyUI \
     && git checkout ${COMFYUI_REF} \

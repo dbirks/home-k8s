@@ -37,5 +37,5 @@ jobs:
           context: docker/comfyui-h3
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/comfyui-h3:20260804
+            ghcr.io/${{ github.repository_owner }}/comfyui-h3:v0.35.0
             ghcr.io/${{ github.repository_owner }}/comfyui-h3:latest
