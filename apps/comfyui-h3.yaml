@@ -122,13 +122,19 @@ spec:
             - --highvram                 # 102GB VRAM — keep models on GPU, minimize host-RAM churn
           ports: [{ name: http, containerPort: 8188 }]
           resources:
-            # Low request (~idle footprint: --highvram keeps weights in the 96GB VRAM),
-            # generous limit for active renders. Deliberate: the node is request-full
-            # (~86%) though actual use is ~36% — a big request would block coworker LLM
-            # cold-starts (serving is priority) even while RAM sits free. The 28Gi limit
-            # (was 40Gi) still OOM-contains the pod before the node hits real pressure.
-            requests: { nvidia.com/gpu: 1, cpu: "2", memory: 4Gi }
-            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 28Gi }
+            # GPU: HAMi hard VRAM slice (nvidia.com/gpumem in MB). REQUIRED — without it
+            # HAMi's defaultMemory:0 trap makes this pod claim the whole 96GB card in
+            # accounting and block every co-resident LLM cold-start (serving is priority).
+            # 60000 (~60GB) is generous headroom for an H3 video render while still leaving
+            # ~36GB for another GPU pod; drop it toward ~50000 if you want a 44GB LLM model
+            # to co-reside, raise it if a large render OOMs on the GPU. gpucores never set
+            # (unreliable on Blackwell). See prereqs/hami.yaml + llmisvc-qwen38.yaml.
+            #
+            # Host RAM: low request (~idle footprint; --highvram keeps weights in VRAM) so
+            # it doesn't eat the request budget coworker cold-starts need; 28Gi limit still
+            # OOM-contains the pod before the node hits real pressure.
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "60000", cpu: "12", memory: 28Gi }
           readinessProbe:
             httpGet: { path: /, port: 8188 }
             initialDelaySeconds: 60
