@@ -1,0 +1,335 @@
+# VideoGen — user-facing web frontend (dbirks/minimax-h3-frontend, forked from
+# TheTerrasque/minimax-h3-frontend) in front of the ComfyUI MiniMax-H3 renderer
+# (apps/comfyui-h3.yaml). Coworkers get a simple prompt->render UI with their own
+# login/queue instead of ComfyUI's raw node graph; raw ComfyUI stays as admin/debug.
+#
+# Stack: Postgres + Django API (gunicorn) + Django-Q2 worker (qcluster) + nginx SPA,
+# all in the `default` namespace, reachable only over the tailnet as
+# videogen.beluga-wyvern.ts.net (Tailscale Ingress, auto TLS). Issue #122.
+#
+# Images built + published by dbirks/minimax-h3-frontend CI (.github/build-images.yml):
+#   ghcr.io/dbirks/minimax-h3-frontend/backend  (Django: API, qcluster, migrations)
+#   ghcr.io/dbirks/minimax-h3-frontend/web       (nginx-unprivileged serving the built SPA)
+#
+# Secrets (DJANGO_SECRET_KEY, POSTGRES_PASSWORD) live SOPS-encrypted in
+# apps/videogen-secrets.enc.yaml. Non-secret config is the ConfigMap below.
+#
+# Auth: account-based (django-allauth). Bootstrapped with a local Django superuser
+# (see README/notes: manage.py createsuperuser), who then issues invites at /manage.
+# OIDC is wired but off (OIDC_* blank) — the tailnet is the outer trust gate; a real
+# IdP can be dropped in later with no rebuild by filling the OIDC_* keys.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: videogen-env
+  namespace: default
+data:
+  # --- Postgres (the videogen-db Service) ---
+  POSTGRES_DB: "mm_h3"
+  POSTGRES_USER: "mm_h3"
+  DB_HOST: "videogen-db"
+  DB_PORT: "5432"
+  # --- Django core ---
+  DJANGO_DEBUG: "false"
+  DJANGO_ALLOWED_HOSTS: "videogen,videogen.beluga-wyvern.ts.net,localhost,127.0.0.1"
+  CSRF_TRUSTED_ORIGINS: "https://videogen.beluga-wyvern.ts.net,http://videogen.beluga-wyvern.ts.net"
+  # Kept false for the first deploy so login is guaranteed to work end-to-end;
+  # the nginx web container already sets X-Forwarded-Proto (see below). Flip all
+  # three to true once HTTPS login is verified through the Tailscale ingress.
+  DJANGO_SECURE_SSL_REDIRECT: "false"
+  DJANGO_SESSION_COOKIE_SECURE: "false"
+  DJANGO_CSRF_COOKIE_SECURE: "false"
+  DJANGO_SECURE_HSTS_SECONDS: "0"
+  # --- ComfyUI renderer (in-cluster Service, not the gateway) ---
+  COMFYUI_BASE_URL: "http://comfyui-h3"
+  COMFYUI_OUTPUT_ROOT: ""
+  COMFYUI_REQUEST_TIMEOUT: "30"
+  COMFYUI_EXTRAS: ""
+  # --- LLM prompt-assist: off for now (can point at the internal vLLM later) ---
+  LLM_API_BASE_URL: ""
+  LLM_API_KEY: ""
+  LLM_MODEL: ""
+  # --- OIDC: off (blank client id boots without it) ---
+  OIDC_PROVIDER_NAME: "OIDC"
+  OIDC_ISSUER_URL: ""
+  OIDC_CLIENT_ID: ""
+  OIDC_CLIENT_SECRET: ""
+  OIDC_AUTO_SIGNUP: "true"
+  # --- Email: blank host => confirmation emails print to logs (invite-only use) ---
+  EMAIL_HOST: ""
+  DEFAULT_FROM_EMAIL: "webmaster@localhost"
+  # --- Django-Q2 ---
+  Q_CLUSTER_TIMEOUT: "3600"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: videogen-postgres
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path            # NVMe — DB
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: videogen-media
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]            # single node -> backend + qcluster share it
+  storageClassName: local-path-hdd        # generated video is bulky + cold
+  resources:
+    requests:
+      storage: 100Gi
+---
+# ---------------------------------------------------------------------------
+# Postgres
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: videogen-db
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }            # one writer, one RWO PVC
+  selector: { matchLabels: { app: videogen-db } }
+  template:
+    metadata: { labels: { app: videogen-db } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - configMapRef: { name: videogen-env }     # POSTGRES_DB / POSTGRES_USER
+            - secretRef: { name: videogen-secrets }    # POSTGRES_PASSWORD
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"] }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "100m", memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: videogen-postgres }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: videogen-db
+  namespace: default
+spec:
+  selector: { app: videogen-db }
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+# ---------------------------------------------------------------------------
+# Django API backend (gunicorn). Runs DB migrations in an init container on
+# every rollout (idempotent) — cleaner under GitOps than a standalone Job,
+# which Flux can't update in place (immutable pod template) on an image bump.
+# Runs as root so the app can write the root-owned local-path media mount.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: videogen-backend
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }            # RWO media PVC shared with qcluster
+  selector: { matchLabels: { app: videogen-backend } }
+  template:
+    metadata: { labels: { app: videogen-backend } }
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets: [{ name: ghcr-pull }]
+      securityContext: { runAsUser: 0, runAsGroup: 0 }
+      initContainers:
+        - name: migrate
+          image: ghcr.io/dbirks/minimax-h3-frontend/backend:latest
+          imagePullPolicy: Always
+          command: ["sh", "-c", "until python manage.py migrate --noinput; do echo 'waiting for db / retrying migrate'; sleep 3; done"]
+          envFrom:
+            - configMapRef: { name: videogen-env }
+            - secretRef: { name: videogen-secrets }
+          env:
+            - { name: DJANGO_SECRET_KEY, valueFrom: { secretKeyRef: { name: videogen-secrets, key: DJANGO_SECRET_KEY } } }
+          volumeMounts:
+            - { name: media, mountPath: /app/media }
+      containers:
+        - name: backend
+          image: ghcr.io/dbirks/minimax-h3-frontend/backend:latest
+          imagePullPolicy: Always
+          # entrypoint.sh runs collectstatic, then this CMD (guncorn on :8000)
+          envFrom:
+            - configMapRef: { name: videogen-env }
+            - secretRef: { name: videogen-secrets }
+          env:
+            - { name: DJANGO_SECRET_KEY, valueFrom: { secretKeyRef: { name: videogen-secrets, key: DJANGO_SECRET_KEY } } }
+          ports:
+            - { name: http, containerPort: 8000 }
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "200m", memory: 512Mi }
+            limits: { cpu: "2", memory: 1536Mi }
+          volumeMounts:
+            - { name: media, mountPath: /app/media }
+      volumes:
+        - name: media
+          persistentVolumeClaim: { claimName: videogen-media }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: videogen-backend
+  namespace: default
+spec:
+  selector: { app: videogen-backend }
+  ports:
+    - { name: http, port: 8000, targetPort: 8000 }
+---
+# ---------------------------------------------------------------------------
+# Django-Q2 worker — pulls jobs, drives ComfyUI, does ffmpeg post. One worker,
+# strictly FIFO. Waits for migrations (applied by the backend) before starting;
+# `migrate --check` gates without applying, so it never races the backend.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: videogen-qcluster
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: videogen-qcluster } }
+  template:
+    metadata: { labels: { app: videogen-qcluster } }
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets: [{ name: ghcr-pull }]
+      securityContext: { runAsUser: 0, runAsGroup: 0 }
+      initContainers:
+        - name: wait-for-migrations
+          image: ghcr.io/dbirks/minimax-h3-frontend/backend:latest
+          imagePullPolicy: Always
+          command: ["sh", "-c", "until python manage.py migrate --check; do echo 'waiting for migrations'; sleep 3; done"]
+          envFrom:
+            - configMapRef: { name: videogen-env }
+            - secretRef: { name: videogen-secrets }
+          env:
+            - { name: DJANGO_SECRET_KEY, valueFrom: { secretKeyRef: { name: videogen-secrets, key: DJANGO_SECRET_KEY } } }
+      containers:
+        - name: qcluster
+          image: ghcr.io/dbirks/minimax-h3-frontend/backend:latest
+          imagePullPolicy: Always
+          args: ["sh", "-c", "python manage.py recover_stale_jobs && python manage.py qcluster"]
+          envFrom:
+            - configMapRef: { name: videogen-env }
+            - secretRef: { name: videogen-secrets }
+          env:
+            - { name: DJANGO_SECRET_KEY, valueFrom: { secretKeyRef: { name: videogen-secrets, key: DJANGO_SECRET_KEY } } }
+          resources:
+            requests: { cpu: "100m", memory: 512Mi }
+            limits: { cpu: "2", memory: 1536Mi }
+          volumeMounts:
+            - { name: media, mountPath: /app/media }
+      volumes:
+        - name: media
+          persistentVolumeClaim: { claimName: videogen-media }
+---
+# ---------------------------------------------------------------------------
+# nginx SPA + reverse proxy (the only externally-served pod). Points at the
+# backend Service; trusts X-Forwarded-Proto because it sits behind the
+# Tailscale ingress (TLS terminated upstream).
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: videogen-web
+  namespace: default
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: videogen-web } }
+  template:
+    metadata: { labels: { app: videogen-web } }
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets: [{ name: ghcr-pull }]
+      containers:
+        - name: web
+          image: ghcr.io/dbirks/minimax-h3-frontend/web:latest
+          imagePullPolicy: Always
+          env:
+            - { name: BACKEND_SERVICE_HOST, value: videogen-backend }
+            - { name: BACKEND_SERVICE_PORT, value: "8000" }
+            - { name: NGINX_TRUST_FORWARDED_PROTO, value: "true" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "50m", memory: 64Mi }
+            limits: { cpu: "500m", memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: videogen-web
+  namespace: default
+spec:
+  selector: { app: videogen-web }
+  ports:
+    - { name: http, port: 80, targetPort: 8080 }
+---
+# Tailscale Ingress — reachable only over the tailnet as
+# videogen.beluga-wyvern.ts.net (auto-renewing Let's Encrypt cert, never public).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: videogen-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [videogen]
+  rules:
+    - host: videogen
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: videogen-web
+                port:
+                  number: 80
