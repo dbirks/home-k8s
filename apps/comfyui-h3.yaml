@@ -93,7 +93,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: comfyui-h3, namespace: default }
 spec:
-  replicas: 0          # PAUSED for character-consistency (Ref2VA) research; scale to 1 to resume episode renders
+  replicas: 1          # renderer behind VideoGen (apps/videogen.yaml); wait-for-models init gates boot until sync completes
   strategy: { type: Recreate }
   selector: { matchLabels: { app: comfyui-h3 } }
   template:
@@ -109,7 +109,7 @@ spec:
           volumeMounts: [{ name: models, mountPath: /models }]
       containers:
         - name: comfyui
-          image: ghcr.io/dbirks/comfyui-h3:20260804   # our pinned build (CUDA 12.8 + torch cu128 + recent ComfyUI)
+          image: ghcr.io/dbirks/comfyui-h3:v0.35.0   # pinned ComfyUI v0.35.0 (CUDA 12.8 + torch cu128), issue #122
           args:
             - --listen
             - 0.0.0.0
@@ -122,8 +122,12 @@ spec:
             - --highvram                 # 102GB VRAM — keep models on GPU, minimize host-RAM churn
           ports: [{ name: http, containerPort: 8188 }]
           resources:
-            requests: { nvidia.com/gpu: 1, cpu: "4", memory: 20Gi }
-            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 40Gi }   # 48Gi node: leaves ~8Gi headroom; cgroup still contains OOM to the pod
+            requests: { nvidia.com/gpu: 1, cpu: "4", memory: 12Gi }
+            # 28Gi limit (was 40Gi): node is now shared with the VideoGen stack + many
+            # apps (~16Gi already used). --highvram keeps weights in the 96GB VRAM, so
+            # host RAM stays modest; the tighter cgroup limit OOM-kills the pod before
+            # the node itself hits memory pressure. Raise cautiously if H3 needs more.
+            limits: { nvidia.com/gpu: 1, cpu: "12", memory: 28Gi }
           readinessProbe:
             httpGet: { path: /, port: 8188 }
             initialDelaySeconds: 60
