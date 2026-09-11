@@ -284,7 +284,10 @@ spec:
           image: ghcr.io/dbirks/minimax-h3-frontend/web:latest
           imagePullPolicy: Always
           env:
-            - { name: BACKEND_SERVICE_HOST, value: videogen-backend }
+            # FQDN, not the short name: nginx's `resolver` does not apply the
+            # cluster search-domain suffixes, so a bare "videogen-backend" fails
+            # to resolve (Host not found -> 502). CoreDNS needs the full name.
+            - { name: BACKEND_SERVICE_HOST, value: videogen-backend.default.svc.cluster.local }
             - { name: BACKEND_SERVICE_PORT, value: "8000" }
             - { name: NGINX_TRUST_FORWARDED_PROTO, value: "true" }
           ports:
