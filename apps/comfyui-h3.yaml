@@ -122,11 +122,12 @@ spec:
             - --highvram                 # 102GB VRAM — keep models on GPU, minimize host-RAM churn
           ports: [{ name: http, containerPort: 8188 }]
           resources:
-            requests: { nvidia.com/gpu: 1, cpu: "4", memory: 12Gi }
-            # 28Gi limit (was 40Gi): node is now shared with the VideoGen stack + many
-            # apps (~16Gi already used). --highvram keeps weights in the 96GB VRAM, so
-            # host RAM stays modest; the tighter cgroup limit OOM-kills the pod before
-            # the node itself hits memory pressure. Raise cautiously if H3 needs more.
+            # Low request (~idle footprint: --highvram keeps weights in the 96GB VRAM),
+            # generous limit for active renders. Deliberate: the node is request-full
+            # (~86%) though actual use is ~36% — a big request would block coworker LLM
+            # cold-starts (serving is priority) even while RAM sits free. The 28Gi limit
+            # (was 40Gi) still OOM-contains the pod before the node hits real pressure.
+            requests: { nvidia.com/gpu: 1, cpu: "2", memory: 4Gi }
             limits: { nvidia.com/gpu: 1, cpu: "12", memory: 28Gi }
           readinessProbe:
             httpGet: { path: /, port: 8188 }
