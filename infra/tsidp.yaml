@@ -1,0 +1,92 @@
+# tsidp — shared Tailscale OIDC identity provider for the home cluster (issue #123).
+#
+# Runs as its OWN tsnet/Tailscale node (NOT behind the Tailscale K8s operator ingress):
+# it must see the real tailnet client as its peer so its `whois` lookup resolves the
+# actual connecting user. It owns its endpoint https://idp.beluga-wyvern.ts.net over the
+# tailnet (MagicDNS + auto Let's Encrypt cert via tsnet). No K8s Service/Ingress, no
+# Funnel, no public exposure. First OIDC consumer is VideoGen (apps/videogen.yaml),
+# which speaks generic OIDC directly (django-allauth) — no oauth2-proxy.
+#
+# EXPERIMENTAL: tsidp is a work-in-progress Tailscale component (hence
+# TAILSCALE_USE_WIP_CODE=1). Kept small, pinned, and easy to roll back.
+#
+# STATE / RECOVERY: /data holds the tsnet node identity AND all registered OIDC
+# clients. It MUST persist. If the PVC is lost/recreated:
+#   - the node re-registers with Tailscale, so a fresh TS_AUTHKEY is needed
+#     (auth keys are single-use unless reusable);
+#   - every registered OIDC client (e.g. VideoGen) is gone and must be recreated
+#     in the admin UI, and each new client secret re-captured into SOPS.
+# So treat PVC loss as a recovery event, not a routine restart.
+#
+# VERSION: pinned to v0.0.15 (latest published tag as of 2026-09-11; the package
+# has only v0.0.14/v0.0.15). Do NOT use :latest — a silent bump could re-register
+# the node or change state format. Re-check https://github.com/tailscale/tsidp/pkgs/container/tsidp
+# and bump deliberately.
+#
+# HUMAN PREREQUISITES (cannot be done from GitOps — tailnet policy lives in the
+# Tailscale admin console, not this repo). See the issue-#123 comment / repo notes:
+#   1. Tailnet ACL: define `tag:tsidp` (tagOwners), grant it `tailscale.com/cap/tsidp`
+#      with admin UI limited to autogroup:admin, and grants so VideoGen users can
+#      reach both the VideoGen ingress and idp.beluga-wyvern.ts.net.
+#   2. A DEDICATED auth key (or OAuth client) tagged `tag:tsidp` — NOT operator-oauth —
+#      supplied via the SOPS secret infra/tsidp-secret.enc.yaml (key TS_AUTHKEY).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tailscale-idp
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tsidp-state
+  namespace: tailscale-idp
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path       # NVMe; tiny, but MUST persist (see header)
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tsidp
+  namespace: tailscale-idp
+spec:
+  replicas: 1
+  strategy: { type: Recreate }       # single writer of the tsnet state dir
+  selector: { matchLabels: { app: tsidp } }
+  template:
+    metadata: { labels: { app: tsidp } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: tsidp
+          image: ghcr.io/tailscale/tsidp:v0.0.15
+          imagePullPolicy: IfNotPresent
+          env:
+            # WIP gate — tsidp is still experimental and refuses to run without it.
+            - { name: TAILSCALE_USE_WIP_CODE, value: "1" }
+            # Legacy names still recognized by v0.0.15 (Tailscale plans to rename
+            # these to TSIDP_STATE_DIR / TSIDP_HOSTNAME in a later release; switch
+            # when bumping to a version that documents the new names).
+            - { name: TS_STATE_DIR, value: /data }
+            - { name: TS_HOSTNAME, value: idp }
+            - { name: TS_ADVERTISE_TAGS, value: tag:tsidp }
+            # Enable the STS token-exchange endpoint (per the issue's config set).
+            - { name: TSIDP_ENABLE_STS, value: "1" }
+            # Dedicated machine-registration credential (SOPS secret; NOT operator-oauth).
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: tsidp-auth
+                  key: TS_AUTHKEY
+          volumeMounts:
+            - { name: state, mountPath: /data }
+          resources:
+            requests: { cpu: "50m", memory: 64Mi }
+            limits: { cpu: "500m", memory: 256Mi }
+      volumes:
+        - name: state
+          persistentVolumeClaim: { claimName: tsidp-state }
