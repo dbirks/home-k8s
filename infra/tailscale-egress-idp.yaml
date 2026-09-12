@@ -1,0 +1,42 @@
+# Tailscale cluster egress to the tsidp IdP (issue #123).
+#
+# WHY: tsidp serves OIDC only on its tailnet MagicDNS name (idp.beluga-wyvern.ts.net).
+# The VideoGen browser reaches it fine (it's a tailnet client), but django-allauth also
+# makes SERVER-SIDE calls (discovery, token exchange, JWKS) from the in-cluster backend,
+# which is NOT on the tailnet and cannot resolve/route to a *.ts.net name -> login 500s.
+#
+# This egress gives in-cluster pods a path to that tailnet device. The operator creates a
+# stable ClusterIP Service (in the operator namespace `default`, labelled
+# tailscale.com/proxy-group=idp-egress) that L4-forwards to idp over the tailnet. The
+# VideoGen backend/qcluster then reach https://idp.beluga-wyvern.ts.net via a hostAliases
+# entry mapping that FQDN to this ClusterIP (see apps/videogen.yaml) so the real hostname
+# is used and the Let's Encrypt cert still validates end-to-end.
+#
+# NOTE: the ClusterIP is assigned by the operator after this applies; it is stable for the
+# Service's lifetime. If this egress is ever deleted/recreated, re-read the ClusterIP and
+# update hostAliases in apps/videogen.yaml.
+---
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyGroup
+metadata:
+  name: idp-egress
+  namespace: default          # operator namespace
+spec:
+  type: egress
+  replicas: 1                 # low-traffic OIDC server-side calls; HA not required
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: idp-egress
+  namespace: tailscale-idp
+  annotations:
+    tailscale.com/tailnet-fqdn: idp.beluga-wyvern.ts.net
+    tailscale.com/proxy-group: idp-egress
+spec:
+  type: ExternalName
+  externalName: placeholder   # operator overwrites
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
