@@ -167,6 +167,13 @@ spec:
       enableServiceLinks: false
       imagePullSecrets: [{ name: ghcr-pull }]
       securityContext: { runAsUser: 0, runAsGroup: 0 }
+      # Reach the tsidp IdP's tailnet MagicDNS name via the Tailscale egress
+      # ClusterIP (infra/tailscale-egress-idp.yaml) so allauth's server-side OIDC
+      # calls (discovery/token/JWKS) resolve and TLS-validate. Update this IP if
+      # that egress Service is ever deleted/recreated.
+      hostAliases:
+        - ip: "10.109.232.240"
+          hostnames: [idp.beluga-wyvern.ts.net]
       initContainers:
         - name: migrate
           image: ghcr.io/dbirks/minimax-h3-frontend/backend:latest
@@ -240,6 +247,13 @@ spec:
       enableServiceLinks: false
       imagePullSecrets: [{ name: ghcr-pull }]
       securityContext: { runAsUser: 0, runAsGroup: 0 }
+      # Reach the tsidp IdP's tailnet MagicDNS name via the Tailscale egress
+      # ClusterIP (infra/tailscale-egress-idp.yaml) so allauth's server-side OIDC
+      # calls (discovery/token/JWKS) resolve and TLS-validate. Update this IP if
+      # that egress Service is ever deleted/recreated.
+      hostAliases:
+        - ip: "10.109.232.240"
+          hostnames: [idp.beluga-wyvern.ts.net]
       initContainers:
         - name: wait-for-migrations
           image: ghcr.io/dbirks/minimax-h3-frontend/backend:latest
