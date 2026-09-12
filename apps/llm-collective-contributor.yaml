@@ -1,0 +1,99 @@
+# LLM Collective contributor — contributes the local ninfer model
+# (qwen3.8-27b-ninfer) to the company LLM Collective at
+# https://llm-collective.dev.e-gineering.com over one outbound WebSocket tunnel.
+#
+# Backend target is the ninfer Service directly. NOTE: ninfer scales to zero via
+# KEDA and only wakes on traffic through the llm-ai-gw ext_proc — a Collective
+# request that arrives while ninfer is at 0 replicas will fail until it is woken.
+# For wake-on-demand, repoint the backend at the internal AI gateway (with an
+# llm_ API key) instead of ninfer:8000. Fine for now under active use.
+#
+# Image pull: ghcr.io/e-gineering/llm-collective/contributor must be pullable
+# from this cluster (it contains no secrets). If it is private, add a pull secret.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-collective-contributor-config
+  namespace: default
+data:
+  contributor.yaml: |
+    version: 1
+    machine:
+      name: home-ninfer
+    collective:
+      gateway: https://llm-collective.dev.e-gineering.com
+    metrics:
+      listen: 127.0.0.1:9091
+    backends:
+      - name: ninfer
+        url: http://ninfer.default.svc.cluster.local:8000
+        protocols: [openai]
+        concurrency: 8
+        models:
+          - alias: qwen3-8-27b
+            model: qwen3.8-27b-ninfer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-collective-contributor
+  namespace: default
+  labels:
+    app.kubernetes.io/name: llm-collective-contributor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-collective-contributor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: llm-collective-contributor
+    spec:
+      containers:
+        - name: contributor
+          image: ghcr.io/e-gineering/llm-collective/contributor:a4257f7-1788660551 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
+          env:
+            - { name: KEY_FILE, value: /etc/collective-key/identity.key }
+            - { name: PUBKEY_OUT, value: "" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/collective }
+            - { name: identity, mountPath: /etc/collective-key, readOnly: true }
+      volumes:
+        - name: config
+          configMap:
+            name: llm-collective-contributor-config
+        - name: identity
+          secret:
+            secretName: llm-collective-contributor-identity
+---
+# Flux image automation: track the newest dev <sha>-<epoch> tag. The existing
+# shepherd ImageUpdateAutomation scans ./apps with Setters and bumps the marker
+# above (see apps/llm-portal-image-automation.yaml for the same arrangement).
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: llm-collective-contributor
+  namespace: flux-system
+spec:
+  image: ghcr.io/e-gineering/llm-collective/contributor
+  interval: 2m0s
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: llm-collective-contributor
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: llm-collective-contributor
+  filterTags:
+    pattern: "^[a-fA-F0-9]+-(?P<ts>.*)"
+    extract: "$ts"
+  policy:
+    numerical:
+      order: asc
