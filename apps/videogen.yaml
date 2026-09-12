@@ -50,12 +50,18 @@ data:
   LLM_API_BASE_URL: ""
   LLM_API_KEY: ""
   LLM_MODEL: ""
-  # --- OIDC: off (blank client id boots without it) ---
-  OIDC_PROVIDER_NAME: "OIDC"
-  OIDC_ISSUER_URL: ""
-  OIDC_CLIENT_ID: ""
-  OIDC_CLIENT_SECRET: ""
+  # --- OIDC via shared tsidp (idp.beluga-wyvern.ts.net), issue #123 ---
+  # provider_id is "oidc" in the fork -> callback /accounts/oidc/oidc/login/callback/.
+  # allauth builds discovery as {OIDC_ISSUER_URL}/.well-known/openid-configuration
+  # (trailing slash auto-stripped in settings.py), so no trailing slash here.
+  OIDC_PROVIDER_NAME: "Tailscale"
+  OIDC_ISSUER_URL: "https://idp.beluga-wyvern.ts.net"
+  OIDC_CLIENT_ID: "891aeb5b1424bb1f308258339a6464db"
+  # OIDC_AUTO_SIGNUP=true: a successful tsidp login provisions the Django account
+  # with no invite -> tailnet/tsidp authorization IS the account boundary.
   OIDC_AUTO_SIGNUP: "true"
+  # OIDC_CLIENT_SECRET is deliberately NOT here — it is injected from the
+  # SOPS-encrypted videogen-oidc Secret (envFrom below), never a ConfigMap.
   # --- Email: blank host => confirmation emails print to logs (invite-only use) ---
   EMAIL_HOST: ""
   DEFAULT_FROM_EMAIL: "webmaster@localhost"
@@ -169,6 +175,7 @@ spec:
           envFrom:
             - configMapRef: { name: videogen-env }
             - secretRef: { name: videogen-secrets }
+            - secretRef: { name: videogen-oidc }        # OIDC_CLIENT_SECRET
           env:
             - { name: DJANGO_SECRET_KEY, valueFrom: { secretKeyRef: { name: videogen-secrets, key: DJANGO_SECRET_KEY } } }
           volumeMounts:
@@ -181,6 +188,7 @@ spec:
           envFrom:
             - configMapRef: { name: videogen-env }
             - secretRef: { name: videogen-secrets }
+            - secretRef: { name: videogen-oidc }        # OIDC_CLIENT_SECRET
           env:
             - { name: DJANGO_SECRET_KEY, valueFrom: { secretKeyRef: { name: videogen-secrets, key: DJANGO_SECRET_KEY } } }
           ports:
@@ -240,6 +248,7 @@ spec:
           envFrom:
             - configMapRef: { name: videogen-env }
             - secretRef: { name: videogen-secrets }
+            - secretRef: { name: videogen-oidc }        # OIDC_CLIENT_SECRET
           env:
             - { name: DJANGO_SECRET_KEY, valueFrom: { secretKeyRef: { name: videogen-secrets, key: DJANGO_SECRET_KEY } } }
       containers:
@@ -250,6 +259,7 @@ spec:
           envFrom:
             - configMapRef: { name: videogen-env }
             - secretRef: { name: videogen-secrets }
+            - secretRef: { name: videogen-oidc }        # OIDC_CLIENT_SECRET
           env:
             - { name: DJANGO_SECRET_KEY, valueFrom: { secretKeyRef: { name: videogen-secrets, key: DJANGO_SECRET_KEY } } }
           resources:
