@@ -1,0 +1,147 @@
+---
+# YouTube media capture: a durable, reusable, idempotent downloader for the
+# home-k8s media library.
+#
+# A SOPS-encrypted "queue" (one target per line) is processed hourly by this
+# CronJob. You add items by handing Crush a YouTube URL (channel / playlist /
+# single video) + a folder; it appends a line to the queue, commits, and the
+# next run picks it up.
+#
+# Guarantees (per the requirements):
+#   * DOWNLOAD ONLY - yt-dlp is never given any flag that deletes, and the job
+#     never removes files. Existing media is left untouched.
+#   * NEW ITEMS ONLY - `--download-archive /media/.youtube-capture-archive`
+#     records every video id already fetched (persistent on the media PVC), so
+#     re-runs and future ticks skip what's already downloaded. No re-downloads.
+#   * NO OVERLAP - `concurrencyPolicy: Forbid` means if a previous run is still
+#     going, the next hourly tick does NOT start another (it waits). No
+#     interrupting, no duplicate concurrent runs.
+#
+# Toolchain (trust model: known distro base + distro package manager, nothing
+# pre-baked/opaque):
+#   image  archlinux/archlinux:base-devel  (official Arch rolling, updated daily)
+#   deps   pacman -S deno ffmpeg uv        (official Arch repos)
+#   tool   uv tool install yt-dlp          (current yt-dlp from PyPI, isolated)
+#   deno   required by yt-dlp's JS-challenge solver (--remote-components ejs:github)
+#          to unlock >360p from the node IP when a logged-in cookie is present.
+#
+# Queue line format (a folder prefix, then a single space, then the URL):
+#   <folder under /media> <youtube url>
+# The folder may contain spaces; the URL is always the last whitespace token.
+# If a line is just a URL (no folder), it goes under /media/YouTube.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: youtube-media-capture
+  namespace: default
+  labels:
+    app.kubernetes.io/name: youtube-media-capture
+spec:
+  # hourly
+  schedule: "0 * * * *"
+  # if the previous run is still going, don't start a new one (no overlap)
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: youtube-media-capture
+    spec:
+      backoffLimit: 2
+      # 12h hard cap per run (a big channel could take a while)
+      activeDeadlineSeconds: 43200
+      # auto-GC finished run pods after 7d
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: youtube-media-capture
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          containers:
+            - name: yt
+              image: docker.io/archlinux/archlinux:base-devel
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -eu
+                  export LANG=C.UTF-8
+                  export PATH="/root/.local/bin:$PATH"
+                  echo "### [setup] pacman -Syu (required first on a rolling image)"
+                  pacman -Syu --noconfirm >/dev/null
+                  echo "### [setup] deps from official Arch repos: deno ffmpeg uv"
+                  pacman -S --noconfirm --needed deno ffmpeg uv ca-certificates tzdata >/dev/null
+                  deno --version | head -1
+                  ffmpeg -version | head -1
+                  uv --version
+                  echo "### [setup] install CURRENT yt-dlp via uv tool (PyPI, isolated)"
+                  uv tool install yt-dlp
+                  uv tool run yt-dlp --version
+                  echo "### [setup] stage cookies (writable copy)"
+                  install -m 600 /cookies/cookies.txt /tmp/capture-cookies.txt
+                  echo "cookies staged: $(grep -c . /tmp/capture-cookies.txt) lines"
+                  ARCHIVE=/media/.youtube-capture-archive
+                  touch "$ARCHIVE"
+                  # Parse the queue: one target per line.
+                  #   "<folder with spaces> <url>"   -> folder = everything except last token
+                  #   "<url>"                        -> folder = YouTube
+                  # Skip blanks and comments (#).
+                  while IFS= read -r line || [ -n "$line" ]; do
+                    line="${line%$'\r'}"
+                    # trim trailing whitespace
+                    line="$(printf '%s' "$line" | sed 's/[[:space:]]*$//')"
+                    [ -z "$line" ] && continue
+                    case "$line" in \#*) continue ;; esac
+                    url="${line##* }"
+                    folder="${line% *}"
+                    [ "$folder" = "$url" ] && folder="YouTube"   # no folder given
+                    dest="/media/${folder}"
+                    mkdir -p "$dest"
+                    echo "### [run] ${folder} <- ${url}"
+                    uv tool run yt-dlp --no-warnings \
+                      --remote-components ejs:github \
+                      --cookies /tmp/capture-cookies.txt \
+                      --retries 10 --fragment-retries 10 \
+                      --download-archive "$ARCHIVE" \
+                      --write-info-json \
+                      -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]" \
+                      --merge-output-format mp4 \
+                      -o "${dest}/%(playlist_index&{%02d - })s%(title)s.%(ext)s" \
+                      --no-overwrites \
+                      "$url" || echo "### [warn] yt-dlp exited non-zero for ${url} (continuing)"
+                    echo "### [done] ${folder}"
+                  done < /queue/queue.txt
+                  echo "### ALL DONE"
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 1Gi
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
+              volumeMounts:
+                - name: media
+                  mountPath: /media
+                - name: queue
+                  mountPath: /queue
+                  readOnly: true
+                - name: cookies
+                  mountPath: /cookies
+                  readOnly: true
+          volumes:
+            - name: media
+              persistentVolumeClaim:
+                claimName: jellyfin-media-hdd
+            - name: queue
+              secret:
+                secretName: youtube-capture-queue
+                defaultMode: 0400
+            - name: cookies
+              secret:
+                secretName: ncc-youtube-cookies
+                defaultMode: 0400

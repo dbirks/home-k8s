@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    queue.txt: ENC[AES256_GCM,data:8/k5eOfdSwzzexNXT/QloDL1rxg/rlhOHeZabNX3/u+7Ej2SkU5LYdjhFWpEscpBNYIV2v+a4Vrc7Nfd2opPIEYorX0AiZa6lbLRjfG5wPB7EqTukLDVIWGZ1mmUxVnIZ4VBbH9f4CJ3mz3euFPkOQ1TaWCqsX/35ALp4H7sF6xKmziR,iv:Amk4/B+5eELcGP+bV6e+xCax7Q8/jvcelDumN5TE3Oc=,tag:QJhP5lPnQvuhWfIlstLr4A==,type:str]
+kind: Secret
+metadata:
+    name: youtube-capture-queue
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBzRnp1YlpkOXRWTWlYRll4
+            bzJXdE1yb0hiS3ZVTWpadzl5blNVbjdpV1JjCnlQeFd4S0sxNzZOaGFrV2xPdUhJ
+            Uk1BYUc2ajF1UnpHVytZTzhpR0VLbEEKLS0tIDRlQjZsTDMrd1YrK3lZcllTYTFx
+            M0VwZkNldDBZSTZIQWM2UWxMN0dTOW8Ksuas9TnjVXvOelcklFH3B6yMB7CLoc7i
+            3cIQPMveb2fNUZBhckBHNbFezCZ04z1dpgdYQsr5N5bPYscwJ5ClpA==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-09-13T23:00:41Z"
+    mac: ENC[AES256_GCM,data:DP0M0Dw/aqwIwB4GZyZn3zIUrJAgEASRdsdHrNQGpHOI9ayXsAuRlBOhv2KWmi5RYtzB5h2h6okP4aGz7zq2HYJYVWtF6owZzYmrzUDCFrcKp1uaCQFwDYrP4tWv4H+7sy/YhcDwUh1/5g7mgFgAc/rjxKUxm4iAl+tgO0D5yis=,iv:nmN/YYk7MZpoYlhGiUDnUvbjWlctAhybBTwIH5x4Azg=,tag:yTlI6vn1CVuEkof/Ima/ng==,type:str]
+    version: 3.13.3
