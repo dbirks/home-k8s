@@ -18,7 +18,7 @@ spec:
       # :7473 and kept it in a restart loop too. Re-pulling the same tag/digest just
       # reuses the corrupted local blob, so the chart/image version needed to change.
       # No breaking changes for our L2Advertisement-only setup between these versions.
-      version: 0.15.3
+      version: 0.16.1
       sourceRef:
         kind: HelmRepository
         name: metallb
