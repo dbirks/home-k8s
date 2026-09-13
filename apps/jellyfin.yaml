@@ -41,10 +41,10 @@ spec:
   # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/values.yaml
   values:
     image:
-      # Latest STABLE Jellyfin server (10.11.x line). 12.0 is RC-only as of 2026-08.
-      # Multi-arch tag; node is amd64.
+      # Jellyfin 12.0 — the new STABLE line (released 2026-09-08; superseded the
+      # 10.11.x line). Multi-arch tag; node is amd64.
       repository: docker.io/jellyfin/jellyfin
-      tag: "10.11.11"
+      tag: "12.0"
       pullPolicy: IfNotPresent
 
     # Single node + RWO config volume: maxSurge=0 tears the old pod down BEFORE
@@ -82,14 +82,11 @@ spec:
       limits:
         memory: 4Gi
 
+    # Ingress is defined as a standalone tailnet-only Ingress below (see the
+    # `jellyfin-ts` Ingress resource). The chart's own ingress is disabled so
+    # Jellyfin is reachable ONLY over the tailnet, not on the LAN.
     ingress:
-      enabled: true
-      className: private
-      hosts:
-        - host: jellyfin.hoam.lan
-          paths:
-            - path: /
-              pathType: ImplementationSpecific
+      enabled: false
 
     # ---- Storage split ------------------------------------------------------
     # DB (SQLite library.db lives under /config/data) and cache are isolated on
@@ -117,3 +114,24 @@ spec:
         type: pvc
         existingClaim: jellyfin-media-hdd
         readOnly: false
+---
+# Tailscale Ingress — reachable only over the tailnet as jellyfin.<tailnet>.ts.net
+# (auto-renewing Let's Encrypt cert, never public). Replaces the old private
+# jellyfin.hoam.lan ingress. Same pattern as apps/comfyui-h3.yaml.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jellyfin-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - jellyfin
+  rules:
+    - host: jellyfin
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: jellyfin, port: { number: 8096 } } }
