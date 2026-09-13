@@ -109,9 +109,9 @@ spec:
                       --retries 10 --fragment-retries 10 \
                       --download-archive "$ARCHIVE" \
                       --write-info-json \
-                      -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]" \
+                      -f "bv*[height<=1080][vcodec~='^h264'][ext=mp4]+ba[ext=m4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]" \
                       --merge-output-format mp4 \
-                      -o "${dest}/%(playlist_index&{%02d - })s%(title)s.%(ext)s" \
+                      -o "${dest}/%(playlist_index&{:02d} - |)s%(title)s.%(ext)s" \
                       --no-overwrites \
                       "$url" || echo "### [warn] yt-dlp exited non-zero for ${url} (continuing)"
                     echo "### [done] ${folder}"
