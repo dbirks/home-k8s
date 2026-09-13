@@ -93,7 +93,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: comfyui-h3, namespace: default }
 spec:
-  replicas: 1          # renderer behind VideoGen (apps/videogen.yaml); wait-for-models init gates boot until sync completes
+  replicas: 0          # scaled down: its 60000MB HAMi VRAM slice starved ninfer/qwen38 (see apps/ninfer-standalone.yaml). Set back to 1 when VideoGen (apps/videogen.yaml) is needed.
   strategy: { type: Recreate }
   selector: { matchLabels: { app: comfyui-h3 } }
   template:
