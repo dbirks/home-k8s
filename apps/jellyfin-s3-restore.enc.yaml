@@ -1,0 +1,23 @@
+apiVersion: v1
+data:
+    AWS_ACCESS_KEY_ID: ENC[AES256_GCM,data:+BYeF8vu/jlwcxQ6E6/8AQnMY727e5NstACckw==,iv:fUbN+Jpdy1L8fnz6SIuppOAeBYGwNdCpQtUdc49/xOw=,tag:aivOcc8FhcduO/CAm5HNwA==,type:str]
+    AWS_SECRET_ACCESS_KEY: ENC[AES256_GCM,data:qhIBLQpTcSkE2As3qMc6AwumyN783dMQz9YIQGSsPPmMIgWnktvuy3jyjxU0TsAVqcXZCbvr3sU=,iv:0lBkPgp/ZVk1pKUJuW+K6feHuxM4lW0OWsxZwtgs+2o=,tag:ALQC2830gAJ3uqrzThy8Mw==,type:str]
+kind: Secret
+metadata:
+    name: jellyfin-s3-restore
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAveFgvV0ZwRkpiM1RnUFlU
+            d1lHdVhZaTBLdHN2Vm0zQ3Y2K2xSOXhlbFNZCm90a1FsVnovcU5XWURtcEVGR0hT
+            S2x6T003R2V2dFVIUmxiU1hGaUdhUkkKLS0tIGFLaGtmWmtiUyswNmwyN2ZaN2J3
+            Q0lXbXhZQWNsVVhZdktCa3hsR0FKelkK7buSo+PIMInGcKk71a8dWXPzaibRdh4q
+            hXDKAlev6MeIr1iocsWzYcsVTWjmhkbEgf33eQ8zXuVVgnhVfo8JJg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-09-13T17:48:00Z"
+    mac: ENC[AES256_GCM,data:7AK3/2nObGuinoMOwtSVHQceTRms7GIOXU6DZ6bsyQwN8iJ/o+i5epvO/ERYzBSHHSE3zOIgl37nbrDUgAaoEHa+X2KxuG0z/IXC/TUQ+7RjW+EAvqOAxMXJymW+MmSRVtugQikrgOxJR0STX9p6KE/qggQ8ezpdHRxvbJHDsYo=,iv:Gpy1OT2kix9B+1DOaaPtNU1YeW5frQdiALh4i//Dk8w=,tag:0C+qR4wlsrjBPh95VDItyQ==,type:str]
+    version: 3.13.3

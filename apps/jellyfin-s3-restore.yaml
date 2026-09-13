@@ -1,0 +1,101 @@
+---
+# One-off S3 -> Jellyfin media restore (bucket: birks-home-backup, us-east-2,
+# Glacier Instant Retrieval objects).
+#
+# Restores the prefixes listed in S3_PREFIXES from the personal AWS backup
+# bucket into the jellyfin-media-hdd PVC at the SAME path the Jellyfin 12.0
+# container serves its library from (/media). The bucket layout already matches
+# the intended library layout (movies/, shows/, kids/ under the media root),
+# so each prefix is mirrored to /media/<prefix> unchanged.
+#
+# Credentials: `jellyfin-s3-restore` Secret (SOPS-encrypted in
+# jellyfin-s3-restore.enc.yaml). Backed by the least-privilege IAM user
+# `jellyfin-s3-restore` in the personal account (305858993113), scoped to
+# ListBucket + GetObject on birks-home-backup only.
+#
+# Excludes (youtube-dl debris that would show up as unplayable items):
+#   *.fNNN.mp4 / *.fNNN.m4a  - unmerged stream fragments
+#   *.temp.*                 - interrupted partial downloads
+#   *old/*                   - 0-byte dir placeholders
+#
+# Cost (2026-09 rates, us-east-2): ~$0.09/GB transfer out + $0.03/GB GIR
+# retrieval + ~$0.01/1k GETs. This batch (shows/Puritan 14.6GiB, 31 objects)
+# totals ~$1.88.
+#
+# To restore the next batch: edit S3_PREFIXES, commit, push. The previous Job
+# is gone by then (ttlSecondsAfterFinished), so Flux recreates it. The IAM
+# user/secret stay valid for all batches; delete them (and this manifest)
+# once the library is fully restored.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jellyfin-s3-restore
+  namespace: default
+  labels:
+    app.kubernetes.io/name: jellyfin-s3-restore
+spec:
+  backoffLimit: 3
+  # 12h hard cap; ~15GiB here finishes in well under an hour at node uplink.
+  activeDeadlineSeconds: 43200
+  # keep a finished Job 7 days so logs/progress can be inspected, then auto-GC
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jellyfin-s3-restore
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: downloader
+          # pinned to the digest verified on the node (aws-cli 2.36.44, 2026-09-13)
+          image: public.ecr.aws/aws-cli/aws-cli@sha256:e8467f2c319f9bc9a1471808a69949a76915e9c95eaf4a09ece9f9e85fd32747
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AWS_DEFAULT_REGION
+              value: us-east-2
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: jellyfin-s3-restore
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jellyfin-s3-restore
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: S3_BUCKET
+              value: birks-home-backup
+            # S3 prefixes (relative to bucket root), space-separated.
+            - name: S3_PREFIXES
+              value: "shows/Puritan"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              for prefix in $S3_PREFIXES; do
+                dest="/media/$prefix"
+                mkdir -p "$dest"
+                echo "=== syncing s3://$S3_BUCKET/$prefix -> $dest"
+                aws s3 sync "s3://$S3_BUCKET/$prefix" "$dest" \
+                  --exclude "*.f[0-9][0-9]*.mp4" \
+                  --exclude "*.f[0-9][0-9]*.m4a" \
+                  --exclude "*.temp.*" \
+                  --exclude "*old/*" \
+                  --only-show-errors
+                echo "=== $prefix done"
+              done
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: media
+              mountPath: /media
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: jellyfin-media-hdd
