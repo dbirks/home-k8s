@@ -25,10 +25,17 @@
 #   deno   required by yt-dlp's JS-challenge solver (--remote-components ejs:github)
 #          to unlock >360p from the node IP when a logged-in cookie is present.
 #
-# Queue line format (a folder prefix, then a single space, then the URL):
-#   <folder under /media> <youtube url>
-# The folder may contain spaces; the URL is always the last whitespace token.
-# If a line is just a URL (no folder), it goes under /media/YouTube.
+# Queue line format (a folder prefix, a single space, the URL, and an optional
+# "only from this date forward" filter):
+#   <folder under /media> <youtube url> [after=DATE]
+# The folder may contain spaces; the URL is the last token (or second-to-last
+# when an after= filter is present). If a line is just a URL (no folder), it
+# goes under /media/YouTube.
+# after=DATE (optional) -> passed to yt-dlp --dateafter, so only videos
+#   uploaded on/after DATE are fetched. Accepts YYYYMMDD or
+#   [now|today|yesterday][-N[day|week|month|year]], e.g. "today", "20260913",
+#   "today-30day". Handy for "capture this channel's new uploads since today".
+#   Omit it to download the whole target (as before).
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -97,18 +104,29 @@ spec:
                     line="$(printf '%s' "$line" | sed 's/[[:space:]]*$//')"
                     [ -z "$line" ] && continue
                     case "$line" in \#*) continue ;; esac
+                    dateafter=""
+                    last="${line##* }"
+                    case "$last" in
+                      after=*)
+                        dateafter="${last#after=}"
+                        line="${line% *}"
+                        ;;
+                    esac
                     url="${line##* }"
                     folder="${line% *}"
                     [ "$folder" = "$url" ] && folder="YouTube"   # no folder given
                     dest="/media/${folder}"
                     mkdir -p "$dest"
-                    echo "### [run] ${folder} <- ${url}"
+                    dflag=""
+                    if [ -n "$dateafter" ]; then dflag="--dateafter ${dateafter}"; fi
+                    echo "### [run] ${folder} <- ${url}${dateafter:+ (after ${dateafter})}"
                     uv tool run yt-dlp --no-warnings \
                       --remote-components ejs:github \
                       --cookies /tmp/capture-cookies.txt \
                       --retries 10 --fragment-retries 10 \
                       --download-archive "$ARCHIVE" \
                       --write-info-json \
+                      $dflag \
                       -f "bv*[height<=1080][vcodec~='^h264'][ext=mp4]+ba[ext=m4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]" \
                       --merge-output-format mp4 \
                       -o "${dest}/%(playlist_index&{:02d} - |)s%(title)s.%(ext)s" \
