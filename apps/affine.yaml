@@ -18,17 +18,15 @@
 # apps/affine-secrets.enc.yaml. Postgres is ClusterIP-only, but we still password
 # it (defense in depth; upstream's trust-auth compose is not our model).
 #
-# AUTH (first deploy): OIDC is deferred (issue: "OIDC can then be enabled in
-# parallel once the native iOS flow is verified"). Bootstrap path = local signup:
-#   1. `auth.allowSignup: true` (set below) so the first web visit can register.
-#   2. David + wife each create an account at https://affine.beluga-wyvern.ts.net.
-#   3. Flip `auth.allowSignup` to false in the ConfigMap and reconcile -> the
-#      tailnet becomes the only remaining trust gate, no open registration.
-# Wiring tsidp OIDC later: add an `oauth.providers.oidc` block to config.json with
-# issuer https://idp.beluga-wyvern.ts.net + allowPrivateNetwork:true, move the
-# clientSecret into a SOPS secret (config.json then becomes a Secret, not a
-# ConfigMap), add the idp-egress hostAlias (see apps/videogen.yaml), and register
-# the client with callback .../oauth/callback in the tsidp admin UI.
+# AUTH: OIDC via the shared tsidp IdP (issue #123) is wired. A DCR-registered
+# client (redirect https://affine.beluga-wyvern.ts.net/oauth/callback) lives in the
+# config.json oauth block (SOPS secret). A successful tsidp login auto-provisions
+# the AFFiNE account (allowSignupForOauth defaults true) -> tailnet+tsidp is the
+# account boundary. `auth.allowSignup: true` is STILL set as a fallback because
+# native iOS-app OIDC is broken upstream (AFFiNE #15343 — no apple-app-site-assoc,
+# so the web page consumes the auth code before the app can). Once web OIDC is
+# verified for both users AND the iOS story is settled, flip allowSignup to false
+# in the config.json secret (sops edit apps/affine-config.enc.yaml) and reconcile.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -66,32 +64,13 @@ spec:
     requests:
       storage: 1Gi
 ---
-# Non-secret application config (config.json). See the header for the auth bootstrap
-# flow. externalUrl + https drive link/callback generation; host is the FQDN AFFiNE
-# accepts. Indexer uses the embedded default disabled (no Manticore for 2 users).
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: affine-config
-  namespace: default
-data:
-  config.json: |
-    {
-      "server": {
-        "name": "AFFiNE (home)",
-        "externalUrl": "https://affine.beluga-wyvern.ts.net",
-        "https": true,
-        "host": "affine.beluga-wyvern.ts.net",
-        "port": 3010
-      },
-      "auth": {
-        "allowSignup": true
-      },
-      "indexer": {
-        "enabled": false
-      }
-    }
----
+# Application config (config.json) is a SOPS-encrypted Secret in
+# apps/affine-config.enc.yaml (Secret name: affine-config), because it now holds
+# the OIDC clientSecret. It carries server.externalUrl/https/host, auth.allowSignup,
+# indexer.enabled:false, and the oauth.providers.oidc block (issuer
+# idp.beluga-wyvern.ts.net, allowPrivateNetwork:true, claim_name:username). The
+# whole file is mounted read-only over the writable config PVC (subPath), so
+# AFFiNE still writes its generated crypto private key into the PVC dir.
 # ---------------------------------------------------------------------------
 # Postgres (pgvector/pgvector:pg16 — AFFiNE requires the pgvector extension)
 # ---------------------------------------------------------------------------
@@ -205,6 +184,14 @@ spec:
     metadata: { labels: { app: affine } }
     spec:
       enableServiceLinks: false
+      # Server-side OIDC calls (discovery/token/userinfo/jwks) go to the tsidp
+      # tailnet name, which an in-cluster pod can't resolve/route. Map it to the
+      # idp-egress ClusterIP (infra/tailscale-egress-idp.yaml) so the real FQDN is
+      # used and the Let's Encrypt cert validates. Same mechanism as videogen.
+      # Update this IP if that egress Service is deleted/recreated.
+      hostAliases:
+        - ip: "10.109.232.240"
+          hostnames: [idp.beluga-wyvern.ts.net]
       initContainers:
         - name: migration
           # Pinned to 0.27.4 by digest (verified against GHCR 2026-09-14). Bump
@@ -255,7 +242,7 @@ spec:
         - name: config
           persistentVolumeClaim: { claimName: affine-config }
         - name: config-json
-          configMap: { name: affine-config }
+          secret: { secretName: affine-config }
 ---
 apiVersion: v1
 kind: Service

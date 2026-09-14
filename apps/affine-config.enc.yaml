@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    config.json: ENC[AES256_GCM,data:k582uixjZI5HkfLNrpraWEVUtANEoHnRH9n+hPSOUNNeQIhC6hAOxi7nhMpFr5nUi8Sa+G7izWqaY4qLU1+hxtr1Y3bfBR/Ol0dX3pkb9sL1KZvOhi6wd4USfxKlDK737Ha7TjLT+nj79F980n3S8rZ38E766GJL83rBUIE/N5FL42L/U0QCppn0gFeOjfXw0CZFPEyJCtkMJq2JvBNSr7qReaVbxiHPLBCNJQS+TGTir1OwhevDaxQQh/v0m+FVJ8RCNJLN6dKwQSs+R7FekjTTheoo3/GnPFnS5gqF+t1zt8gSK3qvHA5WfYOdeXtzYaFDBvZb2FO14YL2yvx+Vgcdgpq4S4D1v12RjnVj0G6YnOpsxadUVz4YbpTJ4qAGqTH5FxuQpFhODJ2rXDN6Y9JW2FXUmI9KasBh/P+vp8a4/KqQT97z1+oUsmjEVV5QkF+VYu4n5ZxtY/FU+FQkGa8M1aTmhPWH/OoHZPrUPci+eOU+jkSWncHtXjQDU8On/vRd5tY2wmQP9AUsA+j9Dvb7XeOD645iGzhRgbjd1zY31kaghqyF0mQTiAAIwU4P57p043RnaeWLld6I5u8NyURfafcOfMCPOTqRxoj6OzqvIjPZukavEdYWRvS8eU70XOHnaa+cAnOYlOWFfrSir+djg/PCvtrbKrHNNlFsZ0DQPvp0yD6Y1fSizyolGxSe+vlZhfztTdJm+moPNXh6wXXjqCHK8JIZvmaJ6rDDh/hXxAJTWQzYjFmjAALclgsN36F38ECIbGivhtnnETu98VGA6/BW43zkHcbP7+WficIoHXdKU28qkKJ2GicwTMyzLkMXXGG4DINjUbTcbuFN9cCnE+0XsiM8lSSamvSUny6OuPV8sXX7IaDw0jGQFSJfRhKKxJvlHps/hKqA37XyHVZ+kSZ4xvyqa4QXcnHDdtNiQ3YW2W3sdAphu1V+KSEtlwkGyGbL22WzN+0ToLwOSEasZcn0mB+Q1F/y+CpAFZIRlmklkVH4Ky0mDcx/ZpKzuNopR/W1yjDUnUMyyEy4iCMVzfujAGMtUvxOdo4uTu44IDVZKzBkM6BBi1b9SxPm/PEXw1fRZ8zA30uPLQH08cMX55DZzmQPjGnLWklQ8R2hOkVSlzjk1TcEvUhEZ9we1oxl3cJA2tpyR/zBnIKIay5qWEbrDh9X8ZUh6IfLaJAZz9+jlwzjy2SNaunEvgej,iv:GaSIuhlJX6P/YZiP6eU4H5pGwWnh9PZx7YzN92bRNHo=,tag:kHIe7riaJ1Hm37RnWxJvGQ==,type:str]
+kind: Secret
+metadata:
+    name: affine-config
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA5Nnk4T0t3Zi80ZzR0eWQy
+            RFp3TGdMbnprQXRqbXd1Y0IrcTg5RXIxUUNJCktNb3NWenZFUFloVGYvbmdtU1pZ
+            TDBReU93U1ZmWVJTaGRkNUVuQnRQUlkKLS0tIDl3YW1rWldkSW4rQjJWdmhSWVNv
+            YU93VlZYaHljSC9zSVRQODdiU1FHTXcKLZ4nIb+evFaxK9kuYnjg8J/WUrxY1tTn
+            oIXatnsOfVfVXBoZzfC5gZ/Q6mdlg9k28fz9g/+iJkJvK21rPVimLQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-09-14T15:08:26Z"
+    mac: ENC[AES256_GCM,data:Vb4cnh7Hegrt/1QiRqzc0GBkNRMTvWCE4mUwKfqHIZoOD8nocm1TKkTu5pja6YlRswtgAWAjCxKrc1zHhzsvHl5GB+sySqGqe1zY3eb+xOaxFythOfwQY+WiHv0Bv3e8gfa9JhX7z3D94hL6jg2tfUoA6K64f5MIw2Qz+fNtUFE=,iv:fCipLdWUjrxyWkDHTBPu0SI7TqAsZZzXUqYiOcgKSI8=,tag:iUodoO6qb38pfoKJbBgwVg==,type:str]
+    version: 3.13.0
