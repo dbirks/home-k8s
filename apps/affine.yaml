@@ -1,0 +1,291 @@
+# AFFiNE — self-hosted Notion replacement (issue #125). Two users (David + wife).
+# Web UI + official iOS app, reachable ONLY over the tailnet as
+# affine.beluga-wyvern.ts.net (Tailscale Ingress, auto Let's Encrypt TLS).
+#
+# Raw manifests (no Helm): the official self-host is a small Compose stack
+# (AFFiNE + migration + pgvector/Postgres + Redis) that maps directly to a handful
+# of ordinary K8s resources, and this repo already owns Postgres apps this way
+# (see apps/videogen.yaml). Topology mirrors upstream compose.yml @ v0.27.4:
+#   https://github.com/toeverything/AFFiNE/blob/v0.27.4/.docker/selfhost/compose.yml
+#
+# Config model (server 0.27+): config.json is the source of truth (env-var config
+# was largely removed). Non-secret app config lives in the affine-config ConfigMap
+# below and is bind-mounted as /root/.affine/config/config.json OVER the writable
+# config PVC — AFFiNE still writes its auto-generated crypto private key into that
+# same PVC dir, so identity survives pod replacement (acceptance criterion).
+#
+# Secrets (POSTGRES_PASSWORD, DATABASE_URL) are SOPS-encrypted in
+# apps/affine-secrets.enc.yaml. Postgres is ClusterIP-only, but we still password
+# it (defense in depth; upstream's trust-auth compose is not our model).
+#
+# AUTH (first deploy): OIDC is deferred (issue: "OIDC can then be enabled in
+# parallel once the native iOS flow is verified"). Bootstrap path = local signup:
+#   1. `auth.allowSignup: true` (set below) so the first web visit can register.
+#   2. David + wife each create an account at https://affine.beluga-wyvern.ts.net.
+#   3. Flip `auth.allowSignup` to false in the ConfigMap and reconcile -> the
+#      tailnet becomes the only remaining trust gate, no open registration.
+# Wiring tsidp OIDC later: add an `oauth.providers.oidc` block to config.json with
+# issuer https://idp.beluga-wyvern.ts.net + allowPrivateNetwork:true, move the
+# clientSecret into a SOPS secret (config.json then becomes a Secret, not a
+# ConfigMap), add the idp-egress hostAlias (see apps/videogen.yaml), and register
+# the client with callback .../oauth/callback in the tsidp admin UI.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: affine-postgres
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path            # NVMe — DB
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: affine-storage
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]            # blobs/attachments -> /root/.affine/storage
+  storageClassName: local-path-hdd        # bulky + cold; HDD like other media
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: affine-config
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]            # config dir MUST persist: holds the
+  storageClassName: local-path            # auto-generated crypto private key
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Non-secret application config (config.json). See the header for the auth bootstrap
+# flow. externalUrl + https drive link/callback generation; host is the FQDN AFFiNE
+# accepts. Indexer uses the embedded default disabled (no Manticore for 2 users).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: affine-config
+  namespace: default
+data:
+  config.json: |
+    {
+      "server": {
+        "name": "AFFiNE (home)",
+        "externalUrl": "https://affine.beluga-wyvern.ts.net",
+        "https": true,
+        "host": "affine.beluga-wyvern.ts.net",
+        "port": 3010
+      },
+      "auth": {
+        "allowSignup": true
+      },
+      "indexer": {
+        "enabled": false
+      }
+    }
+---
+# ---------------------------------------------------------------------------
+# Postgres (pgvector/pgvector:pg16 — AFFiNE requires the pgvector extension)
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: affine-postgres
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }            # one writer, one RWO PVC
+  selector: { matchLabels: { app: affine-postgres } }
+  template:
+    metadata: { labels: { app: affine-postgres } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          env:
+            - { name: POSTGRES_USER, value: affine }
+            - { name: POSTGRES_DB, value: affine }
+            - { name: POSTGRES_INITDB_ARGS, value: "--data-checksums" }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: affine-secrets, key: POSTGRES_PASSWORD } }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U affine -d affine"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U affine -d affine"] }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "100m", memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: affine-postgres }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: affine-postgres
+  namespace: default
+spec:
+  selector: { app: affine-postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+# ---------------------------------------------------------------------------
+# Redis (ephemeral queue/cache — no PVC needed for this size, per issue)
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: affine-redis
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: affine-redis } }
+  template:
+    metadata: { labels: { app: affine-redis } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - { name: redis, containerPort: 6379 }
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "50m", memory: 64Mi }
+            limits: { cpu: "500m", memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: affine-redis
+  namespace: default
+spec:
+  selector: { app: affine-redis }
+  ports:
+    - { name: redis, port: 6379, targetPort: 6379 }
+---
+# ---------------------------------------------------------------------------
+# AFFiNE server. The DB migration/predeploy (`self-host-predeploy.js`) runs as an
+# init container on every rollout (idempotent) — cleaner under GitOps than a
+# standalone Job, which Flux can't update in place on an image bump. Both the init
+# and the main container use the SAME pinned image + digest.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: affine
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }            # RWO storage/config PVCs, single writer
+  selector: { matchLabels: { app: affine } }
+  template:
+    metadata: { labels: { app: affine } }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: migration
+          # Pinned to 0.27.4 by digest (verified against GHCR 2026-09-14). Bump
+          # deliberately: back up first, then change tag+digest in BOTH containers.
+          image: ghcr.io/toeverything/affine:0.27.4@sha256:b649f5ce2384ffdf13c23bccf81d759e15973d59d0b0058af65d895a84373099
+          command: ["sh", "-c", "node ./scripts/self-host-predeploy.js"]
+          env:
+            - { name: REDIS_SERVER_HOST, value: affine-redis }
+            - { name: AFFINE_INDEXER_ENABLED, value: "false" }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: affine-secrets, key: DATABASE_URL } }
+          volumeMounts:
+            - { name: storage, mountPath: /root/.affine/storage }
+            - { name: config, mountPath: /root/.affine/config }
+            - { name: config-json, mountPath: /root/.affine/config/config.json, subPath: config.json }
+      containers:
+        - name: affine
+          image: ghcr.io/toeverything/affine:0.27.4@sha256:b649f5ce2384ffdf13c23bccf81d759e15973d59d0b0058af65d895a84373099
+          env:
+            - { name: REDIS_SERVER_HOST, value: affine-redis }
+            - { name: AFFINE_INDEXER_ENABLED, value: "false" }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: affine-secrets, key: DATABASE_URL } }
+          ports:
+            - { name: http, containerPort: 3010 }
+          readinessProbe:
+            httpGet: { path: /info, port: 3010 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: { path: /info, port: 3010 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "250m", memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: storage, mountPath: /root/.affine/storage }
+            - { name: config, mountPath: /root/.affine/config }
+            # Bind the ConfigMap's config.json OVER the writable PVC dir. Longer
+            # mountPath wins for that one file; the rest of the dir stays writable
+            # so AFFiNE can persist its generated crypto private key to the PVC.
+            - { name: config-json, mountPath: /root/.affine/config/config.json, subPath: config.json }
+      volumes:
+        - name: storage
+          persistentVolumeClaim: { claimName: affine-storage }
+        - name: config
+          persistentVolumeClaim: { claimName: affine-config }
+        - name: config-json
+          configMap: { name: affine-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: affine
+  namespace: default
+spec:
+  selector: { app: affine }
+  ports:
+    - { name: http, port: 3010, targetPort: 3010 }
+---
+# Tailscale Ingress — reachable only over the tailnet as
+# affine.beluga-wyvern.ts.net (auto-renewing Let's Encrypt cert, never public).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: affine-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [affine]
+  rules:
+    - host: affine
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: affine
+                port:
+                  number: 3010
