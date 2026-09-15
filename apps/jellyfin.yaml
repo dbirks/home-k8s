@@ -41,10 +41,12 @@ spec:
   # https://github.com/jellyfin/jellyfin-helm/blob/master/charts/jellyfin/values.yaml
   values:
     image:
-      # Jellyfin 12.0 — the new STABLE line (released 2026-09-08; superseded the
-      # 10.11.x line). Multi-arch tag; node is amd64.
+      # Jellyfin 12.1 — current STABLE line (12.1 released 2026-09-15; supersedes
+      # 12.0). Multi-arch floating tag; node is amd64. 12.1 fixes nested
+      # unnumbered season folders collapsing onto the first one (jellyfin
+      # PR #18044), which was breaking the Puritan series layout.
       repository: docker.io/jellyfin/jellyfin
-      tag: "12.0"
+      tag: "12.1"
       pullPolicy: IfNotPresent
 
     # Single node + RWO config volume: maxSurge=0 tears the old pod down BEFORE
