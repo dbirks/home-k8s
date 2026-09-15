@@ -1,6 +1,6 @@
 # LLM Collective contributor — contributes the local ninfer model
 # (qwen3.8-27b-ninfer) to the company LLM Collective at
-# https://llm-collective.dev.e-gineering.com over one outbound WebSocket tunnel.
+# https://llm-collective.e-gineering.com over one outbound WebSocket tunnel.
 #
 # Backend target is the ninfer Service directly. NOTE: ninfer scales to zero via
 # KEDA and only wakes on traffic through the llm-ai-gw ext_proc — a Collective
@@ -8,8 +8,13 @@
 # For wake-on-demand, repoint the backend at the internal AI gateway (with an
 # llm_ API key) instead of ninfer:8000. Fine for now under active use.
 #
-# Image pull: ghcr.io/e-gineering/llm-collective/contributor must be pullable
-# from this cluster (it contains no secrets). If it is private, add a pull secret.
+# The contributor's public key must be registered under your login in the prod
+# gateway UI (Become a Contributor) before it can connect — auto-enroll was
+# removed. Until then it will start and retry with "waiting for key
+# registration". Public key: llmc_pk_v1_TWLRH0jpq4jcySuWE9n0HHFWnoaZi7875JWiq1m5vJo
+#
+# Image: ghcr.io/e-gineering/llm-collective/contributor is public, so no pull
+# secret is needed. Tracks the prod semver release channel (vX.Y.Z).
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -22,7 +27,7 @@ data:
     machine:
       name: home-ninfer
     collective:
-      gateway: https://llm-collective.dev.e-gineering.com
+      gateway: https://llm-collective.e-gineering.com
     metrics:
       listen: 127.0.0.1:9091
     backends:
@@ -53,7 +58,7 @@ spec:
     spec:
       containers:
         - name: contributor
-          image: ghcr.io/e-gineering/llm-collective/contributor:a4257f7-1788660551 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
+          image: ghcr.io/e-gineering/llm-collective/contributor:v0.1.0 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
           env:
             - { name: KEY_FILE, value: /etc/collective-key/identity.key }
             - { name: PUBKEY_OUT, value: "" }
@@ -71,9 +76,9 @@ spec:
           secret:
             secretName: llm-collective-contributor-identity
 ---
-# Flux image automation: track the newest dev <sha>-<epoch> tag. The existing
-# shepherd ImageUpdateAutomation scans ./apps with Setters and bumps the marker
-# above (see apps/llm-portal-image-automation.yaml for the same arrangement).
+# Flux image automation: track the prod semver release channel (vX.Y.Z). The
+# existing shepherd ImageUpdateAutomation scans ./apps with Setters and bumps the
+# marker above (see apps/llm-portal-image-automation.yaml for the same setup).
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageRepository
 metadata:
@@ -92,8 +97,7 @@ spec:
   imageRepositoryRef:
     name: llm-collective-contributor
   filterTags:
-    pattern: "^[a-fA-F0-9]+-(?P<ts>.*)"
-    extract: "$ts"
+    pattern: '^v?[0-9]+\.[0-9]+\.[0-9]+'
   policy:
-    numerical:
-      order: asc
+    semver:
+      range: '>0.0.1'
