@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: llm-collective-contributor-identity
+    namespace: default
+type: Opaque
+stringData:
+    identity.key: ENC[AES256_GCM,data:yc6I0FZRVz8lbF82yBgP8XQ7x2oPXZbi/UCdyna1s3FZnK8WHws/AHWfyLLMyP93+NDJsqPC,iv:Ta3MIQmk8C4HiXo+bvCvS9fG9QSQBSPzpkgGd/nvvMM=,tag:puUxQqOfD6g+1qVuovksFQ==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA4RFZ4clh0OVNGdTErTUZ2
+            SHRyZzlUWFpKaGVocStwckNHOFF0U2QrcUNjCkJvYWFjanNHV2xYM21SRzhLRE1Y
+            UzRYaE9TTXg2eG81K0V5M2pXb3JXQW8KLS0tIG5hcjR2YUZBaTBodkRYckpWOW5k
+            SEtBMkpOT3lzQUJzUm41YVNQVURyRWMK6+sifVQevFC57va3f2veXKk+jZmUmfyw
+            Q7oi1MUQhFdtnZK6WRoZSLL+Cspfhlp/ZWcfFO2Dp1Ii8yVxRD0B+Q==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-09-06T01:20:07Z"
+    mac: ENC[AES256_GCM,data:opH+WIO6yKkVlTtHpHBK5CDHiP7ub1W7SVAG7uLYs03hWrrUaT7IanVeYly7e9KjBCbFACghhMb/JyJSY6UIfcViqCwbGpf8FCL1V+3ld85Ru4oMsiDJYJaHj5vSR+f9Fm14DfURmDJpklZgZ0sRIilz46Av1O8J+Hk/3rL0BJU=,iv:z/pEJ+mwCvX45Pr9eEALTxd7nFmc0+9YJ+rCsmH9tws=,tag:9jpZDArG6dgKVczhwrvXfw==,type:str]
+    version: 3.13.0
