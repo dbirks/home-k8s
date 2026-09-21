@@ -12,3 +12,9 @@ talos/clusterconfig/
 # Old pre-talhelper config dir
 _newconfig/
 build/vllm-dflash2/vllm-pr/
+
+# Claude Code local session state (NOT shared). The .claude/skills symlink IS
+# committed (points at .agents/skills so Claude Code discovers the shared skills).
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
