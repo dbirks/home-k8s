@@ -92,11 +92,13 @@ Some discs expose no per-episode titles — just one ~90-min title (often duplic
 
 ### No title cards? Identify by PLOT (budget / public-domain prints)
 
-Cheap "Volume" DVD prints (e.g. an Andy Griffith Show budget set) often strip the on-screen episode title entirely — the show goes straight from cast credits into the story. Don't guess from memory. Instead:
-1. Sample a spread of mid-episode stills into one montage: `-ss 120 -t 660 -vf "fps=1/60,scale=340:-1,tile=4x3"` (≈11 frames across minutes 2-13) and Read it.
-2. Pull the distinctive plot beats (a singing farmer in overalls; a kid on a bike knocking over groceries; a mountain wedding) and WebSearch them against the episode guide / IMDb / a fan wiki (Mayberry wiki etc.). Confirm on MULTIPLE independent details before filing.
-3. If two episodes are plausible (e.g. two Darling-family episodes), sample a second window at the climax (`-ss 960 -t 420 ...`) to find the decider (a bride-in-veil gag ⇒ "Mountain Wedding"; a soldier/bus arrival ⇒ "The Darlings Are Coming"). Never file an episode you can't corroborate — hold it in an `_unsorted/` folder and ask the user.
-Note: there is no image-reverse-search tool here; text search on described plot points against a known episode list is the reliable substitute, and it works well for well-documented shows.
+Cheap "Volume" DVD prints (e.g. an Andy Griffith Show budget set) often strip the on-screen episode title entirely — the show goes straight from cast credits into the story. Don't guess from memory.
+
+**BEST method — read the CLOSING CAST CREDITS (definitive + fast).** Guest stars are unique per episode. Sample the last ~40s into a montage and Read it: `-ss <len-35> -t 40 -vf "fps=1/3,scale=360:-1,tile=4x4"` (episodes here run ~25:20, so `-ss 1490 -t 45`). If credits are low-contrast over the closing scene, grab a single full-res frame right on the "Cast"/"Guest Star" card (`-ss <t> -frames:v 1`, no scaling). Then WebSearch the guest-cast names ("Andy Griffith Show" + two or three guest names) — it lands the exact episode almost every time. An "Introducing ..." credit flags a character's DEBUT episode (e.g. "Introducing The Dillards / Maggie Peterson" ⇒ the Darlings' first episode "The Darlings Are Coming", not a later one). Map the confirmed title to its real SxxEyy via the episode guide.
+
+**Fallback — identify by PLOT** (if credits are unreadable): sample mid-episode stills `-ss 120 -t 660 -vf "fps=1/60,scale=340:-1,tile=4x3"`, pull distinctive beats, WebSearch against the guide/IMDb/a fan wiki, and sample a second window at the climax to break ties. Plot-guessing is error-prone (it nearly mislabeled a Barney-matchmaking episode as a choir episode — the cast card corrected it), so prefer the credits and confirm on multiple details. Never file an episode you can't corroborate — hold it in an `_unsorted/` folder and ask the user.
+
+Note: there is no image-reverse-search tool here; reading on-screen text (credits) and text-searching it is the reliable substitute.
 
 ### Cover art missing for a whole library? Internet providers are probably OFF
 
