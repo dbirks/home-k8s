@@ -78,6 +78,28 @@ Real example: Davey and Goliath box sets. Series lives at `/media/shows/Davey an
 - **Specials / bonus features:** real specials (e.g. "Halloween Who-Dun-It") go in `Season 00/` as `S00Exx` using TheTVDB's special number. Making-of docs / read-alongs that are not TVDB episodes still go in `Season 00` with descriptive names (numbers approximate). Menu-only "bonus features" (trivia games, clickable episode guides, photo galleries) are not video titles and cannot be ripped — skip them.
 - **Sanity-check the disc vs its sleeve:** `lsdvd` shows the real titles. If the case lists six episodes but `lsdvd` shows two, the disc is a subset / mislabeled / damaged — tell the user, do not fabricate the missing ones. Episodes run ~14-15 min; a lone ~29-30 min title is usually a half-hour special (or two episodes joined — check `lsdvd -c -t N` for chapter splits).
 
+### Episodes packed into one long title (common on anime DVDs)
+
+Some discs expose no per-episode titles — just one ~90-min title (often duplicated as titles 02 AND 03 — use either) holding several episodes back-to-back. Split by CHAPTER RANGE instead of post-processing:
+1. `sudo lsdvd -c -t <title>` and add up chapter lengths. Episode boundaries fall where the running sum hits ~episode length (e.g. NieA_7: ~23:27 each → chapters 1-5, 6-10, 11-15, 16-21; each group = OP + 2 parts + ED + eyecatch).
+2. Rip each group with HandBrake `-c C1-C2`:
+   ```bash
+   sudo HandBrakeCLI -i /dev/sr0 -t <title> -c 1-5 -o /tmp/e01.mkv \
+     -f av_mkv -e x264 -q 20 --encoder-preset medium --comb-detect --decomb \
+     --all-audio -E copy --audio-fallback av_aac --all-subtitles --markers
+   ```
+   Episodes are sequential on the disc, so number them in chapter-group order (Disc 1 = E01.. ; confirm the disc's volume/number with the user).
+
+### Preserve ALL audio + subtitles (anime, or any multi-track disc)
+
+Use `--all-audio -E copy --audio-fallback av_aac --all-subtitles`. `-E copy` PASSES THROUGH the original audio codecs LOSSLESSLY (keeps the Japanese AC3 alongside the English dub, and keeps 5.1 on movies instead of downmixing) — strongly preferred over re-encoding to AAC when the disc has a track worth keeping. DVD subs are image-based (`dvd_subtitle`/VOBSUB) and pass through into MKV with their language tags. Verify afterwards:
+```bash
+/usr/lib/jellyfin-ffmpeg/ffprobe -v error \
+  -show_entries stream=index,codec_type,codec_name,channels:stream_tags=language,title \
+  -of default=noprint_wrappers=1 file.mkv
+```
+Expect e.g. audio ac3/jpn + audio ac3/eng + subtitle dvd_subtitle/eng.
+
 ## Gotchas
 
 - Do NOT name a bash variable `UID` — it is readonly and the assignment silently fails, breaking any query that uses it. Use `AUID` or similar.
