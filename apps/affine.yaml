@@ -2,31 +2,35 @@
 # Web UI + official iOS app, reachable ONLY over the tailnet as
 # affine.beluga-wyvern.ts.net (Tailscale Ingress, auto Let's Encrypt TLS).
 #
-# Raw manifests (no Helm): the official self-host is a small Compose stack
-# (AFFiNE + migration + pgvector/Postgres + Redis) that maps directly to a handful
-# of ordinary K8s resources, and this repo already owns Postgres apps this way
-# (see apps/videogen.yaml). Topology mirrors upstream compose.yml @ v0.27.4:
+# Raw manifests (no Helm): upstream self-host is a small Compose stack (AFFiNE +
+# migration + pgvector/Postgres + Redis) that maps directly to ordinary K8s resources,
+# and this repo already owns Postgres apps this way (see apps/videogen.yaml).
+# Mirrors upstream compose.yml @ v0.27.4:
 #   https://github.com/toeverything/AFFiNE/blob/v0.27.4/.docker/selfhost/compose.yml
 #
-# Config model (server 0.27+): config.json is the source of truth (env-var config
-# was largely removed). Non-secret app config lives in the affine-config ConfigMap
-# below and is bind-mounted as /root/.affine/config/config.json OVER the writable
-# config PVC — AFFiNE still writes its auto-generated crypto private key into that
-# same PVC dir, so identity survives pod replacement (acceptance criterion).
+# Config model (server 0.27+): config.json is the source of truth (env-var config was
+# largely removed). It lives in the SOPS Secret apps/affine-config.enc.yaml and is
+# mounted read-only over the writable config PVC via subPath, so AFFiNE can still
+# write its generated crypto private key into that PVC dir — identity survives pod
+# replacement (acceptance criterion).
 #
 # Secrets (POSTGRES_PASSWORD, DATABASE_URL) are SOPS-encrypted in
-# apps/affine-secrets.enc.yaml. Postgres is ClusterIP-only, but we still password
-# it (defense in depth; upstream's trust-auth compose is not our model).
+# apps/affine-secrets.enc.yaml. Postgres is ClusterIP-only but still password-protected
+# (defense in depth; upstream's trust-auth compose is not our model).
 #
-# AUTH: OIDC via the shared tsidp IdP (issue #123) is wired. A DCR-registered
-# client (redirect https://affine.beluga-wyvern.ts.net/oauth/callback) lives in the
-# config.json oauth block (SOPS secret). A successful tsidp login auto-provisions
-# the AFFiNE account (allowSignupForOauth defaults true) -> tailnet+tsidp is the
-# account boundary. `auth.allowSignup: true` is STILL set as a fallback because
-# native iOS-app OIDC is broken upstream (AFFiNE #15343 — no apple-app-site-assoc,
-# so the web page consumes the auth code before the app can). Once web OIDC is
-# verified for both users AND the iOS story is settled, flip allowSignup to false
-# in the config.json secret (sops edit apps/affine-config.enc.yaml) and reconcile.
+# AUTH: OIDC via the shared tsidp IdP (issue #123). A DCR-registered client (redirect
+# https://affine.beluga-wyvern.ts.net/oauth/callback) lives in the config.json oauth
+# block. A tsidp login auto-provisions the account (auth.allowSignupForOauth, default
+# true) -> tailnet + tsidp is the account boundary. auth.allowSignup is false, so there
+# is no email/password registration; the two flags are independent (verified in
+# v0.27.4 core/auth/config.ts, and plugins/oauth/service.ts gates only on the OAuth
+# one). Native iOS-app OIDC works as of the App Store build from 2026-07-31 (upstream
+# #15343 / PR #15271 — a client-side fix; it was never a server-version issue).
+#
+# Adding a person: give them their own Tailscale USER (tsidp identifies by tailnet
+# user, so a device on someone else's account authenticates as that account), have
+# them sign in once via Continue with OIDC, then invite them from Settings -> Members.
+# No mailer is configured, but invites arrive as in-app notifications. memberLimit: 10.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -64,13 +68,10 @@ spec:
     requests:
       storage: 1Gi
 ---
-# Application config (config.json) is a SOPS-encrypted Secret in
-# apps/affine-config.enc.yaml (Secret name: affine-config), because it now holds
-# the OIDC clientSecret. It carries server.externalUrl/https/host, auth.allowSignup,
-# indexer.enabled:false, and the oauth.providers.oidc block (issuer
-# idp.beluga-wyvern.ts.net, allowPrivateNetwork:true, claim_name:username). The
-# whole file is mounted read-only over the writable config PVC (subPath), so
-# AFFiNE still writes its generated crypto private key into the PVC dir.
+# Application config (config.json) is the SOPS Secret apps/affine-config.enc.yaml
+# (Secret name: affine-config) — it holds the OIDC clientSecret. Carries
+# server.externalUrl/https/host, auth.allowSignup:false, indexer.enabled:false and the
+# oauth.providers.oidc block. See the config/auth notes in the header.
 # ---------------------------------------------------------------------------
 # Postgres (pgvector/pgvector:pg16 — AFFiNE requires the pgvector extension)
 # ---------------------------------------------------------------------------
