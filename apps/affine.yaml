@@ -177,6 +177,12 @@ kind: Deployment
 metadata:
   name: affine
   namespace: default
+  annotations:
+    # config.json is a subPath mount, so it NEVER updates in place — without this
+    # the pod keeps serving the old config after Flux applies a changed secret.
+    # Reloader (infra/reloader.yaml) rolls this Deployment when affine-config or
+    # affine-secrets changes.
+    reloader.stakater.com/auto: "true"
 spec:
   replicas: 1
   strategy: { type: Recreate }            # RWO storage/config PVCs, single writer
