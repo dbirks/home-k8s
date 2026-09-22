@@ -59,6 +59,25 @@ kubectl exec -n default "$POD" -- sh -c \
 kubectl cp "default/$POD:/tmp/frame.png" /tmp/frame.png   # then open/Read it
 ```
 
+For a NAME on a title card (episodes of old shows show their title after the intro), sample many frames into ONE montage image and Read it once — far cheaper than many single frames:
+```bash
+# 8 frames across 8s..64s, tiled 4x2 (widen window / raise density if the card is missed)
+kubectl exec -n default "$POD" -- sh -c \
+  '/usr/lib/jellyfin-ffmpeg/ffmpeg -y -ss 8 -t 64 -i "/media/.../file.mkv" \
+   -vf "fps=1/8,scale=360:-1,tile=4x2" -frames:v 1 /tmp/m.png'
+```
+If the card is not in the window, resample wider/denser (e.g. `-ss 30 -t 85 -vf "fps=1/5,...,tile=4x4"`).
+
+## TV series across many discs (episode discs + bonus discs)
+
+Real example: Davey and Goliath box sets. Series lives at `/media/shows/Davey and Goliath/` in the existing `Shows` (tvshows) library.
+
+- **Pipeline shape:** keep the single optical drive ripping continuously (rip each title as its own background job, chain the next on completion) while curation (title-card read + naming) runs in parallel on already-staged files. Stage rips to a NON-library incoming dir like `/media/_incoming/<show>/tNN.mkv` so half-finished files never appear mid-scan; move into `Season NN/` only once named. Notify the user per finished rip.
+- **Naming:** `Davey and Goliath S01E02 - Stranded on an Island.mkv` under `Season 01/`. Jellyfin parses SxxEyy for structure; the human title is for you/the user.
+- **Real seasons vs disc order:** discs rarely equal broadcast seasons and often jump around. Look up true season/episode from TheTVDB (`https://thetvdb.com/series/<slug>/allseasons/official`) — Jellyfin's default TV metadata source, so matching its numbering makes artwork/synopsis line up. Read the title card for the NAME, then map name -> real SxxEyy. Do collision-safe renames when re-filing (move an episode out of a slot before moving another into it).
+- **Specials / bonus features:** real specials (e.g. "Halloween Who-Dun-It") go in `Season 00/` as `S00Exx` using TheTVDB's special number. Making-of docs / read-alongs that are not TVDB episodes still go in `Season 00` with descriptive names (numbers approximate). Menu-only "bonus features" (trivia games, clickable episode guides, photo galleries) are not video titles and cannot be ripped — skip them.
+- **Sanity-check the disc vs its sleeve:** `lsdvd` shows the real titles. If the case lists six episodes but `lsdvd` shows two, the disc is a subset / mislabeled / damaged — tell the user, do not fabricate the missing ones. Episodes run ~14-15 min; a lone ~29-30 min title is usually a half-hour special (or two episodes joined — check `lsdvd -c -t N` for chapter splits).
+
 ## Gotchas
 
 - Do NOT name a bash variable `UID` — it is readonly and the assignment silently fails, breaking any query that uses it. Use `AUID` or similar.
