@@ -90,6 +90,22 @@ Some discs expose no per-episode titles — just one ~90-min title (often duplic
    ```
    Episodes are sequential on the disc, so number them in chapter-group order (Disc 1 = E01.. ; confirm the disc's volume/number with the user).
 
+### No title cards? Identify by PLOT (budget / public-domain prints)
+
+Cheap "Volume" DVD prints (e.g. an Andy Griffith Show budget set) often strip the on-screen episode title entirely — the show goes straight from cast credits into the story. Don't guess from memory. Instead:
+1. Sample a spread of mid-episode stills into one montage: `-ss 120 -t 660 -vf "fps=1/60,scale=340:-1,tile=4x3"` (≈11 frames across minutes 2-13) and Read it.
+2. Pull the distinctive plot beats (a singing farmer in overalls; a kid on a bike knocking over groceries; a mountain wedding) and WebSearch them against the episode guide / IMDb / a fan wiki (Mayberry wiki etc.). Confirm on MULTIPLE independent details before filing.
+3. If two episodes are plausible (e.g. two Darling-family episodes), sample a second window at the climax (`-ss 960 -t 420 ...`) to find the decider (a bride-in-veil gag ⇒ "Mountain Wedding"; a soldier/bus arrival ⇒ "The Darlings Are Coming"). Never file an episode you can't corroborate — hold it in an `_unsorted/` folder and ask the user.
+Note: there is no image-reverse-search tool here; text search on described plot points against a known episode list is the reliable substitute, and it works well for well-documented shows.
+
+### Cover art missing for a whole library? Internet providers are probably OFF
+
+Libraries created via `POST /Library/VirtualFolders` default to `EnableInternetProviders: false` with empty `TypeOptions`, so Jellyfin NEVER fetches posters/metadata — every item stays art-less. Fix (non-destructive, API only):
+1. `GET /Library/VirtualFolders` and check `LibraryOptions.EnableInternetProviders` on the movie/TV libraries.
+2. Enable providers + configure fetchers via `POST /Library/VirtualFolders/LibraryOptions` (set `EnableInternetProviders: true` and populate `TypeOptions` with MetadataFetchers/ImageFetchers). **Only TheMovieDb + OMDb are installed on this instance — the TheTVDB plugin is NOT** — so use TheMovieDb for both movies AND TV (it serves TV fine).
+3. `POST /Items/{id}/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=FullRefresh&replaceAllMetadata=false&replaceAllImages=false` per series/movie (or a library `POST /Library/Refresh`), then verify each item now returns a `PrimaryImageTag`.
+Caveat: episode NUMBERING is then matched by TMDb; if you named files with TheTVDB numbers they usually agree, but can differ for some shows — a per-episode Identify fixes any stragglers. When creating a NEW movie/TV library, set `EnableInternetProviders: true` up front to avoid this.
+
 ### Preserve ALL audio + subtitles (anime, or any multi-track disc)
 
 Use `--all-audio -E copy --audio-fallback av_aac --all-subtitles`. `-E copy` PASSES THROUGH the original audio codecs LOSSLESSLY (keeps the Japanese AC3 alongside the English dub, and keeps 5.1 on movies instead of downmixing) — strongly preferred over re-encoding to AAC when the disc has a track worth keeping. DVD subs are image-based (`dvd_subtitle`/VOBSUB) and pass through into MKV with their language tags. Verify afterwards:
