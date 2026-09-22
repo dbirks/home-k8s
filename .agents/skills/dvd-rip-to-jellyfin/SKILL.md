@@ -68,6 +68,41 @@ kubectl exec -n default "$POD" -- sh -c \
 ```
 If the card is not in the window, resample wider/denser (e.g. `-ss 30 -t 85 -vf "fps=1/5,...,tile=4x4"`).
 
+### Identify EVERY title straight off the disc BEFORE ripping (fastest triage)
+
+Workstation `ffmpeg` reads a DVD title directly via the `dvdvideo` demuxer — no rip needed. Use this to figure out what's on an unknown multi-title disc (which title is which interview/episode) in ~1 min each, so you only rip what you actually want. Read from the START of each title (the `dvdvideo` demuxer does not seek well with `-ss` before `-i`; instead grab a window from 0 and let the montage span it):
+```bash
+# tile the first ~110s of title N at 1 frame / 4s -> catches intro logo + the lower-third name plate
+sudo timeout 260 ffmpeg -y -f dvdvideo -title <N> -i /dev/sr0 -t 110 \
+  -vf "fps=1/4,scale=380:-1,tile=5x5" -frames:v 1 -update 1 /tmp/tN.png
+```
+`-update 1` silences the "image sequence pattern" warning for a single output image. Documentary interview discs (e.g. the *Puritan: All of Life to the Glory of God* collector's-edition bonus discs) stamp a **lower-third name plate** ~20-60s in — the montage almost always catches it, and burned-in question captions ("Dr. MacArthur, who is your favorite Puritan?") confirm the subject. Read the on-screen name/credential; WebSearch only if a name is ambiguous. Then rip the wanted titles as whole titles (single chapter each) with the standard `-E copy` command.
+
+## Documentary / box-set organization in a Jellyfin *Shows* library
+
+A multi-part documentary (main film + companion teaching series + bonus interviews) maps cleanly onto one `Shows` series with numbered season folders. Jellyfin ONLY treats folders literally named `Season N` (or `Season NN`) as seasons — folders like `Part One` / `Part Three` are NOT parsed as seasons and show up as loose junk. Example end state that works:
+```
+Puritan/
+  Season 0 - The Documentary/         <- the main feature film
+  Season 1 - Pastors & Influential Figures/
+  Season 2 - Puritan Teaching/
+  Season 3 - Puritan Legacy/
+  Season 4 - Extended Interviews/      <- collector's-edition bonus discs, one file per interviewee
+```
+Bonus-disc interviews go in their own `Season N - Extended Interviews`, one `Interviewee Name.mkv` per title (no forced SxxEyy needed — a set of named files sorts fine, and these won't match an online episode list anyway).
+
+### De-duplicate a messy library SAFELY (verify byte-for-byte before deleting)
+
+Imported libraries sometimes carry the same content twice under parallel naming schemes (a `Part …` tree AND a `Season …` tree; a film at both top level and in `Season 0/`). Before deleting a suspected duplicate, PROVE it is identical — compare name+size listings, never delete on a hunch. The pod shell is `dash` (no `<()` process substitution), so write listings to temp files and `diff`:
+```bash
+kubectl exec -n default "$POD" -- sh -c '
+listing(){ ( cd "$1" && for f in *; do [ -f "$f" ] && printf "%s\t%s\n" "$(stat -c%s -- "$f")" "$f"; done | sort ); }
+listing "/media/shows/Puritan/Part One - ..." > /tmp/a.txt
+listing "/media/shows/Puritan/Season 1 - ..." > /tmp/b.txt
+diff -q /tmp/a.txt /tmp/b.txt && echo IDENTICAL || diff /tmp/a.txt /tmp/b.txt'
+```
+Only once every pair reports IDENTICAL, `rm -rf` the redundant tree and `rm -f` the stray top-level dup, `mv` `Season 0` -> `Season 0 - The Documentary`, then `POST /Library/Refresh`. (Real case: this took the Puritan folder from 31G to 16G.) Deleting library files is destructive — get the user's OK on the target layout first.
+
 ## TV series across many discs (episode discs + bonus discs)
 
 Real example: Davey and Goliath box sets. Series lives at `/media/shows/Davey and Goliath/` in the existing `Shows` (tvshows) library.
