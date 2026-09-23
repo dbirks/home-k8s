@@ -54,7 +54,7 @@ metadata:
   labels:
     app.kubernetes.io/name: ninfer
 spec:
-  replicas: 1                     # KEDA ScaledObject below owns this (idles to 0); 1 = initial
+  replicas: 1                     # ALWAYS ON: the one model this box keeps up (serves the LLM Collective). No KEDA.
   selector:
     matchLabels:
       app.kubernetes.io/name: ninfer
@@ -187,50 +187,9 @@ spec:
     name: ninfer-backend
     # same namespace (default) -> no ReferenceGrant needed
 ---
-# ---- Scale-to-zero for the NInfer Deployment. Wake trigger = the AIGatewayRoute per-rule ext_proc
-# on the llm-ai-gw Envoy for THIS model's rule. That ext_proc runs on the gateway proxy for every
-# matching request BEFORE the backend is contacted, so its counter increments even at 0 engine
-# replicas — the reliable scale-FROM-zero signal the v1 plain-Service cluster metric lacked.
-#
-# METRIC (verified live in Prometheus): the model-router rule ext_proc cluster does NOT expose
-# upstream_rq_total (unlike the EPP/endpointpicker clusters the other models key on); the usable
-# per-request counter is `..._streams_started` (one ext_proc stream per request; rule_0/qwen3.8-27b
-# read 15742 and climbs under traffic). The cluster name — and thus the metric name — bakes the RULE
-# INDEX. Appending the ninfer rule AFTER laguna (currently the last model rule, index 6) makes ninfer
-# rule index 6, so the metric is:
-#   envoy_cluster_cluster_httproute_default_llm_model_router_rule_6ext_proc_streams_started
-#   (label envoy_cluster_name="httproute/default/llm-model-router/rule/6", job="envoy-gw")
-# job="envoy-gw" = the dedicated 15s Envoy scrape (infra/prometheus.yaml); the 60s annotation scrape
-# (job="kubernetes-pods") is too slow for scale-from-zero — use envoy-gw, same as the other models.
-#
-# !! VERIFY THE RULE INDEX AFTER APPLYING THE ROUTE EDIT !!  The index depends on the ninfer rule's
-# position in the generated HTTPRoute. Confirm which rule/N carries ninfer traffic, then fix the "7"
-# below if it differs:
-#   POD=$(kubectl -n envoy-gateway-system get po -l gateway.envoyproxy.io/owning-gateway-name=llm-ai-gw -o name | head -1)
-#   kubectl -n envoy-gateway-system exec $POD -c envoy -- curl -s localhost:19001/stats/prometheus \
-#     | grep llm_model_router_rule_ | grep streams_started
-# (or in Prometheus: envoy_cluster_cluster_httproute_default_llm_model_router_rule_6ext_proc_streams_started)
-apiVersion: keda.sh/v1alpha1
-kind: ScaledObject
-metadata:
-  name: ninfer
-  namespace: default
-spec:
-  scaleTargetRef:
-    name: ninfer
-  minReplicaCount: 0
-  maxReplicaCount: 1
-  pollingInterval: 15
-  cooldownPeriod: 7200         # keep ninfer warm 2h after last request (coworker-facing; stays up through active use, self-releases the GPU after 2h idle)
-  triggers:
-    - type: prometheus
-      name: ninfer-aigw-extproc-rate
-      metadata:
-        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-        # rule index 6 = ninfer appended after laguna (index 6). VERIFY per the note above.
-        query: 'sum(rate(envoy_cluster_cluster_httproute_default_llm_model_router_rule_6ext_proc_streams_started{job="envoy-gw"}[1m]))'
-        threshold: "5"
-        activationThreshold: "0.001"   # any rate > 0.001 (one request in [1m] ~= 0.017) wakes 0->1
+# ---- (Scale-to-zero ScaledObject removed: ninfer is now always on — it backs the LLM Collective
+# contributor, which must be able to serve at a moment's notice. HAMi caps it at 40GB VRAM so the rest
+# of the card stays free for other workloads.)
 # =============================================================================================
 # DRAFT — RULE TO APPEND TO THE LIVE apps/llm-ai-gateway.yaml (do NOT apply from here; this is a
 # copy-paste snippet). Add it as the LAST rule under `spec.rules` of the `llm-model-router`

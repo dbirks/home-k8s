@@ -2,7 +2,7 @@
 #
 # NInfer uses its OWN single-file `.ninfer` artifact, NOT the vLLM NVFP4 safetensors
 # in qwen38-quant-workspace. This PVC + one-off download Job fetch the prebuilt
-# artifact from Hugging Face with SHA-256 verification. The Job completes once and
+# artifact from Hugging Face (pinned revision) with SHA-256 verification. The Job completes once and
 # stays Complete (ttlSecondsAfterFinished cleans the pod). CPU-only, holds no GPU.
 ---
 apiVersion: v1
@@ -36,14 +36,23 @@ spec:
           args:
             - |
               set -euo pipefail
-              pip install -q -U "huggingface_hub[cli]"
-              hf download neroued/Qwen3.8-27B-nvfp4-NInfer \
-                qwen3_8_27b_nvfp4.ninfer \
-                --local-dir /models
+              # Pinned to the DFlash2 artifact (HF commit 11dbbbb, 2026-09-07) that ghcr.io/dbirks/ninfer:20260908
+              # reads. Unpinned `main` moved to a v3 artifact on 2026-09-15 and clobbered the live file in place
+              # ("artifact magic is not NInfer v2"). Download to a temp dir and only rename into place after the
+              # checksum passes; skip entirely once verified (Flux re-creates this Job after the TTL).
+              REV=11dbbbbbc33db198afe2f02c9232c771ff7031be
+              SHA=552c374c685dce302603b95fbe940fb04243c0cd44c083efc644ad3d980d462c
+              F=qwen3_8_27b_nvfp4.ninfer
               cd /models
-              printf '%s  %s\n' \
-                'bb3360522a06e136e0367f5703414d26272b7285c8a6ab6194135c17dbd81b32' \
-                'qwen3_8_27b_nvfp4.ninfer' | sha256sum --check
+              if [ -f ".verified-$SHA" ] && [ -f "$F" ]; then echo "already verified $SHA"; exit 0; fi
+              if [ -f "$F" ] && printf '%s  %s\n' "$SHA" "$F" | sha256sum --check; then touch ".verified-$SHA"; exit 0; fi
+              pip install -q -U "huggingface_hub[cli]"
+              rm -rf /models/.dl && mkdir -p /models/.dl
+              hf download neroued/Qwen3.8-27B-nvfp4-NInfer "$F" --revision "$REV" --local-dir /models/.dl
+              (cd /models/.dl && printf '%s  %s\n' "$SHA" "$F" | sha256sum --check)
+              mv -f "/models/.dl/$F" "/models/$F"
+              rm -rf /models/.dl /models/.verified-*
+              touch "/models/.verified-$SHA"
               ls -l /models
           volumeMounts:
             - { name: model, mountPath: /models }
