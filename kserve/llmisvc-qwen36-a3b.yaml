@@ -12,23 +12,9 @@ spec:
   model:
     uri: pvc://catalog-models
     name: qwen3.6-35b-a3b
-  scaling:
-    minReplicas: 1
-    maxReplicas: 1
-    keda:
-      idleReplicaCount: 0
-      cooldownPeriod: 600          # 10-min warm stopgap (home-k8s #104)
-      pollingInterval: 15
-      triggers:
-        # <POOL> = sanitized LLMInferenceService name qwen36-a3b-llm -> qwen36_a3b_llm.
-        - type: prometheus
-          name: qwen36-a3b-epp-request-rate
-          metadata:
-            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-            # Wake scoped to the 15s envoy-gw scrape so [1m] holds ~4 samples (snappier wake). See llmisvc-qwen38.yaml.
-            query: 'sum(rate(envoy_cluster_clusters_endpointpicker_qwen36_a3b_llm_inference_pool_default_ext_proc_upstream_rq_total{job="envoy-gw"}[1m]))'
-            threshold: "5"
-            activationThreshold: "0.001"
+  # PARKED (single-GPU budget): ninfer qwen3.8-27b is the one always-on model; this one is held at 0
+  # so it can never wake and take the card. To re-enable, restore the KEDA `scaling` block from git history.
+  replicas: 0
   template:
     runtimeClassName: nvidia
     securityContext:

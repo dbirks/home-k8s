@@ -16,7 +16,7 @@ metadata:
   name: flashnext
   namespace: default
 spec:
-  replicas: 1
+  replicas: 0                     # PARKED (single-GPU budget; ninfer is the always-on model)
   strategy: { type: Recreate }
   selector:
     matchLabels: { app: flashnext }
@@ -150,6 +150,8 @@ kind: ScaledObject
 metadata:
   name: flashnext
   namespace: default
+  annotations:
+    autoscaling.keda.sh/paused-replicas: "0"   # PARKED: never wake (needs ~98GB, would starve ninfer)
 spec:
   scaleTargetRef:
     name: flashnext
