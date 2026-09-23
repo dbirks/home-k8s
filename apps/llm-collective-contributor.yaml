@@ -25,7 +25,7 @@ data:
   contributor.yaml: |
     version: 1
     machine:
-      name: home-ninfer
+      name: home-k8s
     collective:
       gateway: https://llm-collective.e-gineering.com
     metrics:
@@ -33,7 +33,7 @@ data:
     backends:
       - name: ninfer
         url: http://ninfer.default.svc.cluster.local:8000
-        protocols: [openai]
+        protocols: [openai, anthropic]   # ninfer serves /v1/messages natively (verified)
         concurrency: 8
         models:
           - alias: qwen3-8-27b
