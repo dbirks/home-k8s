@@ -127,6 +127,19 @@ Some discs expose no per-episode titles — just one ~90-min title (often duplic
      --all-audio -E copy --audio-fallback av_aac --all-subtitles --markers
    ```
    Episodes are sequential on the disc, so number them in chapter-group order (Disc 1 = E01.. ; confirm the disc's volume/number with the user).
+3. **Read each group's title card before ripping** (confirms the numbering instead of assuming it). The `dvdvideo` demuxer can start at a chapter, so grab the first minute of each group's first story chapter (after the OP) and stack the strips into one image:
+   ```bash
+   for t in 1 2 3; do for c in 2 6 10; do
+     sudo ffmpeg -loglevel error -f dvdvideo -title $t -chapter_start $c -chapter_end $c -i /dev/sr0 \
+       -t 60 -vf "fps=1/5,scale=240:-1,tile=6x2" -frames:v 1 -update 1 -y t${t}c${c}.png
+   done; done
+   ffmpeg -i t1c2.png -i t1c6.png ... -filter_complex vstack=inputs=9 all.png
+   ```
+   Example: Pokémon Disc 1 = 3 titles x 3 episodes (chapters 1-4, 5-8, 9-end; OP 1:01 + 2 halves + ED 1:03). The cards ("Pokémon Emergency!", "Clefairy and the Moon Stone"...) matched TMDb Indigo League E01-E09 in disc order. Put any short trailing chapter (preview, next-episode tease) on the last group (`-c 9-13`).
+
+### Two-parter stored as ONE title: name it as a multi-episode file
+
+If a two-part episode is one continuous title with no clean chapter split between the parts, do not guess a cut. Name it `Show - S04E21-E22 - Title.mkv`. Jellyfin reads the range (`IndexNumber` 21, `IndexNumberEnd` 22) and shows both TMDb titles joined ("I'll Be Waving as You Drive Away (1) / ... (2)"), so both slots count as present.
 
 ### No title cards? Identify by PLOT (budget / public-domain prints)
 
