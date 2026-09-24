@@ -84,8 +84,13 @@ spec:
       author:
         name: fluxcdbot
         email: fluxcdbot@users.noreply.github.com
+      # .Updated was removed from Flux's template data; .Changed replaces it.
       messageTemplate: |
-        chore(images): {{range .Updated.Images}}{{println .}}{{end}}
+        chore(images): automated image update
+
+        {{ range .Changed.Changes -}}
+        - {{ .OldValue }} -> {{ .NewValue }}
+        {{ end -}}
     push:
       branch: main
   update:
