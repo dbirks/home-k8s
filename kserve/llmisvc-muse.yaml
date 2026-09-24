@@ -19,9 +19,10 @@ spec:
   # are mutually exclusive; min=max=1 with idleReplicaCount:0 drops the engine to 0 after cooldownPeriod
   # of no traffic and the prometheus trigger wakes it 0->1 on the first request. Cold-load ~3-4min, so
   # the first request after idle needs client retries (they keep the ext-proc rate up so KEDA holds it).
-  # PARKED (single-GPU budget): ninfer qwen3.8-27b is the one always-on model; this one is held at 0
-  # so it can never wake and take the card. To re-enable, restore the KEDA `scaling` block from git history.
-  replicas: 0
+  # CO-RESIDENT with ninfer (2026-09-24): ninfer qwen3.8-27b (HAMi 40k) + Muse (44k) = 84k < 96GB card.
+  # Host RAM (46GB, no swap) is the tight budget, so Muse runs always-on (replicas: 1), no KEDA wake.
+  # To re-enable scale-to-zero, restore the KEDA `scaling` block from git history.
+  replicas: 1
   template:
     runtimeClassName: nvidia
     securityContext:
