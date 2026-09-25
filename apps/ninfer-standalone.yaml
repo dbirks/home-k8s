@@ -55,6 +55,10 @@ metadata:
     app.kubernetes.io/name: ninfer
 spec:
   replicas: 1                     # ALWAYS ON: the one model this box keeps up (serves the LLM Collective). No KEDA.
+  # Recreate, not RollingUpdate: a surge pod would ask HAMi for a 2nd 50GB slice that can't fit beside
+  # Muse, so the rollout would hang Pending. Recreate = ~15s gap while weights reload (4s) + graphs.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: ninfer
@@ -91,6 +95,18 @@ spec:
             - "262144"                                  # model native max (plain RoPE); KV auto ~481k tok
             - "--kv-capacity"
             - "auto"
+            # CONTEXT CACHE: keep it all in VRAM (2026-09-24). This box is RAM-poor (46GB, no swap) and
+            # VRAM-rich, so the default pinned-host overflow tier (Host KV 8 GiB + 8 Host State slots
+            # ~1.46 GiB = ~9.5GB of unreclaimable pinned host RAM) is the wrong trade. Zero it, and
+            # instead buy more on-card room: bigger HAMi slice -> bigger `auto` KV pool, and 16 extra
+            # Device checkpoint slots (~187MB VRAM each) so retained prefixes keep their DeltaNet state
+            # on-card. Evicted-from-VRAM continuations now recompute instead of restoring from host.
+            - "--host-kv-mib"
+            - "0"
+            - "--host-state-slots"
+            - "0"
+            - "--device-state-slots"
+            - "16"
             - "--max-concurrency"
             - "8"                        # HARD engine cap: ninfer-serve rejects >8 ("--max-concurrency must be in [1,8]"). ~550 tok/s @8 is the ceiling.
             - "--max-pending-requests"
@@ -117,9 +133,9 @@ spec:
           ports:
             - containerPort: 8000
           resources:
-            # HAMi hard VRAM cap 40000 MB (webhook auto-injects schedulerName hami-scheduler). host
+            # HAMi hard VRAM cap 50000 MB (card 97887; + Muse 44000 = 94000, ~3.9GB slack) (webhook auto-injects schedulerName hami-scheduler). host
             # memory request kept low so it fits the 46GB host-RAM co-residence budget when awake.
-            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "40000", cpu: "8", memory: 24Gi }
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "50000", cpu: "8", memory: 24Gi }
             requests: { cpu: "4", memory: 8Gi }
           volumeMounts:
             - { name: model, mountPath: /mnt/models }
