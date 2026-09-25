@@ -59,6 +59,7 @@ spec:
   # Muse, so the rollout would hang Pending. Recreate = ~15s gap while weights reload (4s) + graphs.
   strategy:
     type: Recreate
+    rollingUpdate: null           # SSA keeps the old live rollingUpdate block unless nulled -> "Forbidden with Recreate"
   selector:
     matchLabels:
       app.kubernetes.io/name: ninfer
