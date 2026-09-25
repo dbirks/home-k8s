@@ -55,11 +55,12 @@ metadata:
     app.kubernetes.io/name: ninfer
 spec:
   replicas: 1                     # ALWAYS ON: the one model this box keeps up (serves the LLM Collective). No KEDA.
-  # Recreate, not RollingUpdate: a surge pod would ask HAMi for a 2nd 50GB slice that can't fit beside
-  # Muse, so the rollout would hang Pending. Recreate = ~15s gap while weights reload (4s) + graphs.
+  # NO SURGE: a surge pod would ask HAMi for a 2nd 50GB slice that can't fit beside Muse, so the
+  # rollout would hang Pending. maxSurge 0 = stop old first (~15s gap: weights reload 4s + graphs).
+  # (Not `type: Recreate`: Flux SSA keeps the live rollingUpdate block and the API rejects the combo.)
   strategy:
-    type: Recreate
-    rollingUpdate: null           # SSA keeps the old live rollingUpdate block unless nulled -> "Forbidden with Recreate"
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
   selector:
     matchLabels:
       app.kubernetes.io/name: ninfer
