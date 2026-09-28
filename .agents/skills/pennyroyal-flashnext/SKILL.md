@@ -29,6 +29,11 @@ Manifests: `apps/pennyroyal-*.yaml(.hold)`, `apps/agentic-prefix-bench.yaml.hold
 - **NIXL cleanup is whole-filesystem** (85%/80% watermarks in `nixl-posix-frspec.toml`, overridable via
   `NIXL_CONFIG`) plus the soft `SGLANG_HICACHE_NIXL_MAX_CACHE_GB` budget. On shared local-path that means
   it trims itself when the node disk passes 85%, before kubelet's 90% eviction.
+- **No prompt data on disk (our ZDR requirement)**: the recipe hard-codes `--hicache-storage-backend
+  nixl` (restart-persistent prefix cache on /nixl) with no env switch. The Deployment runs a /tmp copy of
+  `configs/pennyroyal` with the three `--hicache-storage*` flags sed-stripped and grep-verified (fails
+  closed). In-process GPU radix + host-RAM HiCache reuse still work; restart persistence is given up.
+  /nixl is then a 64Mi RAM emptyDir (only namespace-identity.json lands there).
 - **Host RAM**: upstream default = 47.68GiB pinned PLE + 32GB pinned HiCache, impossible at 46GB. Use
   `PENNY_PLE_BACKEND=nvme` and `PENNY_HICACHE_SIZE_GB` in single digits.
 - **Driver**: image is CUDA 13.3, upstream qualified on driver 610.57.04; this node is 580.167.08 (CUDA
