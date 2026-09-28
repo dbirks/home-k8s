@@ -47,6 +47,14 @@ Manifests: `apps/pennyroyal-*.yaml(.hold)`, `apps/agentic-prefix-bench.yaml.hold
   partial layers and it converges (took 4 attempts).
 - Whole card: the recipe uses `--mem-fraction-static 0.981`; scale ninfer and muse to 0 first.
 
+## Measured on this node (2026-09-28, v2.5.3, A0: NVMe PLE, HiCache 8GB, NIXL off)
+- Cold boot to ready ~7 min (weights 175s). KV 824,384 fp8 tokens; HiCache host pool 6.66GB + 1.4GB.
+- Host RAM: node MemAvailable dips to ~8.3GB during weight load (pod WS 17.6GB peak), settles ~13.7GB.
+  Do not co-schedule anything memory-heavy during a Pennyroyal boot.
+- Pod memlock is 8192 KiB (containerd default); fine with NIXL off, revisit if io_uring/NIXL returns.
+- Agentic bench (70K prefix, 6 turns): cold TTFT 19.0s, warm TTFT 0.43s median, decode 165-217 tok/s.
+- Staging: rsync HDD to NVMe ~114MB/s (19 min for 137GB); prepare_ple_nvme.py took 2.5 min (48GB).
+
 ## Order of operations
 1. RadixArk download to HDD staging (`flashnext-radixark-download-*`), then retire that Job to `.hold`.
 2. Free NVMe space (user approves the list), unhold `pennyroyal-pvcs`.
