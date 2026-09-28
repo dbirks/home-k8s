@@ -1,0 +1,17 @@
+# Durable, standalone owner for the RadixArk/Qwen3.8-Flash-Next-NVFP4 checkpoint (Pennyroyal's qualified
+# reference artifact, issue #135). STAGING on the HDD (local-path-hdd, 2.1TB free) because NVMe /var had
+# only ~202GB free (80%): landing 135GB there would cross kubelet's 10%-free eviction threshold
+# (DiskPressure incident). Once NVMe space is freed, copy to an NVMe PVC for serving; the prepared
+# 47.68GiB NVMe-PLE overlay MUST live on NVMe regardless.
+# Standalone file (incident lesson): retiring the download Job manifest must never prune the weights.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flashnext-radixark-hdd
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 200Gi

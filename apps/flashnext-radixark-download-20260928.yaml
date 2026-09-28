@@ -1,0 +1,49 @@
+# One-off (issue #135): download the COMPLETE RadixArk/Qwen3.8-Flash-Next-NVFP4 checkpoint (419 files,
+# 135.3GB incl. the FP8 PLE shards) for the Pennyroyal v2.5.2 evaluation, pinned to HF revision
+# 7b719225242aacd3dbd3f9407468c2ee9a9d2594. Pure network/disk, NO GPU -> does not disturb serving.
+# Resumable (hf download skips complete files). HF_HUB_DISABLE_XET=1 (Xet stalls, see #112).
+# Tiny memory REQUEST on purpose: node memory requests are ~94% booked (ninfer + muse), a 3Gi request
+# sat Pending for 27h. Retire this manifest to .hold once it completes (TTL + Flux would re-create it).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flashnext-radixark-download-20260928
+  namespace: default
+spec:
+  backoffLimit: 20
+  activeDeadlineSeconds: 172800
+  template:
+    metadata:
+      labels: { app: flashnext-radixark-download }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              pip install -q --no-cache-dir "huggingface_hub[cli]"
+              export HF_HUB_DISABLE_XET=1
+              DST=/data/RadixArk-Qwen3.8-Flash-Next-NVFP4
+              REV=7b719225242aacd3dbd3f9407468c2ee9a9d2594
+              echo "[$(date)] downloading RadixArk@$REV -> $DST"
+              hf download RadixArk/Qwen3.8-Flash-Next-NVFP4 --revision "$REV" \
+                --local-dir "$DST" --max-workers 8
+              echo "$REV" > "$DST/.hf-revision"
+              echo "[$(date)] done."
+              du -sh "$DST"
+              echo "files: $(find "$DST" -type f -not -path '*/.cache/*' | wc -l) (expect 419 + .hf-revision)"
+              ls "$DST"/*.safetensors | wc -l
+          env:
+            - { name: HF_HOME, value: /data/.hfhome }
+            - { name: HF_TOKEN, valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } } }
+          volumeMounts:
+            - { name: models, mountPath: /data }
+          resources:
+            requests: { cpu: "1", memory: 512Mi }
+            limits: { cpu: "4", memory: 4Gi }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: flashnext-radixark-hdd } }
