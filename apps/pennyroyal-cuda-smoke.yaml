@@ -1,0 +1,64 @@
+# De-risk probe (issue #135), run BEFORE the full-card Pennyroyal boot: the image is built with CUDA 13.3
+# (upstream qualified on driver 610.57.04) but this node runs driver 580.167.08 (CUDA 13.1 max). CUDA
+# minor-version compatibility should cover prebuilt sm_120 kernels; newer-PTX JIT would not. This checks
+# on a tiny HAMi slice that fits beside ninfer + muse (card 97887MB, 94000 allocated): torch sees the GPU,
+# a matmul runs, and SGLang's kernel stacks import. Also runs the image's own CPU-only `--check`.
+# A pass does NOT prove the full recipe works (FlashInfer/JIT paths run only at real load); it does catch
+# an outright driver/runtime mismatch in ~2 min instead of ~20.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pennyroyal-cuda-smoke
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels: { app: pennyroyal-cuda-smoke }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: smoke
+          image: ghcr.io/jpezzulli/sglang-rtxpro6000@sha256:81d4d3d19b21e30b895f57e3628a8dd82c02a52c17e6234f5f3ea7836fd31fb3
+          args:
+            - exec
+            - /bin/bash
+            - -c
+            - |
+              set -uo pipefail
+              echo "== image --check (CPU only)"; /usr/local/bin/pennyroyal --check; echo "check rc=$?"
+              echo "== driver"; nvidia-smi --query-gpu=driver_version,memory.total --format=csv
+              .venv/bin/python - <<'PY'
+              import torch, time
+              print("torch", torch.__version__, "cuda", torch.version.cuda, "avail", torch.cuda.is_available())
+              print("device", torch.cuda.get_device_name(0), "cap", torch.cuda.get_device_capability(0))
+              a = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
+              t = time.time(); b = (a @ a).float().sum().item(); torch.cuda.synchronize()
+              print("matmul ok", round(time.time() - t, 3), "s")
+              for m in ("sgl_kernel", "flashinfer", "triton"):
+                  try:
+                      mod = __import__(m); print(m, "import ok", getattr(mod, "__version__", ""))
+                  except Exception as e:
+                      print(m, "IMPORT FAILED:", repr(e))
+              import triton, triton.language as tl
+              @triton.jit
+              def add(x, y, o, n, B: tl.constexpr):
+                  i = tl.program_id(0) * B + tl.arange(0, B); m = i < n
+                  tl.store(o + i, tl.load(x + i, mask=m) + tl.load(y + i, mask=m), mask=m)
+              x = torch.ones(1024, device="cuda"); o = torch.empty_like(x)
+              add[(1,)](x, x, o, 1024, B=1024); torch.cuda.synchronize()
+              print("triton JIT kernel ok", o[0].item())
+              PY
+          env:
+            - { name: CACHE_BASE, value: /tmp/cache }
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "4", memory: 6Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 3000 }
