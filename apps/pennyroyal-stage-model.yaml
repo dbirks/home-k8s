@@ -1,4 +1,4 @@
-# One-off (issue #135): stage the RadixArk checkpoint onto NVMe and build Pennyroyal's NVMe-PLE overlay.
+# One-off (issue #135, RUN 2026-09-28): stage the RadixArk checkpoint onto NVMe and build Pennyroyal's NVMe-PLE overlay.
 # NO GPU. Unhold only after (a) the RadixArk download Job finished on the HDD PVC and (b) the NVMe cleanup
 # freed room (this lands ~183GB on NVMe: 135.3GB source + 47.68GiB overlay). Retire back to .hold when done.
 #
