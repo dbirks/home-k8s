@@ -36,8 +36,15 @@ Manifests: `apps/pennyroyal-*.yaml(.hold)`, `apps/agentic-prefix-bench.yaml.hold
   /nixl is then a 64Mi RAM emptyDir (only namespace-identity.json lands there).
 - **Host RAM**: upstream default = 47.68GiB pinned PLE + 32GB pinned HiCache, impossible at 46GB. Use
   `PENNY_PLE_BACKEND=nvme` and `PENNY_HICACHE_SIZE_GB` in single digits.
-- **Driver**: image is CUDA 13.3, upstream qualified on driver 610.57.04; this node is 580.167.08 (CUDA
-  13.1). Run `apps/pennyroyal-cuda-smoke.yaml` (3GB HAMi slice, fits beside ninfer+muse) first.
+- **Driver**: toolchain is CUDA 13.3 (upstream qualified on driver 610.57.04) but the torch wheels are
+  cu130, and the smoke Job PASSED on this node's 580.167.08 (2026-09-28): torch/matmul, sgl_kernel,
+  flashinfer, triton imports, and a triton JIT kernel. Real-load nvcc-13.3 JIT is still unproven.
+  Re-run `apps/pennyroyal-cuda-smoke.yaml.hold` after any driver or image bump (rename the Job each run;
+  triton `@jit` needs a real .py file, not a stdin heredoc).
+- **Pre-pull the 9.1GB image on the node.** GHCR's CDN stalls/resets single streams from this network,
+  so the kubelet pull of the 5.4GB + 3.2GB layers times out (a Job can burn its whole deadline in
+  ImagePullBackOff). Loop `talosctl image pull --namespace cri <image@digest>`: containerd resumes the
+  partial layers and it converges (took 4 attempts).
 - Whole card: the recipe uses `--mem-fraction-static 0.981`; scale ninfer and muse to 0 first.
 
 ## Order of operations
