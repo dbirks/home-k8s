@@ -8,7 +8,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: pennyroyal-cuda-smoke-2
+  name: pennyroyal-cuda-smoke-3
   namespace: default
 spec:
   backoffLimit: 0
@@ -31,7 +31,7 @@ spec:
               set -uo pipefail
               echo "== image --check (CPU only)"; /usr/local/bin/pennyroyal --check; echo "check rc=$?"
               echo "== driver"; nvidia-smi --query-gpu=driver_version,memory.total --format=csv
-              .venv/bin/python - <<'PY'
+              cat > /tmp/smoke.py <<'PY'
               import torch, time
               print("torch", torch.__version__, "cuda", torch.version.cuda, "avail", torch.cuda.is_available())
               print("device", torch.cuda.get_device_name(0), "cap", torch.cuda.get_device_capability(0))
@@ -52,6 +52,7 @@ spec:
               add[(1,)](x, x, o, 1024, B=1024); torch.cuda.synchronize()
               print("triton JIT kernel ok", o[0].item())
               PY
+              .venv/bin/python /tmp/smoke.py   # triton @jit needs a real source file, not stdin
           env:
             - { name: CACHE_BASE, value: /tmp/cache }
           securityContext:
