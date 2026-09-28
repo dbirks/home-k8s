@@ -1,0 +1,82 @@
+# One-off (issue #135, RUN 2026-09-28): stage the RadixArk checkpoint onto NVMe and build Pennyroyal's NVMe-PLE overlay.
+# NO GPU. Unhold only after (a) the RadixArk download Job finished on the HDD PVC and (b) the NVMe cleanup
+# freed room (this lands ~183GB on NVMe: 135.3GB source + 47.68GiB overlay). Retire back to .hold when done.
+#
+#  1. copy   (init): rsync HDD staging -> /models/RadixArk-Qwen3.8-Flash-Next-NVFP4 on NVMe, preserving
+#                    mtimes and the .cache/huggingface/download/*.metadata files (without them the server's
+#                    NIXL namespace helper re-hashes all 135GB on EVERY start). Resumable. Verifies the
+#                    tokenizer.json sha256 the Pennyroyal recipe pins, then chowns the tree to uid 1000.
+#  2. prepare:       prepare_ple_nvme.py (pure stdlib, streams 8 MiB chunks, disk-bound) writes the overlay
+#                    to /models/flash-next-ple: ple/layer-N.bin (51,200,245,760 bytes) + ABSOLUTE symlinks
+#                    back into the source + ssd-stream.json (written last). Output must not pre-exist, so the
+#                    step is skipped when ssd-stream.json is already there.
+# The server must mount pennyroyal-models at the SAME path (/models) as here, or its preflight fails.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pennyroyal-stage-model
+  namespace: default
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 43200
+  template:
+    metadata:
+      labels: { app: pennyroyal-stage-model }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      initContainers:
+        - name: copy
+          image: debian:bookworm-slim
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends rsync >/dev/null
+              SRC=/hdd/RadixArk-Qwen3.8-Flash-Next-NVFP4
+              DST=/models/RadixArk-Qwen3.8-Flash-Next-NVFP4
+              [ -f "$SRC/.hf-revision" ] || { echo "download not finished (no $SRC/.hf-revision)"; exit 1; }
+              echo "[$(date)] rsync $SRC -> $DST"
+              rsync -a --info=progress2 --no-inc-recursive "$SRC/" "$DST/"
+              got=$(sha256sum "$DST/tokenizer.json" | cut -d' ' -f1)
+              want=0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+              [ "$got" = "$want" ] || { echo "tokenizer.json sha256 $got != pinned $want"; exit 1; }
+              echo "files: $(find "$DST" -type f -not -path '*/.cache/*' | wc -l) (expect 420 incl .hf-revision)"
+              du -sh "$DST"
+              chown -R 1000:1000 /models
+          resources:
+            requests: { cpu: "1", memory: 256Mi }
+            limits: { cpu: "2", memory: 4Gi }
+          volumeMounts:
+            - { name: hdd, mountPath: /hdd, readOnly: true }
+            - { name: models, mountPath: /models }
+      containers:
+        - name: prepare
+          # Pennyroyal v2.5.3 (recipes + PLE prepare/check unchanged from v2.5.2; fixes the MTP
+          # checkpoint phantom-token bug). Index digest, verified against GHCR 2026-09-28.
+          image: ghcr.io/jpezzulli/sglang-rtxpro6000@sha256:81d4d3d19b21e30b895f57e3628a8dd82c02a52c17e6234f5f3ea7836fd31fb3
+          args:
+            - exec
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              OUT=/models/flash-next-ple
+              if [ -f "$OUT/ssd-stream.json" ]; then echo "overlay already prepared"; ls -la "$OUT"; exit 0; fi
+              echo "[$(date)] preparing NVMe PLE overlay -> $OUT"
+              .venv/bin/python scripts/pennyroyal/prepare_ple_nvme.py \
+                --source /models/RadixArk-Qwen3.8-Flash-Next-NVFP4 --output "$OUT"
+              echo "[$(date)] done"; du -sh "$OUT" "$OUT/ple"
+          securityContext:
+            runAsUser: 1000             # image USER is the NAME "penny"; runAsNonRoot needs a number
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests: { cpu: "1", memory: 512Mi }
+            limits: { cpu: "4", memory: 8Gi }  # page cache is charged to the cgroup but reclaimable
+          volumeMounts:
+            - { name: models, mountPath: /models }
+      volumes:
+        - { name: hdd, persistentVolumeClaim: { claimName: flashnext-radixark-hdd } }
+        - { name: models, persistentVolumeClaim: { claimName: pennyroyal-models } }
