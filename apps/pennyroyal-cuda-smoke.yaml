@@ -8,7 +8,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: pennyroyal-cuda-smoke
+  name: pennyroyal-cuda-smoke-2
   namespace: default
 spec:
   backoffLimit: 0
