@@ -22,7 +22,7 @@ spec:
   # CO-RESIDENT with ninfer (2026-09-24): ninfer qwen3.8-27b (HAMi 40k) + Muse (44k) = 84k < 96GB card.
   # Host RAM (46GB, no swap) is the tight budget, so Muse runs always-on (replicas: 1), no KEDA wake.
   # To re-enable scale-to-zero, restore the KEDA `scaling` block from git history.
-  replicas: 1
+  replicas: 0   # DOWN 2026-09-28: whole card handed to the Pennyroyal Flash-Next canary (#135). Was 1.
   template:
     runtimeClassName: nvidia
     securityContext:

@@ -54,7 +54,7 @@ metadata:
   labels:
     app.kubernetes.io/name: ninfer
 spec:
-  replicas: 1                     # ALWAYS ON: the one model this box keeps up (serves the LLM Collective). No KEDA.
+  replicas: 0                     # DOWN 2026-09-28: whole card handed to the Pennyroyal Flash-Next canary (#135). Was 1 (always-on, LLM Collective).
   # NO SURGE: a surge pod would ask HAMi for a 2nd 50GB slice that can't fit beside Muse, so the
   # rollout would hang Pending. maxSurge 0 = stop old first (~15s gap: weights reload 4s + graphs).
   # (Not `type: Recreate`: Flux SSA keeps the live rollingUpdate block and the API rejects the combo.)
