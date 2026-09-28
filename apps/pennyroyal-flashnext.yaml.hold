@@ -1,0 +1,112 @@
+# Pennyroyal v2.5.3 (SGLang fork, jpezzulli/sglang-rtxpro6000) serving Qwen3.8-Flash-Next NVFP4 with
+# NVMe-backed PLE + HiCache/NIXL persistent prefix reuse (issue #135). A PARALLEL canary beside the
+# existing apps/flashnext-serve.yaml (Primitive/vLLM, the rollback): nothing routes here yet.
+#
+# PRECONDITIONS before unholding (see the PR for the ordered runbook):
+#   - apps/pennyroyal-pvcs.yaml unheld and apps/pennyroyal-stage-model.yaml finished (source + overlay).
+#   - ninfer AND muse scaled to 0: this takes the WHOLE card (recipe --mem-fraction-static 0.981, upstream
+#     measured 95,817/97,887 MiB peak) and ~16Gi of node memory REQUESTS (booked at ~94% today).
+#   - apps/pennyroyal-cuda-smoke.yaml passed (CUDA 13.3 image on driver 580.167.08).
+#
+# HOST RAM (46GB, no swap) is the design constraint. Upstream's default profile pins a 47.68GiB PLE table
+# plus 32GB HiCache and cannot fit. So: PLE on NVMe (32MiB page pool + 2x16MiB staging + reclaimable
+# page cache), HiCache host tier 8GB (pinned) to start, then A/B 4/8/12.
+#
+# Fixed by the upstream recipe (no env override): port 8001, --served-model-name pennyroyal, context
+# 524,288, FP8 KV, NEXTN 3/1/4 + FR-Spec, --reasoning-parser qwen3, --tool-call-parser qwen3_coder,
+# /metrics on the same port, no API key (auth stays at the gateway). Anthropic /v1/messages is native.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pennyroyal-flashnext
+  namespace: default
+  labels: { app: pennyroyal-flashnext }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }        # never two whole-card pods
+  selector:
+    matchLabels: { app: pennyroyal-flashnext }
+  template:
+    metadata:
+      labels: { app: pennyroyal-flashnext }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 120   # upstream stop_grace_period; lets NIXL flush pending writes
+      securityContext:
+        seccompProfile: { type: Unconfined }   # NIXL POSIX uses io_uring (upstream: seccomp=unconfined)
+      initContainers:
+        # local-path volumes are hostPath-backed, so fsGroup is NOT applied: chown the writable dirs.
+        - name: chown
+          image: busybox:1.37
+          command: ["sh", "-c", "chown 1000:1000 /cache /nixl && ls -ld /cache /nixl"]
+          securityContext: { runAsUser: 0 }
+          volumeMounts:
+            - { name: cache, mountPath: /cache }
+            - { name: nixl, mountPath: /nixl }
+      containers:
+        - name: sglang
+          image: ghcr.io/jpezzulli/sglang-rtxpro6000@sha256:81d4d3d19b21e30b895f57e3628a8dd82c02a52c17e6234f5f3ea7836fd31fb3
+          # Profile is the first ARG (not an env). Wrapped only to log the effective memlock limit, which
+          # K8s cannot set per pod (Compose used ulimits memlock=-1); pinned HiCache/staging depend on it.
+          command: ["/bin/bash", "-c", "echo \"[pennyroyal] memlock=$(ulimit -l) uid=$(id -u)\"; exec /usr/local/bin/pennyroyal next"]
+          env:
+            - { name: TARGET_MODEL, value: /models/RadixArk-Qwen3.8-Flash-Next-NVFP4 }
+            - { name: PENNY_PLE_BACKEND, value: nvme }
+            - { name: PENNY_PLE_NVME_MODEL, value: /models/flash-next-ple }
+            - { name: PENNY_HICACHE_SIZE_GB, value: "8" }             # upstream 32 cannot fit; A/B 4/8/12
+            - { name: SGLANG_HICACHE_NIXL_MAX_CACHE_GB, value: "64" } # soft budget, trims to ~90%
+            - { name: SGLANG_SM120_ONLINE_MXFP8, value: "false" }     # A0 baseline; A1 flips to true
+            - { name: SGLANG_MM_PREPROCESS_DEVICE, value: cpu }
+            - { name: SGLANG_FORWARD_UNKNOWN_TOOLS, value: "true" }
+            - { name: MAX_RUNNING_REQUESTS, value: "4" }
+            - { name: MAX_MAMBA_CACHE_SIZE, value: "24" }
+            # MAX_TOTAL_TOKENS unset -> qualified 824,384 shared KV. 1,000,000 is a later, separate test.
+            - { name: PENNY_REASONING_EFFORT, value: medium }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          ports:
+            - { name: http, containerPort: 8001 }
+          resources:
+            requests: { cpu: "6", memory: 16Gi }
+            limits: { cpu: "12", memory: 40Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97800 }
+          securityContext:
+            runAsUser: 1000                 # image USER is the NAME "penny"; runAsNonRoot needs a number
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          # First boot: weight load + JIT/extension compile + per-launch PLE table checksum + CUDA graphs.
+          # Upstream HEALTHCHECK allows a 20-min start period; give 30 min. /health is 503 until ready.
+          startupProbe:
+            httpGet: { path: /health, port: 8001 }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health, port: 8001 }
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }  # SAME path as the prep Job (symlinks)
+            - { name: cache, mountPath: /cache }
+            - { name: nixl, mountPath: /nixl }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: pennyroyal-models } }
+        - { name: cache, persistentVolumeClaim: { claimName: pennyroyal-cache } }
+        - { name: nixl, persistentVolumeClaim: { claimName: pennyroyal-nixl } }
+        - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }   # upstream shm_size 16gb; counts toward the 40Gi limit only when used
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pennyroyal-flashnext
+  namespace: default
+spec:
+  selector: { app: pennyroyal-flashnext }
+  ports:
+    - { name: http, port: 8001, targetPort: 8001 }
+# ---------------------------------------------------------------------------------------------------
+# GATEWAY (deliberately NOT here yet): benchmark directly against the Service first. When promoting,
+# reuse the ninfer/flashnext pattern (Backend -> AIServiceBackend -> one rule on llm-model-router), and
+# decide how to map the public model name onto the hard-coded served name `pennyroyal` (PR notes).

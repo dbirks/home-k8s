@@ -1,0 +1,49 @@
+# Pennyroyal v2.5.2 Flash-Next storage (issue #135). HELD until the NVMe cleanup lands: /var had ~202GB
+# free, and these budget ~305GB. All three are local-path = the one NVMe /var filesystem.
+#
+#  pennyroyal-models  RadixArk source (135.3GB) + prepared NVMe-PLE overlay (47.68GiB) in ONE tree.
+#                     Must be one PVC: the overlay is built from ABSOLUTE symlinks into the source and
+#                     the preflight checks source.path == the resolved TARGET_MODEL, so prep Job and
+#                     server must mount it at the same path (/models). Must be NVMe (per-launch table
+#                     checksum + row streaming); never HDD.
+#  pennyroyal-cache   HF/torch/triton/flashinfer/sglang JIT caches (writable, uid 1000).
+#  pennyroyal-nixl    persistent prefix cache. Soft budget SGLANG_HICACHE_NIXL_MAX_CACHE_GB=64 (trims to
+#                     ~90%) plus NIXL's WHOLE-FILESYSTEM 85%/80% watermarks: because this shares /var, the
+#                     cleaner also trims itself when the node disk passes 85% (before kubelet's 90%
+#                     eviction line). Requested size is bookkeeping only; local-path does not enforce it.
+# Standalone file (incident lesson): retiring the Job/Deployment manifests must never prune the data.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pennyroyal-models
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 200Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pennyroyal-cache
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pennyroyal-nixl
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 75Gi

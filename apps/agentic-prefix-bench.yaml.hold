@@ -1,0 +1,103 @@
+# The go/no-go benchmark for issue #135: does a long-lived coding-agent session stop re-prefilling?
+# One cold turn with a large repo-context prefix (default ~60K tokens: this repo's own manifests/docs),
+# then N follow-up turns that share almost all of it (each appends the prior answer + a short ask),
+# like a real agent loop. Streams every turn and records TTFT, total time, output tokens and decode tok/s.
+# Point it at any OpenAI-compatible engine by editing BASE_URL/MODEL, so every arm runs identical prompts:
+#   current Flash-Next : http://flashnext.default.svc.cluster.local:8000/v1        model qwen3.8-flash-next
+#   Pennyroyal canary  : http://pennyroyal-flashnext.default.svc.cluster.local:8001/v1 model pennyroyal
+#   NInfer 27B baseline: http://ninfer.default.svc.cluster.local:8000/v1           model qwen3.8-27b-ninfer
+# For the restart-restore test: run once, restart the engine pod (NIXL PVC intact), run again with the
+# same SEED; turn 1 of the second run should show a large cached prefix instead of a cold prefill.
+# Results go to the pod log as one JSON line per turn plus a summary. No GPU, CPU-only client.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentic-prefix-bench
+  namespace: default
+data:
+  bench.py: |
+    import json, os, random, subprocess, time, urllib.request
+    BASE = os.environ["BASE_URL"].rstrip("/"); MODEL = os.environ["MODEL"]
+    TARGET_CHARS = int(os.environ.get("PREFIX_TOKENS", "60000")) * 4   # ~4 chars/token
+    TURNS = int(os.environ.get("TURNS", "6")); MAX_TOK = int(os.environ.get("MAX_TOKENS", "512"))
+    random.seed(int(os.environ.get("SEED", "135")))
+    subprocess.run(["git", "clone", "-q", "--depth", "1", os.environ["REPO"], "/tmp/repo"], check=True)
+    files = sorted(subprocess.run(["git", "-C", "/tmp/repo", "ls-files", "*.yaml", "*.md"],
+                                  capture_output=True, text=True, check=True).stdout.split())
+    ctx, n = [], 0
+    for f in files:
+        try: body = open(f"/tmp/repo/{f}", errors="ignore").read()
+        except OSError: continue
+        ctx.append(f"=== FILE: {f}\n{body}"); n += len(body)
+        if n >= TARGET_CHARS: break
+    system = "You are a coding agent working in this Kubernetes GitOps repo.\n\n" + "\n".join(ctx)[:TARGET_CHARS]
+    asks = ["Summarize what apps/ninfer-standalone.yaml deploys and why it bypasses the EPP.",
+            "Which manifests reference the flashnext-models PVC?",
+            "What would break if the node IP changed? Answer briefly.",
+            "List the GPU workloads and their HAMi gpumem limits.",
+            "Which jobs are parked as .yaml.hold and why is that convention used?",
+            "Propose one small cleanup, as a unified diff."]
+    msgs = [{"role": "system", "content": system}]
+    def turn(i):
+        msgs.append({"role": "user", "content": asks[i % len(asks)]})
+        req = urllib.request.Request(f"{BASE}/chat/completions", method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"model": MODEL, "messages": msgs, "max_tokens": MAX_TOK, "stream": True,
+                             "stream_options": {"include_usage": True}}).encode())
+        t0 = time.time(); ttft = None; text = []; usage = {}
+        with urllib.request.urlopen(req, timeout=3600) as r:
+            for line in r:
+                line = line.decode().strip()
+                if not line.startswith("data:") or line == "data: [DONE]": continue
+                ev = json.loads(line[5:])
+                if ev.get("usage"): usage = ev["usage"]
+                for ch in ev.get("choices", []):
+                    d = ch.get("delta", {}); piece = (d.get("content") or "") + (d.get("reasoning_content") or d.get("reasoning") or "")
+                    if piece and ttft is None: ttft = time.time() - t0
+                    text.append(d.get("content") or "")
+        total = time.time() - t0; out = usage.get("completion_tokens") or 0
+        msgs.append({"role": "assistant", "content": "".join(text) or "(no content)"})
+        rec = {"turn": i + 1, "prompt_tokens": usage.get("prompt_tokens"),
+               "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+               "ttft_s": round(ttft or total, 2), "total_s": round(total, 2), "output_tokens": out,
+               "decode_tok_s": round(out / max(total - (ttft or 0), 1e-6), 1)}
+        print(json.dumps(rec), flush=True); return rec
+    recs = [turn(i) for i in range(TURNS)]
+    warm = [r["ttft_s"] for r in recs[1:]]
+    print("SUMMARY", json.dumps({"model": MODEL, "cold_ttft_s": recs[0]["ttft_s"],
+          "warm_ttft_median_s": sorted(warm)[len(warm) // 2] if warm else None,
+          "prompt_tokens_last": recs[-1]["prompt_tokens"]}), flush=True)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentic-prefix-bench
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 14400
+  template:
+    metadata:
+      labels: { app: agentic-prefix-bench }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: bench
+          image: python:3.12-slim
+          command: ["/bin/bash", "-c", "apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates >/dev/null && python /bench/bench.py"]
+          env:
+            - { name: BASE_URL, value: "http://pennyroyal-flashnext.default.svc.cluster.local:8001/v1" }
+            - { name: MODEL, value: pennyroyal }
+            - { name: REPO, value: "https://github.com/dbirks/home-k8s" }
+            - { name: PREFIX_TOKENS, value: "60000" }
+            - { name: TURNS, value: "6" }
+            - { name: MAX_TOKENS, value: "512" }
+            - { name: SEED, value: "135" }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: bench, mountPath: /bench }
+      volumes:
+        - { name: bench, configMap: { name: agentic-prefix-bench } }
