@@ -55,7 +55,10 @@ spec:
               # 2026-09-04: DROPPED 400W -> 350W. The card still FULLCHIP-reset at
               # 400W (twice within ~45min under normal serving), so 400W reduced
               # but did not eliminate the GSP crash. Next lever down is 300W.
-              value: "350"
+              # 2026-09-28: RAISED 350W -> 400W (user decision). At 350W a long Pennyroyal
+              # prefill pins the card at the cap (99% util, SM ~2.2GHz of 3.09GHz max,
+              # ~8.5K tok/s vs upstream ~14.8K). If FULLCHIP resets return, drop back to 350.
+              value: "400"
           command:
             - /bin/sh
             - -c

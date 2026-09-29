@@ -1,5 +1,5 @@
-# LLM Collective contributor — contributes the local ninfer model
-# (qwen3.8-27b-ninfer) to the company LLM Collective at
+# LLM Collective contributor. Contributes the local Pennyroyal Flash-Next model
+# (qwen3-8-flash-next; ninfer's qwen3-8-27b is parked) to the company LLM Collective at
 # https://llm-collective.e-gineering.com over one outbound WebSocket tunnel.
 #
 # Backend target is the ninfer Service directly. NOTE: ninfer scales to zero via
@@ -31,13 +31,24 @@ data:
     metrics:
       listen: 127.0.0.1:9091
     backends:
-      - name: ninfer
-        url: http://ninfer.default.svc.cluster.local:8000
-        protocols: [openai, anthropic]   # ninfer serves /v1/messages natively (verified)
-        concurrency: 8
+      # Qwen3.8-Flash-Next on Pennyroyal v2.5.3 (SGLang fork), whole card (#135). The engine's
+      # served name is hard-coded to `pennyroyal`; the Collective exposes it as the alias.
+      # concurrency 4 = the recipe's MAX_RUNNING_REQUESTS (824K shared KV, 524K ctx per request).
+      - name: pennyroyal
+        url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
+        protocols: [openai, anthropic]   # SGLang serves /v1/chat/completions and /v1/messages natively
+        concurrency: 4
         models:
-          - alias: qwen3-8-27b
-            model: qwen3.8-27b-ninfer
+          - alias: qwen3-8-flash-next
+            model: pennyroyal
+      # PARKED 2026-09-28: ninfer is scaled to 0 while Pennyroyal owns the card.
+      # - name: ninfer
+      #   url: http://ninfer.default.svc.cluster.local:8000
+      #   protocols: [openai, anthropic]   # ninfer serves /v1/messages natively (verified)
+      #   concurrency: 8
+      #   models:
+      #     - alias: qwen3-8-27b
+      #       model: qwen3.8-27b-ninfer
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -46,6 +57,8 @@ metadata:
   namespace: default
   labels:
     app.kubernetes.io/name: llm-collective-contributor
+  annotations:
+    reloader.stakater.com/auto: "true"   # roll when the contributor ConfigMap changes (backends/models)
 spec:
   replicas: 1
   selector:
