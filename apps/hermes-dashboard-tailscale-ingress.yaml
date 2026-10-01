@@ -1,0 +1,52 @@
+# Hermes Agent dashboard runs on the workstation (not in-cluster), so the
+# Service is selector-less and its EndpointSlice points at the workstation's LAN IP.
+# 10.0.0.125 comes from DHCP; reserve it on the router or update the address below.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-dashboard
+  namespace: default
+spec:
+  ports:
+    - name: http
+      port: 9119
+      targetPort: 9119
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: hermes-dashboard
+  namespace: default
+  labels:
+    kubernetes.io/service-name: hermes-dashboard
+addressType: IPv4
+ports:
+  - name: http
+    port: 9119
+    protocol: TCP
+endpoints:
+  - addresses:
+      - 10.0.0.125
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hermes-dashboard-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - hermes
+  rules:
+    - host: hermes
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hermes-dashboard
+                port:
+                  name: http
