@@ -1,0 +1,117 @@
+# LLM Collective contributor — DEV gateway.
+#
+# Same machine and same models as apps/llm-collective-contributor.yaml (which
+# serves the prod collective), but pointed at the dev gateway
+# https://llm-collective.dev.e-gineering.com so main-branch builds can be
+# exercised end to end (tiles, stats, graphs, leaderboard) against real home
+# hardware before a release is tagged.
+#
+# Identity: reuses the prod contributor's key pair
+# (secret llm-collective-contributor-identity), so the gateway sees the same
+# machine. The public key must be registered once in the DEV gateway's UI
+# (Contribute page) under your dev login — auto-enroll is not a thing. Read
+# the key value from the contributor pod's startup log (it prints it) or the
+# prod gateway's Nodes page. Until it's registered the pod starts and retries
+# with "waiting for key registration".
+#
+# Image channel differs from the prod contributor: dev tracks the newest
+# <short-sha>-<epoch> tag that CI publishes on every push to llm-collective
+# main ("merging is deploying"), ordered by the numeric epoch — the same
+# convention the shepherd policies above use. The repo-wide
+# ImageUpdateAutomation (apps/shepherd-image-automation.yaml) bumps the
+# marker-tagged image line below.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-collective-contributor-dev-config
+  namespace: default
+data:
+  contributor.yaml: |
+    version: 1
+    machine:
+      name: home-k8s
+    collective:
+      gateway: https://llm-collective.dev.e-gineering.com
+    metrics:
+      listen: 127.0.0.1:9091
+    backends:
+      # Same target as the prod contributor: Qwen3.8-Flash-Next on Pennyroyal
+      # v2.5.3 (SGLang fork), whole card (#135), engine served name
+      # `pennyroyal`, concurrency 4 = MAX_RUNNING_REQUESTS.
+      # NOTE: while both contributors run, each collective call occupies a
+      # slot on the same card; only one of the two should carry traffic at a
+      # time in normal use (pause the other from either gateway's Nodes page).
+      - name: pennyroyal
+        url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
+        protocols: [openai, anthropic]
+        concurrency: 4
+        models:
+          - alias: qwen3-8-flash-next
+            model: pennyroyal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-collective-contributor-dev
+  namespace: default
+  labels:
+    app.kubernetes.io/name: llm-collective-contributor-dev
+    llm-collective.e-gineering.com/env: dev
+  annotations:
+    reloader.stakater.com/auto: "true"   # roll when the dev contributor ConfigMap changes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-collective-contributor-dev
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: llm-collective-contributor-dev
+    spec:
+      containers:
+        - name: contributor
+          image: ghcr.io/e-gineering/llm-collective/contributor:08b164a-1790860002 # {"$imagepolicy": "flux-system:llm-collective-contributor-dev"}
+          env:
+            - { name: KEY_FILE, value: /etc/collective-key/identity.key }
+            - { name: PUBKEY_OUT, value: "" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/collective }
+            - { name: identity, mountPath: /etc/collective-key, readOnly: true }
+      volumes:
+        - name: config
+          configMap:
+            name: llm-collective-contributor-dev-config
+        - name: identity
+          secret:
+            secretName: llm-collective-contributor-identity
+---
+# Dev channel: newest <short-sha>-<epoch> contributor image wins (numeric
+# epoch order), mirroring the company dev gateway's ImagePolicy.
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: llm-collective-contributor-dev
+  namespace: flux-system
+spec:
+  image: ghcr.io/e-gineering/llm-collective/contributor
+  interval: 2m0s
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: llm-collective-contributor-dev
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: llm-collective-contributor-dev
+  filterTags:
+    pattern: '^[a-f0-9]+-(?P<ts>[0-9]+)$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
