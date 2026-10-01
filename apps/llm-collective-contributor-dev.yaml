@@ -9,9 +9,10 @@
 # Identity: reuses the prod contributor's key pair
 # (secret llm-collective-contributor-identity), so the gateway sees the same
 # machine. The public key must be registered once in the DEV gateway's UI
-# (Contribute page) under your dev login — auto-enroll is not a thing:
-#   llmc_pk_v1_TWLRH0jpq4jcySuWE9n0HHFWnoaZi7875JWiq1m5vJo
-# Until then it starts and retries with "waiting for key registration".
+# (Contribute page) under your dev login — auto-enroll is not a thing. Read
+# the key value from the contributor pod's startup log (it prints it) or the
+# prod gateway's Nodes page. Until it's registered the pod starts and retries
+# with "waiting for key registration".
 #
 # Image channel differs from the prod contributor: dev tracks the newest
 # <short-sha>-<epoch> tag that CI publishes on every push to llm-collective
