@@ -41,6 +41,14 @@ data:
         models:
           - alias: qwen3-8-flash-next
             model: pennyroyal
+            # Capabilities (contributor >= v0.6.0, llm-collective #15): purely
+            # descriptive — the gateway shows these on model pages, never
+            # enforces them.
+            limits:
+              context: 524288   # per-request ctx from the #135 recipe (824K shared KV)
+              # output: left undeclared on purpose; set it once the serving
+              # max_new_tokens is verified on Pennyroyal.
+            # reasoning: Qwen3 hybrid thinking; declare levels once confirmed.
       # PARKED 2026-09-28: ninfer is scaled to 0 while Pennyroyal owns the card.
       # - name: ninfer
       #   url: http://ninfer.default.svc.cluster.local:8000
@@ -71,7 +79,7 @@ spec:
     spec:
       containers:
         - name: contributor
-          image: ghcr.io/e-gineering/llm-collective/contributor:v0.4.1 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
+          image: ghcr.io/e-gineering/llm-collective/contributor:v0.6.0 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
           env:
             - { name: KEY_FILE, value: /etc/collective-key/identity.key }
             - { name: PUBKEY_OUT, value: "" }
