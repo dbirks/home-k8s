@@ -15,6 +15,13 @@
 #
 # Image: ghcr.io/e-gineering/llm-collective/contributor is public, so no pull
 # secret is needed. Tracks the prod semver release channel (vX.Y.Z).
+#
+# Model capabilities (contributor >= v0.6.0, llm-collective #15) are owner-
+# declared and only displayed by the gateway, never enforced. The context is
+# the #135 recipe's per-request window; output stays undeclared because the
+# recipe enforces no per-request output cap. Reasoning tiers were probed live
+# through this gateway: all seven accepted, `none` switches thinking off,
+# unset follows the launcher default (PENNY_REASONING_EFFORT=medium).
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -41,6 +48,17 @@ data:
         models:
           - alias: qwen3-8-flash-next
             model: pennyroyal
+            limits:
+              context: 524288
+            reasoning:
+              levels:
+                - none
+                - minimal
+                - low
+                - medium
+                - high
+                - xhigh
+                - max
       # PARKED 2026-09-28: ninfer is scaled to 0 while Pennyroyal owns the card.
       # - name: ninfer
       #   url: http://ninfer.default.svc.cluster.local:8000
@@ -71,7 +89,7 @@ spec:
     spec:
       containers:
         - name: contributor
-          image: ghcr.io/e-gineering/llm-collective/contributor:v0.4.1 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
+          image: ghcr.io/e-gineering/llm-collective/contributor:v0.6.0 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
           env:
             - { name: KEY_FILE, value: /etc/collective-key/identity.key }
             - { name: PUBKEY_OUT, value: "" }
