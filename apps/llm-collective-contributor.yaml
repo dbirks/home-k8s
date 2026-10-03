@@ -15,6 +15,13 @@
 #
 # Image: ghcr.io/e-gineering/llm-collective/contributor is public, so no pull
 # secret is needed. Tracks the prod semver release channel (vX.Y.Z).
+#
+# Model capabilities (contributor >= v0.6.0, llm-collective #15) are owner-
+# declared and only displayed by the gateway, never enforced. The context is
+# the #135 recipe's per-request window; output stays undeclared because the
+# recipe enforces no per-request output cap. Reasoning tiers were probed live
+# through this gateway: all seven accepted, `none` switches thinking off,
+# unset follows the launcher default (PENNY_REASONING_EFFORT=medium).
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -41,18 +48,9 @@ data:
         models:
           - alias: qwen3-8-flash-next
             model: pennyroyal
-            # Capabilities (contributor >= v0.6.0, llm-collective #15): purely
-            # descriptive — the gateway shows these on model pages, never
-            # enforces them.
             limits:
-              context: 524288   # per-request ctx from the #135 recipe (824K shared KV)
-              # output: left undeclared on purpose; the recipe enforces no
-              # per-request output cap (TOKEN_CAP_ARGS is the shared KV pool),
-              # so there is nothing honest to advertise yet.
+              context: 524288
             reasoning:
-              # Verified end-to-end via the prod gateway (uv + openai SDK):
-              # every tier accepted, `none` disables thinking, invalid tiers
-              # 400. Launcher default (PENNY_REASONING_EFFORT): medium.
               levels:
                 - none
                 - minimal

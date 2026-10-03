@@ -49,10 +49,9 @@ data:
         models:
           - alias: qwen3-8-flash-next
             model: pennyroyal
-            # Keep in sync with apps/llm-collective-contributor.yaml: same
-            # card, same declarations (contributor >= v0.6.0, #15).
+            # Same declarations as the prod contributor (see its header notes).
             limits:
-              context: 524288   # per-request ctx from the #135 recipe (824K shared KV)
+              context: 524288
             reasoning:
               levels:
                 - none
