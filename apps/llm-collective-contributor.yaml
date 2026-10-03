@@ -46,9 +46,21 @@ data:
             # enforces them.
             limits:
               context: 524288   # per-request ctx from the #135 recipe (824K shared KV)
-              # output: left undeclared on purpose; set it once the serving
-              # max_new_tokens is verified on Pennyroyal.
-            # reasoning: Qwen3 hybrid thinking; declare levels once confirmed.
+              # output: left undeclared on purpose; the recipe enforces no
+              # per-request output cap (TOKEN_CAP_ARGS is the shared KV pool),
+              # so there is nothing honest to advertise yet.
+            reasoning:
+              # Verified end-to-end via the prod gateway (uv + openai SDK):
+              # every tier accepted, `none` disables thinking, invalid tiers
+              # 400. Launcher default (PENNY_REASONING_EFFORT): medium.
+              levels:
+                - none
+                - minimal
+                - low
+                - medium
+                - high
+                - xhigh
+                - max
       # PARKED 2026-09-28: ninfer is scaled to 0 while Pennyroyal owns the card.
       # - name: ninfer
       #   url: http://ninfer.default.svc.cluster.local:8000
