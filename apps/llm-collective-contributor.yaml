@@ -59,6 +59,11 @@ data:
                 - high
                 - xhigh
                 - max
+            # Pennyroyal runs the multimodal Flash-Next build: sglang encodes
+            # image parts (verified against the dev gateway on 2026-10-03).
+            # Declaring it earns the VISION chip and lets the gateway route
+            # image traffic here instead of rejecting it with a 400.
+            inputs: [text, image]
       # PARKED 2026-09-28: ninfer is scaled to 0 while Pennyroyal owns the card.
       # - name: ninfer
       #   url: http://ninfer.default.svc.cluster.local:8000

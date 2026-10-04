@@ -61,6 +61,11 @@ data:
                 - high
                 - xhigh
                 - max
+            # Pennyroyal runs the multimodal Flash-Next build: sglang encodes
+            # image parts (verified against the dev gateway on 2026-10-03).
+            # Declaring it earns the VISION chip and lets the gateway route
+            # image traffic here instead of rejecting it with a 400.
+            inputs: [text, image]
 ---
 apiVersion: apps/v1
 kind: Deployment
