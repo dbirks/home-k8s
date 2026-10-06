@@ -112,6 +112,13 @@ spec:
     metadata: { labels: { app: market-agent-api } }
     spec:
       enableServiceLinks: false
+      # The OIDC issuer is a tailnet-only MagicDNS name; in-cluster pods need
+      # the idp egress Proxy (infra/tailscale-egress-idp.yaml) mapped to it,
+      # same mechanism as affine/videogen. Update the IP if that egress is
+      # ever recreated.
+      hostAliases:
+        - ip: "10.109.232.240"
+          hostnames: [idp.beluga-wyvern.ts.net]
       imagePullSecrets:
         - name: market-agent-ghcr-pull
       containers:
