@@ -1,14 +1,14 @@
 # market-agent — personal AI research/trading workstation (stocks repo)
 #
-# REQUIRES SECRETS BEFORE ENABLING (rename to market-agent.yaml):
-#   apps/market-agent-secrets.enc.yaml     — MARKET_AGENT_* env (DB URLs, session
-#                                            secret, OIDC client id/secret/issuer/
-#                                            redirect, reasoning-model key). Agent
-#                                            runbook: dbirks/stocks issue #8.
+# DEPLOYED. Required companion files (both in-repo):
+#   apps/market-agent-secrets.enc.yaml — SOPS-encrypted MARKET_AGENT_* env
+#     (DB URLs, session secret, OIDC client id/secret/issuer/redirect,
+#     reasoning-model key, Jev key). Rotate with `sops edit` from a
+#     workstation holding the age private key (home-k8s issue #141).
 # Image pulls reuse the existing `ghcr-pull` secret in `default` (same one
 # videogen/comfyui use for private ghcr.io/dbirks images; stocks issue #4).
-# Secrets need the SOPS age key: dbirks/home-k8s issue #141.
-# Reasoning model (stocks #2) and tsidp client (stocks #3) are done.
+# Reasoning model (stocks #2), tsidp client (stocks #3), and the decision
+# model (Jev, stocks #5) are configured via the secret above.
 #
 # Architecture notes (docs/specs/01 + ADR-0011):
 #   - Two identical api replicas on purpose: each process gets a unique
@@ -115,7 +115,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: api
-          image: ghcr.io/dbirks/market-agent-api:latest
+          image: ghcr.io/dbirks/market-agent-api:main
           imagePullPolicy: Always
           ports:
             - { name: http, containerPort: 8000 }
@@ -169,7 +169,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: ui
-          image: ghcr.io/dbirks/market-agent-ui:latest
+          image: ghcr.io/dbirks/market-agent-ui:main
           imagePullPolicy: Always
           ports:
             - { name: http, containerPort: 80 }
