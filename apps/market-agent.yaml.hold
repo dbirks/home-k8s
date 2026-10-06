@@ -1,0 +1,210 @@
+# market-agent — personal AI research/trading workstation (stocks repo)
+#
+# REQUIRES SECRETS BEFORE ENABLING (rename to market-agent.yaml):
+#   apps/market-agent-secrets.enc.yaml     — MARKET_AGENT_* env (DB URLs, session
+#                                            secret, OIDC client id/secret, issuer)
+#   apps/market-agent-ghcr-pull.enc.yaml   — docker-registry secret for private
+#                                            ghcr.io/dbirks images (home-k8s issue #141
+#                                            is the wrong repo pointer; the pull-token
+#                                            work is tracked as stocks issue #4)
+# See stocks issues #1 (Alpaca), #2 (reasoning model), #3 (tsidp client).
+#
+# Architecture notes (docs/specs/01 + ADR-0011):
+#   - Two identical api replicas on purpose: each process gets a unique
+#     ephemeral DBOS executor_id, heartbeats an application lease, and the
+#     orphan-recovery controller (advisory-locked) takes over dead work.
+#   - OIDC: tsidp over the tailnet once stocks issue #3 is done; the app also
+#     works against the mock issuer for tests.
+#   - The storage PVC is RWO; fine on this single-node cluster, move to
+#     S3-compatible object storage (Phase 3) before multi-node matters.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-agent-postgres
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path            # NVMe — DB + DBOS system tables
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-agent-postgres
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }            # one writer, one RWO PVC
+  selector: { matchLabels: { app: market-agent-postgres } }
+  template:
+    metadata: { labels: { app: market-agent-postgres } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg17   # pgvector allowed for retrieval indexes
+          env:
+            - { name: POSTGRES_USER, value: market_agent }
+            - { name: POSTGRES_DB, value: market_agent }
+            - { name: POSTGRES_INITDB_ARGS, value: "--data-checksums" }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: market-agent-secrets, key: POSTGRES_PASSWORD } }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U market_agent -d market_agent"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U market_agent -d market_agent"] }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "100m", memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: market-agent-postgres }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-agent-postgres
+  namespace: default
+spec:
+  selector: { app: market-agent-postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-agent-storage
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]            # briefing audio/source artifacts (LocalStorage adapter)
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-agent-api
+  namespace: default
+  labels: { app: market-agent-api }
+spec:
+  replicas: 2                             # two identical executors per ADR-0011
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector: { matchLabels: { app: market-agent-api } }
+  template:
+    metadata: { labels: { app: market-agent-api } }
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: market-agent-ghcr-pull
+      containers:
+        - name: api
+          image: ghcr.io/dbirks/market-agent-api:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: http, containerPort: 8000 }
+          envFrom:
+            - secretRef: { name: market-agent-secrets }
+          env:
+            - { name: MARKET_AGENT_STORAGE_PATH, value: /app/data/storage }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "100m", memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: storage, mountPath: /app/data/storage }
+      volumes:
+        - name: storage
+          persistentVolumeClaim: { claimName: market-agent-storage }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-agent-api
+  namespace: default
+spec:
+  selector: { app: market-agent-api }
+  ports:
+    - { name: http, port: 8000, targetPort: 8000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-agent-ui
+  namespace: default
+  labels: { app: market-agent-ui }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: market-agent-ui } }
+  template:
+    metadata: { labels: { app: market-agent-ui } }
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: market-agent-ghcr-pull
+      containers:
+        - name: ui
+          image: ghcr.io/dbirks/market-agent-ui:latest
+          imagePullPolicy: Always
+          ports:
+            - { name: http, containerPort: 80 }
+          readinessProbe:
+            httpGet: { path: /index.html, port: 80 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "10m", memory: 32Mi }
+            limits: { cpu: "200m", memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-agent-ui
+  namespace: default
+spec:
+  selector: { app: market-agent-ui }
+  ports:
+    - { name: http, port: 80, targetPort: 80 }
+---
+# Tailnet-only access (mirrors apps/affine.yaml): market-agent.beluga-wyvern.ts.net
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: market-agent-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [market-agent]
+  rules:
+    - host: market-agent
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: market-agent-ui
+                port:
+                  number: 80
