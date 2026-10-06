@@ -122,6 +122,8 @@ spec:
             - secretRef: { name: market-agent-secrets }
           env:
             - { name: MARKET_AGENT_STORAGE_PATH, value: /app/data/storage }
+            - { name: MARKET_AGENT_SESSION_COOKIE_SECURE, value: "true" }
+            - { name: MARKET_AGENT_TRUST_PROXY_HEADERS, value: "true" }
           readinessProbe:
             httpGet: { path: /healthz, port: 8000 }
             initialDelaySeconds: 5
