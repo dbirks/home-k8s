@@ -2,12 +2,13 @@
 #
 # REQUIRES SECRETS BEFORE ENABLING (rename to market-agent.yaml):
 #   apps/market-agent-secrets.enc.yaml     — MARKET_AGENT_* env (DB URLs, session
-#                                            secret, OIDC client id/secret, issuer)
-#   apps/market-agent-ghcr-pull.enc.yaml   — docker-registry secret for private
-#                                            ghcr.io/dbirks images; tracked as
-#                                            dbirks/stocks issue #4)
+#                                            secret, OIDC client id/secret/issuer/
+#                                            redirect, reasoning-model key). Agent
+#                                            runbook: dbirks/stocks issue #8.
+# Image pulls reuse the existing `ghcr-pull` secret in `default` (same one
+# videogen/comfyui use for private ghcr.io/dbirks images; stocks issue #4).
 # Secrets need the SOPS age key: dbirks/home-k8s issue #141.
-# Also see dbirks/stocks issues #1 (Alpaca), #2 (reasoning model), #3 (tsidp client).
+# Reasoning model (stocks #2) and tsidp client (stocks #3) are done.
 #
 # Architecture notes (docs/specs/01 + ADR-0011):
 #   - Two identical api replicas on purpose: each process gets a unique
@@ -111,7 +112,7 @@ spec:
     spec:
       enableServiceLinks: false
       imagePullSecrets:
-        - name: market-agent-ghcr-pull
+        - name: ghcr-pull
       containers:
         - name: api
           image: ghcr.io/dbirks/market-agent-api:latest
@@ -165,7 +166,7 @@ spec:
     spec:
       enableServiceLinks: false
       imagePullSecrets:
-        - name: market-agent-ghcr-pull
+        - name: ghcr-pull
       containers:
         - name: ui
           image: ghcr.io/dbirks/market-agent-ui:latest
