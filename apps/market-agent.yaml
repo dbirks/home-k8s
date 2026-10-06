@@ -103,7 +103,9 @@ metadata:
   namespace: default
   labels: { app: market-agent-api }
 spec:
-  replicas: 2                             # two identical executors per ADR-0011
+  # Single replica until the node's 110-pod cap has headroom for the second
+  # executor (ADR-0011 targets 2; free a slot, then set back to 2).
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
