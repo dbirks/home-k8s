@@ -1,0 +1,23 @@
+apiVersion: v1
+data:
+    .dockerconfigjson: ENC[AES256_GCM,data:FU2la3km0pqWcSq4ZsaQqUrGXP031keXyFxfks6gUij7O7Qk97UTLILD8DKVuRT3/VtE73on9coxy2HqDZXhIbrVJMHy4c9WviQw/rbxNRdm3dagCLdh8wabytbh3cSo5mZqTpsrtcY6B6t+BtrnpieI5cTnI6kXynohvHTmFodIKAjMohCwT/BnrCB1IqYDk1dKeumEEFqZl995XvV/eGFzQLtk0PW/sC7CPyEwi7RMGjaEvxLBgmkgJB6F8mdZQub8HDqZSeHwlIbb4q58NGIbLpg/WJslMY77A6h5PM/yhd1H,iv:9fGLW8Oi624Ql5Fwqt8dDgWZBPNqrV/nXa6k7SEkVPc=,tag:DYivnpWQOaKKyRcDszTAJw==,type:str]
+kind: Secret
+metadata:
+    name: market-agent-ghcr-pull
+    namespace: default
+type: kubernetes.io/dockerconfigjson
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBnQkdEQlEvQUNORy94KzNR
+            VVlYSkRLMUZvbnExUHFsNlUrUlYzbXpycml3CnVMUk03REhoQllxSWtXZnM4bFc5
+            U2xpcUsyaCtUQUtER2RGdDd1Y3hsNEkKLS0tIHJ6WnRNN29OdjRIeDhTZmltVmZz
+            TjJ2dmFXSkxpZUNid0N0K3kxU01pYzAKVsJ+vvDDRLoHxRjncA4+vo3g3F0idCAY
+            njW6ntgWB34EeZibl8aAUUKiD/fb9xDW3ING/CbKMwTFb1CHdwFaJQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-06T04:51:36Z"
+    mac: ENC[AES256_GCM,data:Qy+UMJfMIJrhqFwYZkS+oD25P7u9iH54FHSFizeK8omKgVlSBzwyPYLmulU+lrUWCJj0ldq+WMEm51KptU4k/TChGf93fgk8DKtoXl1Yb4XL+yqDuO230HXo57gl5fa8N/Ba8D7oE90EjZ8AwjsJ+TL1Xs1zOiS8kQk+ChrBM5A=,iv:YFjGJqHzfRTElvtXmhh//BfSPX/IgoMK1shTsszNVX4=,tag:AvaHuQz5lemOVFQzaABmOA==,type:str]
+    version: 3.13.0

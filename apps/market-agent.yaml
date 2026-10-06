@@ -5,8 +5,9 @@
 #     (DB URLs, session secret, OIDC client id/secret/issuer/redirect,
 #     reasoning-model key, Jev key). Rotate with `sops edit` from a
 #     workstation holding the age private key (home-k8s issue #141).
-# Image pulls reuse the existing `ghcr-pull` secret in `default` (same one
-# videogen/comfyui use for private ghcr.io/dbirks images; stocks issue #4).
+# Image pulls use apps/market-agent-ghcr-pull.enc.yaml (read:packages classic
+# PAT; the shared ghcr-pull secret is scoped to older packages and gets 403).
+# The secret file needs rotation on PAT expiry.
 # Reasoning model (stocks #2), tsidp client (stocks #3), and the decision
 # model (Jev, stocks #5) are configured via the secret above.
 #
@@ -112,7 +113,7 @@ spec:
     spec:
       enableServiceLinks: false
       imagePullSecrets:
-        - name: ghcr-pull
+        - name: market-agent-ghcr-pull
       containers:
         - name: api
           image: ghcr.io/dbirks/market-agent-api:main
@@ -166,7 +167,7 @@ spec:
     spec:
       enableServiceLinks: false
       imagePullSecrets:
-        - name: ghcr-pull
+        - name: market-agent-ghcr-pull
       containers:
         - name: ui
           image: ghcr.io/dbirks/market-agent-ui:main
