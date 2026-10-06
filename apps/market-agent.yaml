@@ -106,7 +106,10 @@ spec:
   replicas: 2                             # two identical executors per ADR-0011 (grafana freed a slot 2026-10-06)
   strategy:
     type: RollingUpdate
-    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+    # maxUnavailable 1 keeps the concurrent pod total unchanged, so rollouts
+    # can converge even when the single node is at its pod ceiling
+    # (maxSurge-only updates can never schedule the surge there).
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 1 }
   selector: { matchLabels: { app: market-agent-api } }
   template:
     metadata: { labels: { app: market-agent-api } }
