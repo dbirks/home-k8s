@@ -4,10 +4,10 @@
 #   apps/market-agent-secrets.enc.yaml     — MARKET_AGENT_* env (DB URLs, session
 #                                            secret, OIDC client id/secret, issuer)
 #   apps/market-agent-ghcr-pull.enc.yaml   — docker-registry secret for private
-#                                            ghcr.io/dbirks images (home-k8s issue #141
-#                                            is the wrong repo pointer; the pull-token
-#                                            work is tracked as stocks issue #4)
-# See stocks issues #1 (Alpaca), #2 (reasoning model), #3 (tsidp client).
+#                                            ghcr.io/dbirks images; tracked as
+#                                            dbirks/stocks issue #4)
+# Secrets need the SOPS age key: dbirks/home-k8s issue #141.
+# Also see dbirks/stocks issues #1 (Alpaca), #2 (reasoning model), #3 (tsidp client).
 #
 # Architecture notes (docs/specs/01 + ADR-0011):
 #   - Two identical api replicas on purpose: each process gets a unique
