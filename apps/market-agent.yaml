@@ -8,6 +8,14 @@
 # Image pulls use apps/market-agent-ghcr-pull.enc.yaml (read:packages classic
 # PAT; the shared ghcr-pull secret is scoped to older packages and gets 403).
 # The secret file needs rotation on PAT expiry.
+#
+# Nonroot rollout order (api image runs as uid 65532 since the stocks
+# Dockerfile hardening): before Flux applies this change, chown the existing
+# root-owned artifacts once, otherwise the nonroot api cannot write into
+# hash-bucket directories created by the old root process:
+#   kubectl -n default run ma-chown --rm -i --restart=Never \
+#     --image=busybox:1.36 --overrides='{"spec":{"containers":[{"name":"ma-chown","image":"busybox:1.36","command":["chown","-R","65532:65532","/data/storage"],"volumeMounts":[{"name":"s","mountPath":"/data/storage"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"market-agent-storage"}}]}}' \
+#     -- chown -R 65532:65532 /data/storage
 # Reasoning model (stocks #2), tsidp client (stocks #3), and the decision
 # model (Jev, stocks #5) are configured via the secret above.
 #
@@ -45,9 +53,19 @@ spec:
     metadata: { labels: { app: market-agent-postgres } }
     spec:
       enableServiceLinks: false
+      # PodSecurity restricted + hardening (spec 08): the pgvector image
+      # already runs as uid 999; seccomp + no escalation + no capabilities.
+      # No fsGroup: the local-path driver ignores it, and provisioned
+      # directories are 0777, so the existing 999-owned data stays writable.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: postgres
           image: pgvector/pgvector:pg17   # pgvector allowed for retrieval indexes
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           env:
             - { name: POSTGRES_USER, value: market_agent }
             - { name: POSTGRES_DB, value: market_agent }
@@ -122,12 +140,25 @@ spec:
       hostAliases:
         - ip: "10.109.232.240"
           hostnames: [idp.beluga-wyvern.ts.net]
+      # Non-root (uid 65532 in the image, spec 08). No fsGroup needed:
+      # local-path provisions 0777 directories, so 65532 can write artifacts.
+      # PUSH ORDERING: requires the image built after the stocks nonroot
+      # Dockerfile commit; applying it against an older root image fails
+      # runAsNonRoot verification (fail-closed, never unsafe).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
       imagePullSecrets:
         - name: market-agent-ghcr-pull
       containers:
         - name: api
           image: ghcr.io/dbirks/market-agent-api:main
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           ports:
             - { name: http, containerPort: 8000 }
           envFrom:
@@ -171,21 +202,34 @@ metadata:
   labels: { app: market-agent-ui }
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    # Same single-node pod-ceiling reasoning as the api deployment: a surge
+    # pod can never be scheduled while the node is full, so roll in place.
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
   selector: { matchLabels: { app: market-agent-ui } }
   template:
     metadata: { labels: { app: market-agent-ui } }
     spec:
       enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
       imagePullSecrets:
         - name: market-agent-ghcr-pull
       containers:
         - name: ui
           image: ghcr.io/dbirks/market-agent-ui:main
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           ports:
-            - { name: http, containerPort: 80 }
+            - { name: http, containerPort: 8080 }
           readinessProbe:
-            httpGet: { path: /index.html, port: 80 }
+            httpGet: { path: /index.html, port: 8080 }
             periodSeconds: 10
           resources:
             requests: { cpu: "10m", memory: 32Mi }
@@ -199,7 +243,7 @@ metadata:
 spec:
   selector: { app: market-agent-ui }
   ports:
-    - { name: http, port: 80, targetPort: 80 }
+    - { name: http, port: 80, targetPort: 8080 }
 ---
 # Tailnet-only access (mirrors apps/affine.yaml): market-agent.beluga-wyvern.ts.net
 apiVersion: networking.k8s.io/v1
@@ -222,3 +266,47 @@ spec:
                 name: market-agent-ui
                 port:
                   number: 80
+---
+# Network isolation (spec 08: reduce blast radius). Ingress-namespace traffic
+# only ever arrives from the tailscale ingress proxy pod; the api is reachable
+# solely through the ui's same-origin reverse proxy; postgres only the api.
+# Probe traffic (kubelet -> pod) is unaffected by policies with no egress rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: market-agent-api-ingress
+  namespace: default
+spec:
+  podSelector: { matchLabels: { app: market-agent-api } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: market-agent-ui } }
+      ports: [{ protocol: TCP, port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: market-agent-ui-ingress
+  namespace: default
+spec:
+  podSelector: { matchLabels: { app: market-agent-ui } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: tailscale }
+      ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: market-agent-postgres-ingress
+  namespace: default
+spec:
+  podSelector: { matchLabels: { app: market-agent-postgres } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: market-agent-api } }
+      ports: [{ protocol: TCP, port: 5432 }]
