@@ -1,0 +1,107 @@
+# Gnotes — self-hosted Markdown notes with live shared editing (a coworker's project).
+#   https://github.com/justinmdickey/gnotes  (docs/SELF-HOSTING.md is the reference)
+# Reachable ONLY over the tailnet as gnotes.beluga-wyvern.ts.net (Tailscale Ingress,
+# auto Let's Encrypt TLS). HTTPS matters: the PWA install, offline mode and voice
+# memos all need a secure origin. The Tailscale proxy passes the websockets
+# (/api/ws, /api/transcribe/live) through with no extra config.
+#
+# Single Rust binary + SQLite. Everything (gnotes.db, blobs/, export/ Markdown copies)
+# lives in /data on one PVC, so one replica with Recreate.
+#
+# Accounts: no open sign-up. The first admin is made with
+#   kubectl exec -it deploy/gnotes -- gnotes-server create-user <name> --admin
+# then invite people from Account > People. AI features (summaries, Ask, transcription,
+# photo text) are off until an admin points Settings > AI Services at an
+# OpenAI-compatible endpoint; the GNOTES_*_URL env vars only set defaults.
+#
+# Upgrades: the server migrates the DB on start and an older version refuses a newer
+# DB, so back up /data first, then bump tag+digest together.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gnotes-data
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path            # NVMe: SQLite wants fast fsync
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gnotes
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }            # one SQLite writer, one RWO PVC
+  selector: { matchLabels: { app: gnotes } }
+  template:
+    metadata: { labels: { app: gnotes } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: gnotes
+          # Pinned to v1.3.0 by index digest (verified against GHCR 2026-10-07).
+          image: ghcr.io/justinmdickey/gnotes:1.3.0@sha256:e860cc5414436119fb8acdb5194d4f3b15c78e5bfbba11ae342a81c7fa1cef62
+          env:
+            # Websocket origin check + Secure cookie. Must match the address people open.
+            - { name: GNOTES_PUBLIC_URL, value: "https://gnotes.beluga-wyvern.ts.net" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /api/health, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            # Image already runs as the non-root `gnotes` user (named, not numeric,
+            # so runAsNonRoot can't be asserted without guessing its UID).
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          resources:
+            requests: { cpu: "50m", memory: 64Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: gnotes-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gnotes
+  namespace: default
+spec:
+  selector: { app: gnotes }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+# Tailscale Ingress: gnotes.beluga-wyvern.ts.net, tailnet only, never public.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gnotes-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [gnotes]
+  rules:
+    - host: gnotes
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gnotes
+                port:
+                  number: 8080
