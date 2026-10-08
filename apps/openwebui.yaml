@@ -1,0 +1,152 @@
+# Open WebUI — chat UI for our OpenAI-compatible endpoints (issue: OpenWebUI deploy).
+# Reachable ONLY over the tailnet as openwebui.beluga-wyvern.ts.net (Tailscale
+# Ingress, auto Let's Encrypt TLS), same pattern as gnotes/affine.
+#
+# RAW MANIFESTS, not the official Helm chart (helm.openwebui.com, chart 16.x):
+# the chart pulls in ollama + pipelines + tika subcharts we don't want and its
+# defaults (e.g. the pipelines API key as openaiApiKey) mislead more than they
+# help. One container + one PVC (SQLite + uploads) is the whole app.
+#
+# AUTH: OIDC via the shared tsidp IdP (infra/tsidp.yaml, issue #123). The client
+# was registered by Dynamic Client Registration (POST https://idp.beluga-wyvern.ts.net/register)
+# with redirect https://openwebui.beluga-wyvern.ts.net/oauth/oidc/callback — it lives
+# in tsidp's PVC state, so a tsidp PVC loss means re-registering and re-SOPS-ing the
+# secret (same recovery note as affine). tsidp emits NO `name` claim, so the display
+# name comes from `preferred_username` (profile scope) and identity keys off `sub`
+# (the stable Tailscale user ID). Only tsidp users can sign in: ENABLE_LOGIN_FORM +
+# ENABLE_PASSWORD_AUTH=false turn off email/password entirely, ENABLE_OAUTH_SIGNUP
+# auto-provisions on first SSO login, so tailnet + tsidp IS the account boundary.
+# The very first OAuth login becomes the admin.
+#
+# Server-side OIDC calls (discovery/token/userinfo) go to the tsidp tailnet name,
+# which in-cluster pods can't resolve -> same hostAliases hack as affine/videogen
+# (map the FQDN to the idp-egress egress ClusterIP, infra/tailscale-egress-idp.yaml).
+# Update the IP if that egress Service is ever deleted/recreated.
+#
+# LLM: the browser never talks to the model directly; the Open WebUI backend calls
+# OPENAI_API_BASE_URL with OPENAI_API_KEY (both per-connection config, not model
+# choice — pick models in the UI). It currently points at the in-cluster vLLM
+# (apps/vllm.yaml service `vllm:8000`, no key required). To attach a different
+# custom OpenAI-compatible endpoint, change OPENAI_API_BASE_URL below and re-encrypt
+# apps/openwebui-secrets.enc.yaml with the real key:
+#   sops apps/openwebui-secrets.enc.yaml   # edit OPENAI_API_KEY in place
+# (or recreate per the AGENTS.md recipe).
+#
+# ENABLE_WEBSOCKET_SUPPORT stays off: single replica + sticky-free HTTP is fine.
+# persistence: /app/backend/data holds webui.db (SQLite) + uploads — one writer,
+# so replicas=1 with Recreate, same as every SQLite app here.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openwebui-data
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path            # NVMe: SQLite wants fast fsync
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }            # one SQLite writer, one RWO PVC
+  selector: { matchLabels: { app: openwebui } }
+  template:
+    metadata: { labels: { app: openwebui } }
+    spec:
+      enableServiceLinks: false
+      hostAliases:
+        - ip: "10.109.232.240"            # idp-egress ClusterIP (see header)
+          hostnames: [idp.beluga-wyvern.ts.net]
+      containers:
+        - name: openwebui
+          # Pinned to v0.11.4 by digest (verified against GHCR 2026-10-07).
+          image: ghcr.io/open-webui/open-webui:v0.11.4@sha256:9591b13f13843c7721c2b8eaf7382846c81b3ffe126526d1888d1fed50c6a33f
+          env:
+            # Must match the address people open (builds the OAuth redirect etc.).
+            - { name: WEBUI_URL, value: "https://openwebui.beluga-wyvern.ts.net" }
+            - name: WEBUI_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: openwebui-secrets, key: WEBUI_SECRET_KEY } }
+            # --- SSO: tsidp (strict SSO-only, per docs SSO guidance) ---
+            - { name: ENABLE_LOGIN_FORM, value: "false" }          # no email/password form (replaces ENABLE_SIGNIN)
+            - { name: ENABLE_PASSWORD_AUTH, value: "false" }       # refuse password logins outright; safe only because OAuth signup works
+            - { name: ENABLE_SIGNUP, value: "false" }              # no local account creation
+            - { name: ENABLE_PASSWORD_CHANGE_FORM, value: "false" } # no password UI for an SSO-only instance
+            - { name: ENABLE_OAUTH_SIGNUP, value: "true" }         # auto-provision on first tsidp login
+            - { name: OAUTH_PROVIDER_NAME, value: "Tailscale" }
+            - { name: OPENID_PROVIDER_URL, value: "https://idp.beluga-wyvern.ts.net/.well-known/openid-configuration" }
+            - { name: OAUTH_SCOPES, value: "openid email profile" }
+            - { name: OAUTH_CLIENT_ID, value: "0f777b7f177adde4cecf5ed337ba64f4" }
+            - name: OAUTH_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: openwebui-secrets, key: OAUTH_CLIENT_SECRET } }
+            # tsidp emits no `name` claim; use profile's preferred_username instead.
+            - { name: OAUTH_USERNAME_CLAIM, value: "preferred_username" }
+            - { name: OAUTH_EMAIL_CLAIM, value: "email" }
+            - { name: OAUTH_PICTURE_CLAIM, value: "picture" }
+            # Keep env vars authoritative (Admin Panel OAuth section read-only).
+            - { name: ENABLE_OAUTH_PERSISTENT_CONFIG, value: "false" }
+            # --- LLM: custom OpenAI-compatible endpoint (see header) ---
+            - { name: ENABLE_OPENAI_API, value: "true" }
+            - { name: OPENAI_API_BASE_URL, value: "http://vllm:8000/v1" }
+            - name: OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: openwebui-secrets, key: OPENAI_API_KEY } }
+            # RAG (doc summarisation etc.) uses the same endpoint.
+            - { name: RAG_OPENAI_API_BASE_URL, value: "http://vllm:8000/v1" }
+            - name: RAG_OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: openwebui-secrets, key: OPENAI_API_KEY } }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /health/check, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/check, port: 8080 }
+            initialDelaySeconds: 60        # first boot migrates the SQLite DB
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "100m", memory: 256Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: data, mountPath: /app/backend/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: openwebui-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui
+  namespace: default
+spec:
+  selector: { app: openwebui }
+  ports:
+    - { name: http, port: 80, targetPort: 8080 }
+---
+# Tailscale Ingress: openwebui.beluga-wyvern.ts.net, tailnet only, never public.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openwebui-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [openwebui]
+  rules:
+    - host: openwebui
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openwebui
+                port:
+                  number: 80
