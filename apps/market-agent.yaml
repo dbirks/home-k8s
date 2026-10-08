@@ -53,19 +53,15 @@ spec:
     metadata: { labels: { app: market-agent-postgres } }
     spec:
       enableServiceLinks: false
-      # PodSecurity restricted + hardening (spec 08): the pgvector image
-      # already runs as uid 999; seccomp + no escalation + no capabilities.
-      # No fsGroup: the local-path driver ignores it, and provisioned
-      # directories are 0777, so the existing 999-owned data stays writable.
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile: { type: RuntimeDefault }
+      # NOTE: pgvector/pgvector ships no USER and its docker-entrypoint must
+      # start as root (chown + gosu privilege drop). runAsNonRoot or dropped
+      # capabilities break startup ("container has runAsNonRoot and image
+      # will run as root"). Isolation for the DB is enforced by the
+      # market-agent-postgres-ingress NetworkPolicy instead; revisit with a
+      # custom nonroot image if defense-in-depth is wanted later.
       containers:
         - name: postgres
           image: pgvector/pgvector:pg17   # pgvector allowed for retrieval indexes
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities: { drop: ["ALL"] }
           env:
             - { name: POSTGRES_USER, value: market_agent }
             - { name: POSTGRES_DB, value: market_agent }
