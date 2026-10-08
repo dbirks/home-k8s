@@ -1,0 +1,125 @@
+# Happier relay — self-hosted control plane for coding-agent sessions (issue #143).
+# One server that syncs E2EE session data between the Arch dev machines' happier
+# daemons and the iOS app / web UI. Agents NEVER run here: the cluster only
+# relays encrypted sessions and serves the embedded web UI. Each dev box (this
+# workstation included) runs its own `happier daemon` that dials in.
+#
+# IMAGE: official relay-server = server + embedded web UI in one container,
+# light flavor + SQLite baked in (all state under /data). Pinned to the STABLE
+# channel by digest (verified against GHCR 2026-10-08; matches CLI v0.2.14).
+# Upgrade = pull the new :stable digest, update the pin, `flux reconcile`.
+#   skopeo inspect docker://ghcr.io/happier-dev/relay-server:stable | jq .Digest
+#
+# URL: happier.beluga-wyvern.ts.net (tailnet-only Tailscale Ingress, same
+# pattern as openwebui/gnotes). HTTPS + WebSocket upgrades are native to the
+# tailscale-operator proxy, so Socket.IO at /v1/updates works without a
+# reverse-proxy config. HAPPIER_SERVER_TRUST_PROXY is deliberately unset:
+# the operator proxy forwards without X-Forwarded-* rewriting, so trusting
+# hops would only mis-key rate limits. If daemons ever "register but stay
+# offline", the WebSocket path through the ingress is the first suspect.
+#
+# AUTH: device-key accounts, anonymous signup left ENABLED (the documented
+# recommendation for a Tailscale-only server — network membership is the
+# boundary; no OAuth provider configured). First `happier auth login` creates
+# the account and shows a secret key — BACK IT UP (account restore on new
+# phones/browsers requires it; the relay cannot recover it).
+#
+# SECRET: HANDY_MASTER_SECRET protects server-managed secrets at rest. Kept
+# stable via SOPS so a PVC restore with a different secret can't orphan data.
+#   sops apps/happier-secrets.enc.yaml   # rotate in place
+# BACKUP: /data (SQLite DB + files) + apps/happier-secrets.enc.yaml are the
+# full restore set. PVC is local-path (NVMe, fast fsync for SQLite);
+# Recreate strategy because SQLite is single-writer.
+#
+# HEALTH: /health = liveness (no DB dep), /ready = readiness (DB checked).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: happier-data
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path            # NVMe: SQLite wants fast fsync
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: happier
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }            # one SQLite writer, one RWO PVC
+  selector: { matchLabels: { app: happier } }
+  template:
+    metadata: { labels: { app: happier } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: relay
+          # Pinned stable-channel digest (verified 2026-10-08). Non-root
+          # `happier` user + light/SQLite defaults are baked into the image.
+          image: ghcr.io/happier-dev/relay-server:stable@sha256:61d88f9b75961098b0d03a151a545f4436360a12cc3ba7c7a33f58b267ebda90
+          env:
+            # Canonical URL clients/iOS use — advertised via GET /v1/features
+            # and embedded in QR/deep links. Must match what the browser opens.
+            - { name: HAPPIER_PUBLIC_SERVER_URL, value: "https://happier.beluga-wyvern.ts.net" }
+            # Web UI is embedded and served at / by this same image.
+            - { name: HAPPIER_WEBAPP_URL, value: "https://happier.beluga-wyvern.ts.net" }
+            - name: HANDY_MASTER_SECRET
+              valueFrom: { secretKeyRef: { name: happier-secrets, key: HANDY_MASTER_SECRET } }
+          ports:
+            - { name: http, containerPort: 3005 }
+          startupProbe:
+            httpGet: { path: /ready, port: 3005 }
+            periodSeconds: 5
+            failureThreshold: 60          # first boot runs SQLite migrations
+          readinessProbe:
+            httpGet: { path: /ready, port: 3005 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3005 }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "100m", memory: 256Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: happier-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: happier
+  namespace: default
+spec:
+  selector: { app: happier }
+  ports:
+    - { name: http, port: 80, targetPort: 3005 }
+---
+# Tailscale Ingress: happier.beluga-wyvern.ts.net, tailnet only, never public.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: happier-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [happier]
+  rules:
+    - host: happier
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: happier
+                port:
+                  number: 80
