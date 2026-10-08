@@ -25,10 +25,13 @@
 #
 # LLM: the browser never talks to the model directly; the Open WebUI backend calls
 # OPENAI_API_BASE_URL with OPENAI_API_KEY (both per-connection config, not model
-# choice — pick models in the UI). It currently points at the in-cluster vLLM
-# (apps/vllm.yaml service `vllm:8000`, no key required). To attach a different
-# custom OpenAI-compatible endpoint, change OPENAI_API_BASE_URL below and re-encrypt
-# apps/openwebui-secrets.enc.yaml with the real key:
+# choice — pick models in the UI). It points at the resident serving engine,
+# pennyroyal-flashnext (apps/pennyroyal-flashnext.yaml, model id "pennyroyal");
+# the old vllm deployment it referenced is retired and the KServe per-model
+# workload-svc are scale-to-zero (KEDA), so they cold-start ~2min on first hit.
+# To attach a different custom OpenAI-compatible endpoint, change
+# OPENAI_API_BASE_URL below and re-encrypt apps/openwebui-secrets.enc.yaml with
+# the real key:
 #   sops apps/openwebui-secrets.enc.yaml   # edit OPENAI_API_KEY in place
 # (or recreate per the AGENTS.md recipe).
 #
@@ -93,11 +96,11 @@ spec:
             - { name: ENABLE_OAUTH_PERSISTENT_CONFIG, value: "false" }
             # --- LLM: custom OpenAI-compatible endpoint (see header) ---
             - { name: ENABLE_OPENAI_API, value: "true" }
-            - { name: OPENAI_API_BASE_URL, value: "http://vllm:8000/v1" }
+            - { name: OPENAI_API_BASE_URL, value: "http://pennyroyal-flashnext:8001/v1" }
             - name: OPENAI_API_KEY
               valueFrom: { secretKeyRef: { name: openwebui-secrets, key: OPENAI_API_KEY } }
             # RAG (doc summarisation etc.) uses the same endpoint.
-            - { name: RAG_OPENAI_API_BASE_URL, value: "http://vllm:8000/v1" }
+            - { name: RAG_OPENAI_API_BASE_URL, value: "http://pennyroyal-flashnext:8001/v1" }
             - name: RAG_OPENAI_API_KEY
               valueFrom: { secretKeyRef: { name: openwebui-secrets, key: OPENAI_API_KEY } }
           ports:

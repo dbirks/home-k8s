@@ -55,3 +55,4 @@ nodes:
       - "@./patches/local-storage.yaml"
       - "@./patches/nvidia-module-options.yaml"
       - "@./patches/hdd-storage.yaml"
+      - "@./patches/kubelet-max-pods.yaml"

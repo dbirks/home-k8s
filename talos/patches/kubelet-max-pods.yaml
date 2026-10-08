@@ -1,0 +1,11 @@
+# Raise the kubelet pod ceiling (issue: Open WebUI deploy).
+#
+# Talos's default max-pods is 110; the cluster runs ~109 and every tailnet app
+# costs TWO pods (the app + a ts-<name> Tailscale proxy), so new deployments
+# were unschedulable with "Too many pods" even though CPU/RAM/GPU had room.
+# The binding constraint is the pod count, not resources. 250 is safe: the pod
+# CIDR is /16 and the node has ~47GB RAM to spread small pods across.
+machine:
+  kubelet:
+    extraArgs:
+      max-pods: "250"
