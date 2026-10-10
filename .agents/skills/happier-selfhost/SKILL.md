@@ -51,9 +51,17 @@ Three moving parts:
   before Tailscale MagicDNS resolves (ENOTFOUND), then hit "Machine server
   ownership conflict detected; shutting down" because the relay still holds the
   previous boot's connection. It exits 0, so `Restart=on-failure` never retries.
-  Fix: `systemctl --user restart happier-daemon.default` once the stale lease
-  has expired, then check `happier daemon status` and look for "Connected to
-  server" in the newest `~/.happier/logs/*-daemon.log`.
+  Manual fix: `systemctl --user restart happier-daemon.default`, then look for
+  "Connected to server" in the newest `~/.happier/logs/*-daemon.log`.
+  **Installed prevention (2026-10-10):** the drop-in
+  `~/.config/systemd/user/happier-daemon.default.service.d/wait-for-relay.conf`
+  adds an ExecStartPre that waits up to 90s for the relay name to resolve. The
+  wait is non-fatal, so the daemon still starts when Tailscale is off. The
+  drop-in also sets `Restart=always`, `RestartSec=30` and
+  `StartLimitIntervalSec=0`. It survives `happier service install/start`
+  rewriting the main unit. To stop the daemon, use `happier service stop` (a
+  systemctl stop, which Restart=always respects); `happier daemon stop` refuses
+  under the service.
 
 ## Crush as a Happier engine (verified 2026-10-08, experimental)
 
