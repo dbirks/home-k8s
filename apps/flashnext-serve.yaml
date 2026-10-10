@@ -1,6 +1,11 @@
 # Qwen3.8-Flash-Next NVFP4 single-GPU serving on the RTX PRO 6000 (SM120), via the primitive-ai
 # INT4-PLE mmap overlay. WORKING config (issue #112 solved 2026-08-28). Debug scaffolding removed.
 #
+# PARKED / ROLLBACK-ONLY: superseded by Pennyroyal (#135, apps/pennyroyal-flashnext.yaml). Its old
+# llm.birks.dev gateway wiring (Backend/AIServiceBackend/KEDA wake rule) was removed with the gateway
+# teardown 2026-10-10; if this path is ever revived it must be wired directly (Service / tailscale
+# ingress / LLM Collective), like every other engine now.
+#
 # The n-gram PLE table (128 INT4 shards, 30GB on this local-path NVMe PVC) is mmap'd OFF-GPU; only
 # ~84GB of weights live in VRAM. Owns the whole card — the rest of the catalog must be at 0.
 #
@@ -101,69 +106,3 @@ spec:
   selector: { app: flashnext }
   ports:
     - { name: http, port: 8000, targetPort: 8000 }
----
-# ============================================================================================
-# GATEWAY WIRING (on-demand catalog member) — reachable at https://llm.birks.dev/v1 as model
-# `qwen3.8-flash-next`, same NInfer/AIServiceBackend pattern (apps/ninfer-standalone.yaml, #105).
-# Backend(FQDN) -> AIServiceBackend(OpenAI) -> a rule on the llm-model-router AIGatewayRoute
-# (apps/llm-ai-gateway.yaml, appended AFTER the ninfer rule = rule index 7). Auth inherited from
-# the /v1 vllm-apikey-auth SecurityPolicy. Scale-to-zero via KEDA on that rule's ext_proc metric.
-#
-# CO-RESIDENCE (one card): flashnext requests the WHOLE card (gpumem 97800), so HAMi will NOT
-# schedule it while any other model holds VRAM (and vice versa) — safe PASSIVE mutual exclusion,
-# no OOM. With the regen job stopped (parked .hold), nothing pins qwen3.8-27b, so all models idle
-# to 0 when unused and whichever is requested cold-starts on the free card. A request to flashnext
-# while another model is still resident stays Pending until that model idles (~2min cooldown), then
-# schedules — "hit whatever, it brings up". flashnext cold start is ~5min (weight load + PLE + graph
-# capture), so the first request after idle needs a patient client / retry.
-# ============================================================================================
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: Backend
-metadata:
-  name: flashnext-backend
-  namespace: default
-spec:
-  endpoints:
-    - fqdn:
-        hostname: flashnext.default.svc.cluster.local
-        port: 8000
----
-apiVersion: aigateway.envoyproxy.io/v1beta1
-kind: AIServiceBackend
-metadata:
-  name: flashnext-backend
-  namespace: default
-spec:
-  schema:
-    name: OpenAI
-  backendRef:
-    group: gateway.envoyproxy.io
-    kind: Backend
-    name: flashnext-backend
----
-# Scale-to-zero: wake on the llm-model-router per-rule ext_proc for the flashnext rule. flashnext is
-# appended AFTER ninfer (rule 6) -> rule index 7. VERIFY the index after applying the route edit:
-#   kubectl -n envoy-gateway-system exec <llm-ai-gw envoy pod> -c envoy -- \
-#     curl -s localhost:19001/stats/prometheus | grep llm_model_router_rule_ | grep streams_started
-apiVersion: keda.sh/v1alpha1
-kind: ScaledObject
-metadata:
-  name: flashnext
-  namespace: default
-  annotations:
-    autoscaling.keda.sh/paused-replicas: "0"   # PARKED: never wake (needs ~98GB, would starve ninfer)
-spec:
-  scaleTargetRef:
-    name: flashnext
-  minReplicaCount: 0
-  maxReplicaCount: 1
-  pollingInterval: 15
-  cooldownPeriod: 600          # 10-min warm stopgap (home-k8s #104); flashnext cold start is slow anyway
-  triggers:
-    - type: prometheus
-      name: flashnext-aigw-extproc-rate
-      metadata:
-        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-        query: 'sum(rate(envoy_cluster_cluster_httproute_default_llm_model_router_rule_7ext_proc_streams_started{job="envoy-gw"}[1m]))'
-        threshold: "5"
-        activationThreshold: "0.001"

@@ -1,51 +1,23 @@
-# qwen3.8-27b-ninfer — NInfer engine on llm.birks.dev, routed through the AI GATEWAY (single /v1 URL)
-# via an AIServiceBackend, BYPASSING the llm-d EPP/InferencePool. WITH working scale-from-zero.
+# qwen3.8-27b-ninfer — NInfer engine (raw Deployment + Service, default ns).
 # ============================================================================================
-# DESIGN v2 (issue #105). This REPLACES the v1 plain-Service /ninfer path approach (in the live
-# apps/ninfer-standalone.yaml). v1 served fine but scale-FROM-zero did NOT work: a plain Service
-# backendRef at 0 endpoints on llm-public-gw emits no reliable Envoy wake metric (confirmed by test).
+# PARKED (replicas: 0) since 2026-09-28: the whole GPU card was handed to the Pennyroyal
+# Flash-Next canary (#135), which is now the primary serving path behind the LLM Collective.
 #
-# WHY EPP-BYPASS IS STILL NEEDED: NInfer exposes no vLLM-format Prometheus /metrics, so the llm-d EPP
-# (endpoint picker) saturation detector fail-closes and EVICTS every gateway request. Making NInfer an
-# InferencePool-backed model therefore breaks the gateway. So we DON'T create an InferencePool/EPP.
+# HISTORY: this engine used to be exposed on llm.birks.dev through the Envoy AI Gateway
+# (Backend + AIServiceBackend + a KEDA scale-from-zero ScaledObject). That whole gateway
+# stack was torn down 2026-10-10 (see the teardown issue); those objects were removed with it.
 #
-# HOW v2 ROUTES + WAKES:
-#   - NInfer is a raw Deployment + Service (default ns) — NO LLMInferenceService, NO InferencePool, NO EPP.
-#   - We wrap the ninfer Service as an Envoy AI Gateway `AIServiceBackend` (OpenAI schema). EAG's
-#     AIServiceBackend.backendRef is CEL-restricted to a `Backend` (gateway.envoyproxy.io) resource —
-#     raw k8s Service refs are NOT yet supported (envoyproxy/ai-gateway#902) — so we also add a
-#     `Backend` pointing at the ninfer Service FQDN.
-#   - We add ONE rule to the existing `llm-model-router` AIGatewayRoute (apps/llm-ai-gateway.yaml)
-#     matching x-ai-eg-model=qwen3.8-27b-ninfer -> this AIServiceBackend. Client uses the SAME
-#     base_url https://llm.birks.dev/v1 with body model=qwen3.8-27b-ninfer (like every other model).
-#   - WAKE METRIC: the AIGatewayRoute per-rule ext_proc runs on the llm-ai-gw Envoy for EVERY request
-#     matching that rule, BEFORE the backend is contacted, so it increments even at 0 engine replicas.
-#     That is the whole point — this is what the plain-Service cluster metric could not do.
+# REVIVAL PATH (when the card frees up again):
+#   - LLM Collective: uncomment the `ninfer` backend block in apps/llm-collective-contributor.yaml
+#     (url: http://ninfer.default.svc.cluster.local:8000) — the pattern Pennyroyal uses today.
+#   - Direct/tailnet access: a tailscale Ingress on the ninfer Service, like the other apps.
+#   - Scale-to-zero is gone (KEDA removed with the stack); ninfer starts always-on at replicas: 1.
 #
-# AUTH: INHERITED, no ninfer-specific SecurityPolicy. Traffic enters /v1 on llm-public-gw, which is
-# already guarded by the `vllm-apikey-auth` SecurityPolicy (apps/llm-routes.yaml, targets the
-# vllm-openai HTTPRoute covering /v1 + /anthropic). Same coworker keys; Authorization: Bearer llm_... .
-# BONUS: because /anthropic on llm-public-gw also flows through this AIGatewayRoute, NInfer becomes
-# reachable on the Anthropic surface too (EAG translates Anthropic<->OpenAI), for free.
-#
-# NAMESPACE CONSTRAINT (verified): the AIGatewayRoute forces its backendRefs into the route's OWN
-# namespace (default). So the AIServiceBackend MUST be in `default` (it is, alongside the ninfer
-# Service). We also keep the Backend in `default` so no ReferenceGrant is needed (FQDN endpoint, not
-# a cross-ns Service ref).
-#
-# ---------------------------------------------------------------------------------------------
-# OBJECTS TO DELETE when cutting over from the live apps/ninfer-standalone.yaml (v1):
-#   - HTTPRoute       ninfer-route                 (ns llm-portal)   <- replaced by the AIGatewayRoute rule
-#   - SecurityPolicy  ninfer-apikey-auth           (ns llm-portal)   <- auth now inherited from vllm-apikey-auth
-#   - ReferenceGrant  ninfer-route-to-default-svc  (ns default)      <- no cross-ns Service ref anymore
-# KEEP (unchanged): Deployment ninfer + Service ninfer (below).
-# REPLACE: the KEDA ScaledObject (new wake query, below).
-# ADD: Backend ninfer-backend + AIServiceBackend ninfer-backend (below).
-# EDIT the LIVE apps/llm-ai-gateway.yaml: append the rule in the comment block at the very bottom of
-#   this file. That single route edit is the ONLY change to an already-serving manifest.
+# SIZING (unchanged): HAMi hard slice 50000 MB of the 97887 MB card; host tier zeroed
+# (--host-kv-mib 0) because this box is RAM-poor/VRAM-rich — see the ninfer-serving-memory skill.
+# Weights PVC: apps/qwen38-ninfer-weights.yaml (moved out of the deleted kserve/ dir).
 # ============================================================================================
 ---
-# ---- NInfer engine (raw Deployment). UNCHANGED from the live v1 manifest.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -90,7 +62,7 @@ spec:
             - "--port"
             - "8000"
             - "--model-id"
-            - "qwen3.8-27b-ninfer"                      # public model name (matches x-ai-eg-model + body model)
+            - "qwen3.8-27b-ninfer"                      # public model name
             - "--device"
             - "0"
             - "--max-context"
@@ -145,13 +117,14 @@ spec:
       volumes:
         - name: model
           persistentVolumeClaim:
-            claimName: qwen38-ninfer-model        # existing, SHA-verified (kserve/qwen38-ninfer-weights.yaml)
+            claimName: qwen38-ninfer-model        # existing, SHA-verified (apps/qwen38-ninfer-weights.yaml)
         - name: dshm
           emptyDir:
             medium: Memory
             sizeLimit: 4Gi
 ---
-# ---- Service (ClusterIP; default ns). UNCHANGED. The Backend below points at this via FQDN.
+# ---- Service (ClusterIP; default ns). Revival consumers: LLM Collective contributor or a
+# tailscale Ingress (see header).
 apiVersion: v1
 kind: Service
 metadata:
@@ -167,60 +140,3 @@ spec:
     - name: http
       port: 8000
       targetPort: 8000
----
-# ---- Envoy Gateway Backend wrapping the ninfer Service (required indirection).
-# AIServiceBackend.backendRef is CEL-restricted to kind=Backend group=gateway.envoyproxy.io (raw
-# Service refs unsupported yet — envoyproxy/ai-gateway#902), so we declare a Backend that resolves the
-# ninfer Service by its cluster FQDN. `enableBackend: true` is already set on this cluster's Envoy
-# Gateway config (verified), so Backend resources are honored. FQDN resolves to the stable ClusterIP
-# even at 0 pod endpoints, so route/ext_proc processing (the wake path) never depends on engine health.
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: Backend
-metadata:
-  name: ninfer-backend
-  namespace: default
-spec:
-  endpoints:
-    - fqdn:
-        hostname: ninfer.default.svc.cluster.local
-        port: 8000
----
-# ---- AIServiceBackend: presents the ninfer engine to the AIGatewayRoute as an OpenAI-schema backend.
-# Must live in `default` (same ns as the llm-model-router AIGatewayRoute, which forces backendRefs into
-# its own namespace). schema.name=OpenAI => no request/response translation on the /v1 surface (and
-# free Anthropic<->OpenAI translation on the /anthropic surface). No timeouts field exists on
-# AIServiceBackend (spec keys: backendRef, schema, bodyMutation, headerMutation) — the per-request
-# timeout is set on the AIGatewayRoute RULE instead (see the rule snippet at the bottom: 1800s).
-apiVersion: aigateway.envoyproxy.io/v1beta1
-kind: AIServiceBackend
-metadata:
-  name: ninfer-backend
-  namespace: default
-spec:
-  schema:
-    name: OpenAI
-  backendRef:
-    group: gateway.envoyproxy.io
-    kind: Backend
-    name: ninfer-backend
-    # same namespace (default) -> no ReferenceGrant needed
----
-# ---- (Scale-to-zero ScaledObject removed: ninfer is now always on — it backs the LLM Collective
-# contributor, which must be able to serve at a moment's notice. HAMi caps it at 40GB VRAM so the rest
-# of the card stays free for other workloads.)
-# =============================================================================================
-# DRAFT — RULE TO APPEND TO THE LIVE apps/llm-ai-gateway.yaml (do NOT apply from here; this is a
-# copy-paste snippet). Add it as the LAST rule under `spec.rules` of the `llm-model-router`
-# AIGatewayRoute, AFTER the laguna-s-2.1 rule, so it takes rule index 6:
-#
-#     - matches:
-#         - headers: [{ type: Exact, name: x-ai-eg-model, value: qwen3.8-27b-ninfer }]
-#       timeouts: { request: 1800s, backendRequest: 1800s }
-#       backendRefs:
-#         - { name: ninfer-backend }   # AIServiceBackend (defaults: group aigateway.envoyproxy.io, kind
-#                                      # AIServiceBackend, namespace default). Do NOT set group/kind —
-#                                      # the CRD only allows group/kind for InferencePool backends.
-#
-# Order matters ONLY for the baked metric index above; header matches are exact so rules don't shadow
-# each other. Keeping ninfer last also keeps the other six models' metric indices (0-6) unchanged.
-# =============================================================================================
