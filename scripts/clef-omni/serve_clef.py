@@ -28,11 +28,13 @@ repo's joint_schema_model.py: one forward pass, per-option probabilities from th
 Checkpoint kinds, detected from the repo's config:
   * BF16 original (Cloudflare/clef-omni): Cloudflare's load_release_model, unchanged.
   * AutoRound INT4 (quant_method auto-round): transformers loads it with real int4 kernels.
-  * ModelOpt NVFP4 / NVFP4A16 (hf_quant_config.json): transformers cannot load packed NVFP4, so the
-    FP4 expert weights are DEQUANTIZED to BF16 on load (bit-exact quantized values, BF16 memory and
-    speed). For the W4A4 checkpoint, --simulate-fp4-activations also rounds the expert inputs to NVFP4
-    exactly as ModelOpt calibrated them (per-16 block scales in FP8 E4M3 under the exported
-    input_scale), reproducing the quantized model's answers; it is slow, so it is off by default.
+  * ModelOpt NVFP4 / NVFP4A16 (hf_quant_config.json) and AutoRound NVFP4 / NVFP4A16 (auto-round,
+    data_type nv_fp): transformers cannot load packed NVFP4 (AutoRound has no backend for its own
+    weight-only nv_fp), so the FP4 expert weights are DEQUANTIZED to BF16 on load (bit-exact quantized
+    values, BF16 memory and speed). For W4A4 checkpoints, --simulate-fp4-activations also rounds the
+    expert inputs to NVFP4 exactly as the quantizer calibrated them (per-16 block scales in FP8 E4M3
+    under the exported per-tensor input scale), reproducing the quantized model's answers; it is slow,
+    so it is off by default.
     Native FP4 execution needs an engine such as vLLM, plus a hidden-state path into the head.
 """
 import argparse
@@ -67,18 +69,47 @@ def kind_of(path):
     qc = json.loads((path / "config.json").read_text()).get("quantization_config") or {}
     method = str(qc.get("quant_method", "")).replace("_", "-")
     if method == "auto-round":
+        if "nv_fp" in str(qc.get("data_type", "")):
+            if qc.get("bits") != 4 or qc.get("group_size") != 16:
+                raise SystemExit(f"unsupported AutoRound nv_fp scheme: bits={qc.get('bits')} group_size={qc.get('group_size')}")
+            return "auto-round:nvfp4" if (qc.get("act_bits") or 16) <= 4 else "auto-round:nvfp4a16"
         return f"auto-round:{qc.get('bits', '?')}bit"
     if method:
         raise SystemExit(f"unsupported quantization_config.quant_method={method!r}")
     return "bf16"
 
 
-def dequant_nvfp4(packed, scale, scale_2, block=16):
-    """ModelOpt NVFP4: two E2M1 codes per byte (low nibble first), e4m3 scale per 16, fp32 global scale."""
+def unpack_e2m1(packed):
+    """Two E2M1 codes per byte, low nibble first, bit 3 = sign (ModelOpt and AutoRound/llm-compressor alike)."""
     codes = torch.stack((packed & 0x0F, packed >> 4), dim=-1).reshape(*packed.shape[:-1], -1).long()
-    vals = E2M1.to(packed.device)[codes]
+    return E2M1.to(packed.device)[codes]
+
+
+def recip(t):
+    return torch.where(t == 0, torch.zeros_like(t), 1.0 / t)
+
+
+def dequant_nvfp4(packed, scale, scale_2, block=16):
+    """ModelOpt NVFP4: e4m3 scale per 16, fp32 global scale is a multiplier."""
+    vals = unpack_e2m1(packed)
     vals = vals.view(*vals.shape[:-1], -1, block) * (scale.float() * scale_2.float()).unsqueeze(-1)
     return vals.reshape(*packed.shape[:-1], -1).to(torch.bfloat16)
+
+
+def dequant_nvfp4_ar(packed, scale, global_scale, block=16):
+    """AutoRound NVFP4 (llm-compressor packing): the fp32 weight_global_scale is a DIVISOR. Same op order as
+    AutoRound's own NVFP4QuantLinear._dequant_nvfp4_tensor: (fp4 * 1/global_scale) * e4m3 scale, in fp32."""
+    if scale.dtype != torch.float8_e4m3fn:
+        raise RuntimeError(f"expected FP8 E4M3 weight_scale, got {scale.dtype}")
+    vals = unpack_e2m1(packed) * recip(global_scale.float())
+    vals = vals.view(*vals.shape[:-1], -1, block) * scale.float().unsqueeze(-1)
+    return vals.reshape(*packed.shape[:-1], -1).to(torch.bfloat16)
+
+
+def round_e2m1(a):
+    """|x| to the nearest E2M1 magnitude, ties to even (same as AutoRound's cast_to_fp4)."""
+    return torch.where(a <= 0.25, 0.0, torch.where(a < 0.75, 0.5, torch.where(a <= 1.25, 1.0, torch.where(
+        a < 1.75, 1.5, torch.where(a <= 2.5, 2.0, torch.where(a < 3.5, 3.0, torch.where(a <= 5.0, 4.0, 6.0)))))))
 
 
 def fp4_fake_quant(x, global_scale, block=16):
@@ -88,29 +119,38 @@ def fp4_fake_quant(x, global_scale, block=16):
     amax = xf.abs().amax(-1, keepdim=True)
     scale = (amax / (6.0 * global_scale)).clamp(max=448.0).to(torch.float8_e4m3fn).float() * global_scale
     scale = torch.where(scale >= 1e-5, scale, torch.ones_like(scale))
-    a = xf.abs() / scale
-    q = torch.where(a <= 0.25, 0.0, torch.where(a < 0.75, 0.5, torch.where(a <= 1.25, 1.0, torch.where(
-        a < 1.75, 1.5, torch.where(a <= 2.5, 2.0, torch.where(a < 3.5, 3.0, torch.where(a <= 5.0, 4.0, 6.0)))))))
-    return (torch.sign(xf) * q * scale).reshape(shape).to(dtype)
+    return (torch.sign(xf) * round_e2m1(xf.abs() / scale) * scale).reshape(shape).to(dtype)
 
 
-def simulate_fp4_activations(experts, gu_scale, dn_scale):
-    """Round expert inputs to NVFP4 inside a fused-experts module (eager path calls F.linear per expert)."""
+def fp4_fake_quant_ar(x, global_scale, block=16):
+    """AutoRound's static-global-scale NVFP4 activation rounding (data_type/nvfp.py ref_nvfp4_quant), op for op.
+    global_scale is the exported input_global_scale = 448*6/amax, the reciprocal of ModelOpt's input_scale."""
+    shape, dtype = x.shape, x.dtype
+    xf = x.float().reshape(-1, block)
+    scale = (global_scale * (xf.abs().amax(-1, keepdim=True) * (1.0 / 6.0))).clamp(-448.0, 448.0)
+    inv = recip(scale.to(torch.float8_e4m3fn).float() * recip(global_scale))
+    xs = (xf * inv).clamp(-6.0, 6.0)
+    return (torch.sign(xs) * round_e2m1(xs.abs()) * recip(inv)).reshape(shape).to(dtype)
+
+
+def simulate_fp4_activations(experts, gu_quant, dn_quant):
+    """Round expert inputs to NVFP4 inside a fused-experts module (eager path calls F.linear per expert).
+    gu_quant / dn_quant: one rounding function per expert (AutoRound calibrates each expert separately)."""
     import torch.nn.functional as F
     linear, inner = F.linear, experts.forward
     gu, dn = experts.gate_up_proj, experts.down_proj
 
     def owner(w):
         p = w.data_ptr()
-        for param, sc in ((gu, gu_scale), (dn, dn_scale)):
-            start = param.data_ptr()
-            if start <= p < start + param.numel() * param.element_size():
-                return sc
+        for param, qs in ((gu, gu_quant), (dn, dn_quant)):
+            start, step = param.data_ptr(), param[0].numel() * param.element_size()
+            if start <= p < start + len(qs) * step:
+                return qs[(p - start) // step]
         return None
 
     def q_linear(x, w, b=None):
-        sc = owner(w)
-        return linear(fp4_fake_quant(x, sc) if sc is not None else x, w, b)
+        q = owner(w)
+        return linear(q(x) if q is not None else x, w, b)
 
     def forward(*a, **k):
         F.linear = q_linear
@@ -121,8 +161,12 @@ def simulate_fp4_activations(experts, gu_scale, dn_scale):
     experts.forward = forward
 
 
-def load_modelopt(path, device, simulate_activations=False):
-    """Build the BF16 backbone directly on the GPU, then fill it shard by shard (host RAM stays small)."""
+def load_nvfp4(path, device, simulate_activations=False):
+    """ModelOpt or AutoRound NVFP4: build the BF16 backbone directly on the GPU, then fill it shard by shard
+    (host RAM stays small), dequantizing the FP4 experts. The two formats differ only in tensor names and
+    global-scale direction: ModelOpt .weight/.weight_scale_2/.input_scale (multipliers), AutoRound
+    .weight_packed/.weight_global_scale/.input_global_scale (divisors)."""
+    from functools import partial
     from safetensors import safe_open
     from transformers import AutoConfig, Qwen3OmniMoeForConditionalGeneration
     config = AutoConfig.from_pretrained(path)
@@ -130,7 +174,8 @@ def load_modelopt(path, device, simulate_activations=False):
     if simulate_activations:   # per-expert F.linear is where the activation rounding hooks in (slow)
         for c in (config, config.thinker_config, config.thinker_config.text_config):
             c._experts_implementation = "eager"
-    for c in (config, getattr(config, "thinker_config", None)):
+    thinker = getattr(config, "thinker_config", None)
+    for c in (config, thinker, getattr(thinker, "text_config", None)):   # else transformers tries AutoRound
         if c is not None and hasattr(c, "quantization_config"):
             delattr(c, "quantization_config")
     with torch.device(device):
@@ -145,17 +190,23 @@ def load_modelopt(path, device, simulate_activations=False):
         with safe_open(str(path / shard), "pt", device=str(device)) as st:
             keys = list(st.keys())
             for k in keys:
-                if ".mlp.experts." in k and k.endswith(".weight") and k.rsplit(".", 2)[-2] in ("gate_proj", "up_proj", "down_proj"):
-                    base = k[: -len(".weight")]
+                base, attr = k.rsplit(".", 1)
+                if ".mlp.experts." in k and attr in ("weight", "weight_packed") and base.rsplit(".", 1)[-1] in ("gate_proj", "up_proj", "down_proj"):
                     w = st.get_tensor(k)
-                    if w.dtype == torch.uint8:
+                    if attr == "weight_packed":
+                        w = dequant_nvfp4_ar(w, st.get_tensor(base + ".weight_scale"), st.get_tensor(base + ".weight_global_scale"))
+                    elif w.dtype == torch.uint8:
                         w = dequant_nvfp4(w, st.get_tensor(base + ".weight_scale"), st.get_tensor(base + ".weight_scale_2"))
                     prefix, e, proj = base.rsplit(".", 2)          # ...mlp.experts, E, gate_proj
                     experts.setdefault(prefix, {})[(int(e), proj)] = w.to(torch.bfloat16)
-                elif k.endswith(".input_scale") and ".mlp.experts." in k:
-                    prefix, _, proj = k[: -len(".input_scale")].rsplit(".", 2)
-                    in_scales.setdefault(prefix, {})["down" if proj == "down_proj" else "gate_up"] = st.get_tensor(k).float()
-                elif k.endswith((".weight_scale", ".weight_scale_2", ".input_scale")):
+                elif ".mlp.experts." in k and attr in ("input_scale", "input_global_scale"):
+                    prefix, e, proj = base.rsplit(".", 2)
+                    fq = fp4_fake_quant if attr == "input_scale" else fp4_fake_quant_ar
+                    sc = st.get_tensor(k).float()
+                    got = in_scales.setdefault(prefix, {}).setdefault((int(e), "down" if proj == "down_proj" else "gate_up"), (fq, sc))
+                    if not torch.equal(got[1], sc):   # the fused gate_up_proj can take only one
+                        raise RuntimeError(f"{base}: gate_proj and up_proj input scales differ")
+                elif attr in ("weight_scale", "weight_scale_2", "input_scale", "weight_global_scale", "input_global_scale"):
                     continue
                 elif k in params:
                     params[k].copy_(st.get_tensor(k))
@@ -183,10 +234,12 @@ def load_modelopt(path, device, simulate_activations=False):
                            f"{len(experts)} expert layers incomplete")
     if simulate_activations:
         if not in_scales:
-            raise RuntimeError("no expert input_scale tensors: this checkpoint has no FP4 activations to simulate")
+            raise RuntimeError("no expert input scale tensors: this checkpoint has no FP4 activations to simulate")
         modules = dict(model.named_modules())
         for prefix, sc in in_scales.items():
-            simulate_fp4_activations(modules[prefix], sc["gate_up"].to(device), sc["down"].to(device))
+            fns = {part: [partial(sc[(e, part)][0], global_scale=sc[(e, part)][1].to(device))
+                          for e in range(modules[prefix].num_experts)] for part in ("gate_up", "down")}
+            simulate_fp4_activations(modules[prefix], fns["gate_up"], fns["down"])
         log(f"simulating NVFP4 activations in {len(in_scales)} expert layers")
     return model
 
@@ -298,9 +351,9 @@ def load(path, device, simulate_fp4_activations=None, fast_moe=True):
         return model, processor, jsm, kind
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoProcessor, Qwen3OmniMoeForConditionalGeneration
-    if kind.startswith("modelopt:"):
-        simulate_fp4_activations = bool(simulate_fp4_activations) and kind == "modelopt:NVFP4"
-        backbone = load_modelopt(path, device, simulate_fp4_activations)
+    if kind.startswith(("modelopt:", "auto-round:nvfp4")):
+        simulate_fp4_activations = bool(simulate_fp4_activations) and kind in ("modelopt:NVFP4", "auto-round:nvfp4")
+        backbone = load_nvfp4(path, device, simulate_fp4_activations)
         kind += "+fp4-activations" if simulate_fp4_activations else ""
     else:
         config = AutoConfig.from_pretrained(path)

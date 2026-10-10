@@ -59,7 +59,7 @@ Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one
 
 ## How this checkpoint runs
 
-transformers loads this checkpoint through AutoRound (`auto_round` format), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly.
+AutoRound 0.16 cannot load its own weight-only NVFP4 export (no inference backend for `act_bits=16`), so `serve_clef.py` unpacks the FP4 expert weights to BF16 itself on load (same dequantization as AutoRound's NVFP4 path, verified bit-exact) and runs them on transformers' grouped kernels. BF16-like speed and memory.
 
 ## What was quantized
 

@@ -60,7 +60,7 @@ Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one
 
 ## How this checkpoint runs
 
-transformers loads this checkpoint through AutoRound (`auto_round` format, llm-compressor-style packing), simulating the FP4 weight and activation rounding in PyTorch, so `serve_clef.py` reproduces the quantized model's answers with BF16-class speed. vLLM can load the same packing for native FP4 on Blackwell, but no engine yet feeds the thinker's hidden states into the Clef head.
+`serve_clef.py` unpacks the AutoRound FP4 expert weights to BF16 on load (bit-exact with AutoRound's own dequantization) and runs them on transformers' grouped kernels: BF16-like speed and memory. `--simulate-fp4-activations` also rounds every expert input to NVFP4 with AutoRound's per-expert activation scales, reproducing AutoRound's own simulated model exactly (slow; for benchmarking). Native FP4 execution needs an engine such as vLLM plus a hidden-state path into the Clef head.
 
 ## What was quantized
 

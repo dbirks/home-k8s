@@ -198,7 +198,7 @@
       ],
       "summary": "NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights (blocks of 16, FP8 E4M3 scales + global scale) and FP4 activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
       "serving": [
-        "transformers loads this checkpoint through AutoRound (`auto_round` format, llm-compressor-style packing), simulating the FP4 weight and activation rounding in PyTorch, so `serve_clef.py` reproduces the quantized model's answers with BF16-class speed. vLLM can load the same packing for native FP4 on Blackwell, but no engine yet feeds the thinker's hidden states into the Clef head."
+        "`serve_clef.py` unpacks the AutoRound FP4 expert weights to BF16 on load (bit-exact with AutoRound's own dequantization) and runs them on transformers' grouped kernels: BF16-like speed and memory. `--simulate-fp4-activations` also rounds every expert input to NVFP4 with AutoRound's per-expert activation scales, reproducing AutoRound's own simulated model exactly (slow; for benchmarking). Native FP4 execution needs an engine such as vLLM plus a hidden-state path into the Clef head."
       ],
       "quantized": [
         "| Part | Precision |",
@@ -239,7 +239,7 @@
       ],
       "summary": "NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
       "serving": [
-        "transformers loads this checkpoint through AutoRound (`auto_round` format), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly."
+        "AutoRound 0.16 cannot load its own weight-only NVFP4 export (no inference backend for `act_bits=16`), so `serve_clef.py` unpacks the FP4 expert weights to BF16 itself on load (same dequantization as AutoRound's NVFP4 path, verified bit-exact) and runs them on transformers' grouped kernels. BF16-like speed and memory."
       ],
       "quantized": [
         "| Part | Precision |",

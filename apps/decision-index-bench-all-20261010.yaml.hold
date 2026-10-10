@@ -61,7 +61,8 @@ spec:
                 bf16=/work/clef-omni
                 int4=/work/int4/export
                 nvfp4a16=/work/nvfp4a16/export
-                nvfp4-ar=/work/nvfp4-ar/export
+                nvfp4a16-ar=/work/nvfp4a16-ar/export
+                nvfp4-ar=/work/nvfp4-ar/export:--simulate-fp4-activations
                 nvfp4=/work/nvfp4-experts/export:--simulate-fp4-activations
           resources:
             requests: { cpu: "2", memory: 12Gi }
