@@ -45,6 +45,15 @@ Three moving parts:
   `HAPPIER_SERVER_TRUST_PROXY` is intentionally unset (operator proxy doesn't
   rewrite XFF). "Machine registers but stays offline" => check that WebSocket
   upgrade path first.
+- **Daemon dead after a workstation reboot** (`happier daemon status` says not
+  running): the real unit is `happier-daemon.default.service` (the
+  `com.happier.cli.daemon.default` name is only a label). On boot it can start
+  before Tailscale MagicDNS resolves (ENOTFOUND), then hit "Machine server
+  ownership conflict detected; shutting down" because the relay still holds the
+  previous boot's connection. It exits 0, so `Restart=on-failure` never retries.
+  Fix: `systemctl --user restart happier-daemon.default` once the stale lease
+  has expired, then check `happier daemon status` and look for "Connected to
+  server" in the newest `~/.happier/logs/*-daemon.log`.
 
 ## Crush as a Happier engine (verified 2026-10-08, experimental)
 
