@@ -46,7 +46,7 @@ spec:
       # unnumbered season folders collapsing onto the first one (jellyfin
       # PR #18044), which was breaking the Puritan series layout.
       repository: docker.io/jellyfin/jellyfin
-      tag: "12.1"
+      tag: "12.2"
       pullPolicy: IfNotPresent
 
     # Single node + RWO config volume: maxSurge=0 tears the old pod down BEFORE
