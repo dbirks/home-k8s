@@ -82,18 +82,31 @@ kubectl create secret generic sops-age --namespace=flux-system \
 - Qwen3.6-27B is a hybrid model (DeltaNet+Attention) — TurboQuant KV cache is NOT compatible, use fp8_e4m3
 - NVFP4 quantization leverages Blackwell FP4 tensor cores for native 4-bit compute
 
-## Serving stack (KServe / llm.birks.dev)
+## Serving stack (retired 2026-10-10)
 
-The public coworker endpoint `llm.birks.dev` is served by a KServe LLM stack, NOT by the `apps/vllm.yaml` deployment above. Full diagram-ready reference: GitHub issue #95.
+The old KServe / Envoy / KEDA stack that served the public coworker endpoint `llm.birks.dev`
+(six-model catalog, scale-to-zero, Cloudflare Tunnel, Entra-OIDC API-key portal) has been
+**fully torn down** — the endpoint, portal, keys, gateway control planes, KEDA, and the Gateway
+API CRDs are all gone. History: issues #95, #105, #135, #144 and git history.
 
-- **Model catalog**: six models, each a KServe `LLMInferenceService` (LLMISVC, KServe v0.20.0): qwen3.8-27b, muse-glimmer-30b, qwen3.6-27b, qwen3.6-35b-a3b, gemma-4-31b, laguna-s-2.1. One LLMISVC expands into a vLLM engine Deployment, a workload Service (`<name>-kserve-workload-svc:8000`, the raw OpenAI server), an `InferencePool`, and an EPP router-scheduler.
-- **Two gateways, layered (we need both, they are not alternatives)**:
-  - **Envoy Gateway v1.8.1** is the only data plane. Single `GatewayClass` `envoy`; it runs every proxy pod (in `envoy-gateway-system`) and provides TLS, API-key auth (`SecurityPolicy`), and timeouts (`BackendTrafficPolicy`).
-  - **Envoy AI Gateway v1.0.0** is a control-plane extension only (`ai-gateway-controller`, no proxy of its own). Its `AIGatewayRoute` reads the request-body `model`, stamps `x-ai-eg-model`, and routes to the right `InferencePool` via EPP. It emits the generated `llm-model-router` HTTPRoute that Envoy Gateway then serves. Base Envoy Gateway cannot do body-based model routing or InferencePool targeting, which is why the extension exists.
-  - Mnemonic: AI Gateway decides which model, Envoy Gateway carries the bytes.
-- **Scale-to-zero**: KEDA v2.20.2, one ScaledObject per model, triggered on the Envoy ext_proc request-rate metric scraped by the `envoy-gw` Prometheus job (15s). Idle models scale their engine to 0 and cold-start on the first request (warmup ~2min).
-- **Co-residence limit**: the binding constraint is **46GB host RAM (no swap), NOT the 96GB VRAM**. About two models fit resident at once; a rollout that surges to a third overloads the node. Scale a model to 0 before changing it.
-- **Auth / access**: external coworkers reach it as `llm.birks.dev` via Cloudflare Tunnel to the `llm-public-gw` Gateway, API-key authenticated (keys issued as k8s Secrets by the Entra-OIDC Go portal). Internal high-volume batch clients (for example the regen job) should hit the vLLM `*-workload-svc:8000` DIRECTLY, bypassing the gateway; the AI Gateway ext-proc buffers and translates every body and is fragile on large batch responses.
+What serves models today:
+
+- **Pennyroyal** (`apps/pennyroyal-flashnext.yaml`, SGLang fork, Qwen3.8-Flash-Next NVFP4) owns
+  the whole card and is the primary engine: model name `pennyroyal`, context 524,288, no
+  scale-to-zero (sleep-on-idle keeps it hot). Operate it via the pennyroyal-flashnext skill.
+- **LLM Collective contributor** (`apps/llm-collective-contributor*.yaml`) is the consumer and it
+  talks to engines DIRECTLY over the cluster Service (e.g.
+  `http://pennyroyal-flashnext.default.svc.cluster.local:8001`). This direct pattern is the only
+  wiring; there is no in-cluster gateway.
+- **Parked engines** (ninfer, flashnext rollback) keep Deployment+Service manifests with revival
+  notes in their headers (direct Service + Collective backend, or a tailscale Ingress). KEDA is
+  gone, so a revived engine is always-on at `replicas: 1`.
+- **Co-residence limit still applies**: the binding constraint is **46GB host RAM (no swap), NOT
+  the 96GB VRAM**; scale one engine to 0 before rolling out another (see the ninfer-serving-memory
+  and pennyroyal-flashnext skills).
+- Do NOT reintroduce KEDA / Envoy Gateway / KServe LLMISVC assumptions into manifests or
+  monitoring: those CRDs are removed and the KServe-engine/EPP/`envoy-gw` scrape jobs are deleted.
+
 
 ## Talos
 
