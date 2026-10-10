@@ -35,6 +35,11 @@ SCHEME = os.environ.get("AR_SCHEME", "W4A16")
 _ROOTS = {"W4A16": "int4", "NVFP4": "nvfp4-ar", "NVFP4A16": "nvfp4a16-ar"}
 ROOT = Path(os.environ.get("CLEF_ROOT", f"/work/{_ROOTS[SCHEME]}{'-rehearsal' if REHEARSAL else ''}"))
 SCHEME_ARG = {"bits": 4, "group_size": 16, "data_type": "nv_fp", "act_bits": 16} if SCHEME == "NVFP4A16" else SCHEME
+# The whole BF16 model stays on the GPU (host-RAM guard), so tuning headroom is ~35 GB. INT4 peaked at 85 GB;
+# NVFP4 W4A4 OOMed in block 0 at the defaults, so the NVFP4 variants keep cached inputs in host RAM and the
+# W4A4 one also caps the sequence length.
+LOW_GPU_MEM = os.environ.get("AR_LOW_GPU_MEM", "1" if SCHEME.startswith("NVFP4") else "0") == "1"
+SEQLEN = int(os.environ.get("AR_SEQLEN", 4096 if SCHEME == "NVFP4" else 8192))
 EXPORT, RES = ROOT / "export", ROOT / "results"
 ITERS = int(os.environ.get("AR_ITERS", 2 if REHEARSAL else 200))
 N_CALIB = int(os.environ.get("N_CALIB", 16 if REHEARSAL else 512))
@@ -139,9 +144,10 @@ def main():
 
     from auto_round import AutoRound
     ar = AutoRound(backbone, tokenizer=processor.tokenizer, processor=processor, scheme=SCHEME_ARG, dataset=data,
-                   nsamples=len(data), seqlen=8192, iters=ITERS, batch_size=1, gradient_accumulate_steps=8,
-                   device_map=0, low_gpu_mem_usage=False, ignore_layers="mlp.gate,lm_head,self_attn")
-    log(f"AutoRound {type(ar).__name__}: scheme={SCHEME} iters={ITERS} nsamples={len(data)}")
+                   nsamples=len(data), seqlen=SEQLEN, iters=ITERS, batch_size=1, gradient_accumulate_steps=8,
+                   device_map=0, low_gpu_mem_usage=LOW_GPU_MEM, ignore_layers="mlp.gate,lm_head,self_attn")
+    log(f"AutoRound {type(ar).__name__}: scheme={SCHEME} iters={ITERS} nsamples={len(data)} "
+        f"seqlen={SEQLEN} low_gpu_mem_usage={LOW_GPU_MEM}")
     t0 = time.time()
     _, out_dir = ar.quantize_and_save(output_dir=str(ROOT / "ar-out"), format="auto_round")
     log(f"quantize_and_save in {time.time() - t0:.0f}s -> {out_dir};", mem())
