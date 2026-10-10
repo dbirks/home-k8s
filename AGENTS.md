@@ -161,6 +161,9 @@ The `--mode powercycle` is the key part: it escalates to the BMC to actually cut
 
 ## Pitfalls learned the hard way
 
+- **Changing anything under `prereqs/` can silently freeze the whole repo.** The HAMi chart requires one `hami-scheduler` pod per hostname and the Deployment uses the API-default RollingUpdate, so on this one-node cluster the surge pod can never be placed: the HelmRelease times out at 5 min, Flux rolls your change back, the `prereqs` Kustomization stays unhealthy, and `infra`/`apps` are blocked behind it via `dependsOn` — nothing reconciles. Live fix: `hami-scheduler` strategy is `Recreate` (out-of-band, because this cluster's `helmreleases` v2 CRD has no `spec.postRender`). Assert/diagnose with `.agents/skills/hami-gpu-accounting/scripts/hami-rollout-guard.sh --check|--enforce|--post|--unstick`.
+- A bare `kubectl get node -o jsonpath='{.status...}'` returns **nothing**: it's a List. Use `{.items[0]...}` or name the node.
+
 - NVFP4 on SM120 (Blackwell): dense models always work. MoE was broken but is now LARGELY FIXED (mid-2026) — **W4A4** NVFP4 MoE serves natively via FlashInfer b12x/CUTLASS on SM120 (vLLM PR #40082 merged 2026-05, flashinfer ≥0.6.13), needs a recent vLLM (~v0.24+) and may need `VLLM_USE_FLASHINFER_MOE_FP4` until auto-select (vLLM PR #47577) merges. Caveat: weight-only **W4A16**-NVFP4 MoE exports still fall back to Marlin (#47749) — export W4A4 for MoE. AutoRound can produce MoE-NVFP4 today.
 - TurboQuant KV cache does NOT work with hybrid attention+Mamba/DeltaNet models (like Qwen3.6)
 - FP8 e4m3 KV cache works; e5m2 does NOT (incompatible with compressed-tensors)
