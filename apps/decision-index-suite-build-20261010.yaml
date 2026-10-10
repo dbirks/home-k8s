@@ -1,0 +1,83 @@
+# Build the frozen Decision Index suite (issue #145 benchmarking) so Clef-Omni BF16 and our NVFP4 quant
+# can be scored apples-to-apples against Cloudflare's published Clef-Omni table (model card,
+# "Decision Index 0.2.1"). CPU-only; Pennyroyal keeps the GPU.
+#
+# Kit: github.com/apolinario/decision-index pinned at 9eb2dbe (2026-10-07). `suite rebuild` downloads
+# every source at its pinned revision (~7 GB, the HoVer Wikipedia DB alone is 2.2 GB, ~17 GB working
+# space) and `suite import` REFUSES any file whose sha256 differs from the lab's manifest. A passing
+# import therefore means we hold exactly the rows Cloudflare and the board were scored on. Imported for
+# edition 0.2.1 (what the model card used) and 0.3 (the current board, which adds the rebuilt GSM8K rows).
+#
+# HLE (cais/hle) is gated. The Job polls until the hf-token account (dbirks) can actually download the
+# pinned HLE parquet, so it starts as soon as the terms are accepted at huggingface.co/datasets/cais/hle.
+# The suite is NOT redistributable (source licences): it stays on the PVC, never in git or a public repo.
+#
+# Memory: the node has ~12 GiB free beside Pennyroyal, so an 8Gi limit keeps any blow-up inside this pod.
+# Output: /work/decision-index/{kit,work,suite-0.2,suite-0.3}; log /work/logs/di-suite-build.log
+# Retire to .yaml.hold once `suite verify` passes for both editions.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: decision-index-suite-build-20261010
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 86400        # includes up to 12h waiting for the HLE terms
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: decision-index-suite-build }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: build
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              exec > >(tee -a /work/logs/di-suite-build.log) 2>&1
+              echo "[$(date -u +%FT%TZ)] === Decision Index suite build ==="
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates >/dev/null
+              ROOT=/work/decision-index; mkdir -p $ROOT; cd $ROOT
+              if [ ! -d kit/.git ]; then git clone -q https://github.com/apolinario/decision-index kit; fi
+              git -C kit fetch -q origin && git -C kit checkout -q 9eb2dbe2a358004c8782c66e40a83ac07b953fec
+              [ -x venv/bin/python ] || python -m venv venv
+              venv/bin/pip install -q --no-input -e "kit[rebuild]"
+              export HF_HUB_DISABLE_XET=1 HF_HOME=/work/.hf-home
+
+              # wait for the gated HLE terms (pinned revision + file, same as the kit's acquire.py)
+              for i in $(seq 1 144); do
+                if venv/bin/python -c '
+              from huggingface_hub import hf_hub_download
+              hf_hub_download("cais/hle", "data/test-00000-of-00001.parquet", repo_type="dataset",
+                              revision="5a81a4c7271a2a2a312b9a690f0c2fde837e4c29")' 2>/dev/null; then
+                  echo "[$(date -u +%FT%TZ)] HLE access OK"; break; fi
+                [ "$i" = 144 ] && { echo "FATAL: no HLE access after 12h (accept terms at huggingface.co/datasets/cais/hle)"; exit 1; }
+                echo "[$(date -u +%FT%TZ)] waiting for HLE terms acceptance ($i/144)"; sleep 300
+              done
+
+              echo "[$(date -u +%FT%TZ)] suite rebuild"
+              venv/bin/python -m decision_index suite rebuild --work work
+              R2=work/artifacts/benchmark-suite/release-v2-rebuilt; R3=work/artifacts/benchmark-suite/release-v3-rebuilt
+              ls -la $R2 $R3
+              echo "[$(date -u +%FT%TZ)] import + verify 0.2.1 and 0.3 (hash-checked against the lab manifest)"
+              venv/bin/python -m decision_index suite import --edition 0.2.1 --rows $R2/selected-rows.jsonl.gz --added-rows $R2/added-rows.jsonl.gz
+              venv/bin/python -m decision_index suite import --edition 0.3 --rows $R2/selected-rows.jsonl.gz \
+                --added-rows $R2/added-rows.jsonl.gz --gsm8k-rows $R3/gsm8k-rows.jsonl.gz
+              venv/bin/python -m decision_index suite verify --edition 0.2.1
+              venv/bin/python -m decision_index suite verify --edition 0.3
+              du -sh $ROOT/* 2>/dev/null
+              echo "[$(date -u +%FT%TZ)] SUITE BUILD OK"
+          env:
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "2", memory: 3Gi }
+            limits:   { cpu: "6", memory: 8Gi }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
