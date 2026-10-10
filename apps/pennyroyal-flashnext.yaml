@@ -22,7 +22,10 @@ metadata:
   namespace: default
   labels: { app: pennyroyal-flashnext }
 spec:
-  replicas: 1
+  # 2026-10-10: scaled to 0 for Clef-Omni quantization runs (issue #145): the quant Jobs need the
+  # whole card and most of the 46 GB host RAM. RESTORE TO replicas: 1 when the quant window ends;
+  # boot takes ~7 min, and the Collective contributors error (not degrade) until it is back.
+  replicas: 0
   strategy: { type: Recreate }        # never two whole-card pods
   selector:
     matchLabels: { app: pennyroyal-flashnext }
