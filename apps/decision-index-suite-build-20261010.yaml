@@ -19,7 +19,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: decision-index-suite-build-20261010
+  name: decision-index-suite-build-20261010-r2
   namespace: default
 spec:
   backoffLimit: 1
@@ -60,7 +60,13 @@ spec:
               done
 
               echo "[$(date -u +%FT%TZ)] suite rebuild"
-              venv/bin/python -m decision_index suite rebuild --work work
+              # sources are fetched from ~40 upstreams; a transient GitHub fetch error (exit 128 on MuSR)
+              # killed both first attempts. rebuild resumes from what is already pinned on disk, so retry.
+              for attempt in 1 2 3 4 5; do
+                venv/bin/python -m decision_index suite rebuild --work work && break
+                [ "$attempt" = 5 ] && { echo "FATAL: suite rebuild failed 5 times"; exit 1; }
+                echo "[$(date -u +%FT%TZ)] rebuild attempt $attempt failed; retrying in 60s"; sleep 60
+              done
               R2=work/artifacts/benchmark-suite/release-v2-rebuilt; R3=work/artifacts/benchmark-suite/release-v3-rebuilt
               ls -la $R2 $R3
               echo "[$(date -u +%FT%TZ)] import + verify 0.2.1 and 0.3 (hash-checked against the lab manifest)"
