@@ -1,0 +1,74 @@
+# Decision Index 0.2.1 for BF16 and every Clef-Omni quant (issue #153), apples-to-apples with the edition
+# behind Cloudflare's published Clef-Omni table. One GPU Job, models run one after another:
+#   for each MODEL: start scripts/clef-omni/serve_clef.py (the published PEP 723 server) on localhost,
+#   run the kit's `http` engine over the SAME stratified sample, score it, and score it again paired with
+#   the BF16 run (`score --reference`). Resumable: results.jsonl is kept, so a restart continues.
+# MODELS entries are name=path[:flags]. W4A4 checkpoints are benchmarked FAITHFULLY (FP4 activation replay).
+# Kit: /work/decision-index (apolinario/decision-index @ 9eb2dbe, suite hash-verified). Pennyroyal at 0.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: decision-index-bench-all
+  namespace: default
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 172800
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: decision-index-bench }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: bench
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              export HF_HOME=/work/.hf-home HF_HUB_OFFLINE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+              command -v gcc >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev curl >/dev/null; }
+              cd /work/decision-index; DI="venv/bin/python -m decision_index"; mkdir -p runs
+              SAMPLE=sample-0.2.1-n${SAMPLE_N}.jsonl.gz
+              [ -f "$SAMPLE" ] || $DI suite sample --edition 0.2.1 --n "$SAMPLE_N" --out "$SAMPLE" || exit 1
+              for entry in $MODELS; do
+                name=${entry%%=*}; rest=${entry#*=}; path=${rest%%:*}; flags=""; [ "$rest" != "$path" ] && flags=${rest#*:}
+                out=runs/$name-n$SAMPLE_N
+                echo "[$(date -u +%FT%TZ)] ===== $name ($path $flags) ====="
+                /work/venv/bin/python /scripts/serve_clef.py --model "$path" --host 127.0.0.1 --port 8000 $flags \
+                  > /work/logs/bench-server-$name.log 2>&1 &
+                srv=$!
+                until curl -sf localhost:8000/healthz >/dev/null; do
+                  kill -0 $srv 2>/dev/null || { tail -20 /work/logs/bench-server-$name.log; echo "server for $name died"; continue 2; }; sleep 15; done
+                curl -s localhost:8000/healthz; echo
+                $DI run --edition 0.2.1 --engine http --option base_url=http://127.0.0.1:8000 --option model=clef-omni \
+                  --rows "$SAMPLE" --out "$out" 2>&1 | tail -3
+                $DI score --edition 0.2.1 --results "$out/results.jsonl" --out "$out" 2>&1 | tail -2
+                [ "$name" != bf16 ] && [ -f runs/bf16-n$SAMPLE_N/results.jsonl ] && \
+                  $DI score --edition 0.2.1 --results "$out/results.jsonl" --reference runs/bf16-n$SAMPLE_N/results.jsonl \
+                    --out "$out/paired-vs-bf16" 2>&1 | tail -2
+                venv/bin/python -c "import json; d=json.load(open('$out/index.json')); print('INDEX $name', d.get('index'), 'raw', d.get('raw_index'))"
+                kill $srv; wait $srv 2>/dev/null; sleep 5
+              done
+              echo "[$(date -u +%FT%TZ)] BENCH ALL DONE"
+          env:
+            - { name: SAMPLE_N, value: "3000" }
+            - name: MODELS
+              value: >-
+                bf16=/work/clef-omni
+                int4=/work/int4/export
+                nvfp4a16=/work/nvfp4a16/export
+                nvfp4-ar=/work/nvfp4-ar/export
+                nvfp4=/work/nvfp4-experts/export:--simulate-fp4-activations
+          resources:
+            requests: { cpu: "2", memory: 12Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: scripts, configMap: { name: clef-omni-scripts } }
