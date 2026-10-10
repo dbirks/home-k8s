@@ -9,7 +9,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: decision-index-bench-all
+  name: decision-index-bench-all-r2
   namespace: default
 spec:
   backoffLimit: 1
@@ -31,18 +31,23 @@ spec:
               set -uo pipefail
               export HF_HOME=/work/.hf-home HF_HUB_OFFLINE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
               command -v gcc >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev curl >/dev/null; }
-              cd /work/decision-index; DI="venv/bin/python -m decision_index"; mkdir -p runs
+              # serve_clef.py needs fastapi + uvicorn in the cluster venv (r1 died here for every model, unnoticed)
+              /work/venv/bin/pip freeze | grep -E '^(torch|torchvision|transformers|accelerate|safetensors)==' > /tmp/constraints.txt
+              /work/venv/bin/python -c 'import fastapi, uvicorn' 2>/dev/null || \
+                /work/venv/bin/pip install -q --no-input -c /tmp/constraints.txt fastapi 'uvicorn[standard]' || exit 1
+              cd /work/decision-index; DI="venv/bin/python -m decision_index"; mkdir -p runs; failed=""
               SAMPLE=sample-0.2.1-n${SAMPLE_N}.jsonl.gz
               [ -f "$SAMPLE" ] || $DI suite sample --edition 0.2.1 --n "$SAMPLE_N" --out "$SAMPLE" || exit 1
               for entry in $MODELS; do
                 name=${entry%%=*}; rest=${entry#*=}; path=${rest%%:*}; flags=""; [ "$rest" != "$path" ] && flags=${rest#*:}
                 out=runs/$name-n$SAMPLE_N
+                [ -e "$path/config.json" ] || { echo "[$(date -u +%FT%TZ)] skip $name: $path not built yet"; continue; }
                 echo "[$(date -u +%FT%TZ)] ===== $name ($path $flags) ====="
                 /work/venv/bin/python /scripts/serve_clef.py --model "$path" --host 127.0.0.1 --port 8000 $flags \
                   > /work/logs/bench-server-$name.log 2>&1 &
                 srv=$!
                 until curl -sf localhost:8000/healthz >/dev/null; do
-                  kill -0 $srv 2>/dev/null || { tail -20 /work/logs/bench-server-$name.log; echo "server for $name died"; continue 2; }; sleep 15; done
+                  kill -0 $srv 2>/dev/null || { tail -20 /work/logs/bench-server-$name.log; echo "SERVER FOR $name DIED"; failed="$failed $name"; continue 2; }; sleep 15; done
                 curl -s localhost:8000/healthz; echo
                 $DI run --edition 0.2.1 --engine http --option base_url=http://127.0.0.1:8000 --option model=clef-omni \
                   --rows "$SAMPLE" --out "$out" 2>&1 | tail -3
@@ -53,7 +58,8 @@ spec:
                 venv/bin/python -c "import json; d=json.load(open('$out/index.json')); print('INDEX $name', d.get('index'), 'raw', d.get('raw_index'))"
                 kill $srv; wait $srv 2>/dev/null; sleep 5
               done
-              echo "[$(date -u +%FT%TZ)] BENCH ALL DONE"
+              echo "[$(date -u +%FT%TZ)] BENCH ALL DONE; failed:${failed:- none}"
+              [ -z "$failed" ]
           env:
             - { name: SAMPLE_N, value: "3000" }
             - name: MODELS
