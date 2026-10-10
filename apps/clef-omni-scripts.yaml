@@ -772,7 +772,7 @@ data:
       "table_notes": "*Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.",
       "eval_method": "Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.",
       "recommendations": [
-        "**clef-omni-int4**: any recent NVIDIA GPU (Ampere, Ada, Hopper, Blackwell) when you want the smallest VRAM footprint today; loads in plain transformers.",
+        "**clef-omni-int4**: any recent GPU when you want the smallest VRAM footprint today; loads in plain transformers. Also the best bet on AMD (ROCm): AutoRound's PyTorch/Triton kernels run there, though we have not tested it.",
         "**clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).",
         "**clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).",
         "**clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM."
@@ -964,7 +964,7 @@ data:
 
     **Recommended for:**
 
-    - **clef-omni-int4**: any recent NVIDIA GPU (Ampere, Ada, Hopper, Blackwell) when you want the smallest VRAM footprint today; loads in plain transformers.
+    - **clef-omni-int4**: any recent GPU when you want the smallest VRAM footprint today; loads in plain transformers. Also the best bet on AMD (ROCm): AutoRound's PyTorch/Triton kernels run there, though we have not tested it.
     - **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
     - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
     - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
@@ -1139,7 +1139,7 @@ data:
 
     **Recommended for:**
 
-    - **clef-omni-int4**: any recent NVIDIA GPU (Ampere, Ada, Hopper, Blackwell) when you want the smallest VRAM footprint today; loads in plain transformers.
+    - **clef-omni-int4**: any recent GPU when you want the smallest VRAM footprint today; loads in plain transformers. Also the best bet on AMD (ROCm): AutoRound's PyTorch/Triton kernels run there, though we have not tested it.
     - **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
     - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
     - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.

@@ -26,7 +26,7 @@ INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/
 
 **Recommended for:**
 
-- **clef-omni-int4**: any recent NVIDIA GPU (Ampere, Ada, Hopper, Blackwell) when you want the smallest VRAM footprint today; loads in plain transformers.
+- **clef-omni-int4**: any recent GPU when you want the smallest VRAM footprint today; loads in plain transformers. Also the best bet on AMD (ROCm): AutoRound's PyTorch/Triton kernels run there, though we have not tested it.
 - **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
 - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
 - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
