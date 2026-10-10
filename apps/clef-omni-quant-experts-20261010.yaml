@@ -1,0 +1,391 @@
+# Clef-Omni Stage 2a (issue #145): NVFP4 W4A4 on the thinker's MoE EXPERTS only, ModelOpt `max`
+# calibration, on the RTX PRO 6000 (SM120). First, cheapest quant pass; the full-thinker
+# NVFP4_DEFAULT + awq_clip pass is Stage 2b and only runs if this one exports cleanly.
+#
+# Stage 1 (apps/clef-omni-smoke-bf16-20261010.yaml) already proved the BF16 load on this node:
+# 578 s off the HDD, ~60 GiB VRAM, host MemAvailable essentially unchanged, 8/8 cases finite.
+#
+# WHAT THIS JOB DOES, in one process (one ~10 min weight load):
+#   1. Load the BF16 release with the SAME steps as joint_schema_model.load_release_model, but keep
+#      the Qwen3OmniMoeForConditionalGeneration object (export needs `thinker.*` names) and force
+#      experts_implementation="eager" (see below). Gate: the 8 Stage-1 golden cases must reproduce.
+#   2. Build calibration (512) and held-out eval (128) Clef records. Text comes from ultrachat_200k
+#      test_sft (the same source the Qwen3-Omni NVFP4 precedent calibrated on), wrapped in Clef's
+#      state/questions schema; ~20 % carry synthetic image / video / audio so the thinker sees
+#      multimodal token streams. Eval rows are disjoint from calibration rows.
+#   3. Score the eval set in BF16, quantize, score it again with fake-quant -> parity report
+#      (top-choice agreement, mean/max total variation, low-margin flips) BEFORE export.
+#   4. Save the calibrated quantizer state (small; lets a failed export be retried without
+#      re-calibrating), then export_hf_checkpoint, copy the Clef head/source/processor files in,
+#      and scan the artifact: packed FP4 storage, NaN bytes in FP8 scales, head hash, sizes.
+#
+# WHY THESE CHOICES
+#  * ModelOpt 0.47.0 (not 0.44 like the precedent): transformers 5 FUSES each MoE layer's experts
+#    into 3-D gate_up_proj/down_proj Parameters. 0.47's `_QuantFusedExperts` wraps those with
+#    per-expert quantizers and splits them back into per-expert gate/up/down on export (the same
+#    layout the precedent and vLLM expect). It only intercepts F.linear, i.e. the EAGER experts
+#    path; transformers 5.10 would otherwise pick grouped_mm on SM120 and calibration would
+#    silently see nothing. Hence experts_implementation="eager" + a gate that every expert
+#    quantizer ended up with an amax. 0.47 also clamps per-block scales before the E4M3 cast,
+#    the NaN-byte bug the precedent had to hand-patch in 0.44; the artifact scan re-checks anyway.
+#  * Installed WITHOUT the [hf] extra and under a constraints file: [hf] pulls deepspeed/diffusers/
+#    peft and can float torch/transformers off the pair Stage 1 validated (2.11.0+cu130 / 5.10.2).
+#  * Kept BF16: vision + audio towers, router (mlp.gate), embeddings/norms, lm_head (Clef reuses it
+#    as `output_embeddings` for option scoring) and joint_head.safetensors (never handed to ModelOpt).
+#    Attention stays BF16 in THIS pass by construction (experts-only preset).
+#  * mtq.quantize runs on the backbone, but the calibration forward is Clef's real path
+#    (encode_record -> collate_records -> ClefModel), so activations match deployment.
+#  * Export to the HDD PVC (/work/nvfp4-experts/export). NVMe stays clean (DiskPressure history).
+#    max_shard_size 5GB bounds the per-shard CPU copy on a 46 GB, no-swap host.
+#  * Pennyroyal is still replicas: 0 from the Stage 1 commit; restore it after this Job.
+#
+# NOT DONE HERE (later stages): proving native SM120 FP4 GEMMs at serve time, /v1/systemone server.
+# Results: /work/nvfp4-experts/{results,export}, /work/logs/quant-experts.log
+# Retire to .yaml.hold once results are reviewed.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-quant-experts-20261010
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600          # 6h: 10 min load + ~1-2h calibration/eval worst case + export
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-quant-experts }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: quant
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              VENV=/work/venv
+              export PIP_CACHE_DIR=/work/.pip-cache TMPDIR=/work/.tmp HF_HOME=/work/.hf-home
+              export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+              mkdir -p /work/.tmp /work/logs /work/nvfp4-experts/results
+              echo "[$(date -u +%FT%TZ)] === Stage 2a: NVFP4 experts-only ==="
+              nvidia-smi --query-gpu=name,memory.total,memory.free,power.limit --format=csv
+              awk '/MemTotal|MemAvailable|SwapTotal/{printf "%-14s %8.1f GiB\n", $1, $2/1048576}' /proc/meminfo
+              [ -x "$VENV/bin/python" ] || { echo "FATAL: Stage 1 venv missing on the PVC"; exit 1; }
+              "$VENV/bin/pip" freeze | grep -E '^(torch|torchvision|transformers|accelerate|safetensors|huggingface.hub)==' > /work/.tmp/constraints.txt
+              cat /work/.tmp/constraints.txt
+              "$VENV/bin/python" -c 'import modelopt, pyarrow' 2>/dev/null || \
+                "$VENV/bin/pip" install --no-input -c /work/.tmp/constraints.txt 'nvidia-modelopt==0.47.0' pyarrow || exit 1
+              "$VENV/bin/pip" freeze > /work/logs/pip-freeze-quant.txt
+              "$VENV/bin/python" -c 'import torch, transformers, modelopt; print("torch", torch.__version__, "transformers", transformers.__version__, "modelopt", modelopt.__version__)'
+
+              cat > /work/quant_experts.py <<'PY'
+              """Clef-Omni NVFP4 experts-only PTQ with BF16-vs-fakequant parity, export and artifact scan."""
+              import copy, glob, hashlib, json, math, os, random, shutil, sys, time, traceback
+              from pathlib import Path
+              import numpy as np, torch
+              MODEL = Path("/work/clef-omni")
+              ROOT = Path("/work/nvfp4-experts"); RES = ROOT / "results"; EXPORT = ROOT / "export"
+              N_CALIB, N_EVAL = int(os.environ.get("N_CALIB", 512)), int(os.environ.get("N_EVAL", 128))
+              sys.path.insert(0, str(MODEL))
+              from joint_schema_model import ClefModel, JointSchemaHead, encode_record, collate_records
+
+              def log(*a):
+                  print(f"[{time.strftime('%FT%T')}]", *a, flush=True)
+
+              def avail_gib():
+                  for line in open("/proc/meminfo"):
+                      if line.startswith("MemAvailable"):
+                          return round(int(line.split()[1]) / 2**20, 1)
+
+              def gpu():
+                  return f"gpu alloc {torch.cuda.memory_allocated()/2**30:.1f} GiB peak {torch.cuda.max_memory_allocated()/2**30:.1f} GiB, host avail {avail_gib()} GiB"
+
+              # ---------- 1. load (mirrors load_release_model, keeps the backbone) ----------
+              from safetensors.torch import load_file
+              from transformers import AutoConfig, AutoProcessor, Qwen3OmniMoeForConditionalGeneration
+              config = AutoConfig.from_pretrained(MODEL)
+              config.enable_audio_output = False
+              log("loading BF16 backbone, experts_implementation=eager;", gpu())
+              t0 = time.time()
+              backbone, info = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
+                  MODEL, config=config, dtype=torch.bfloat16, device_map={"": "cuda"},
+                  output_loading_info=True, experts_implementation="eager")
+              bad = {k: [x for x in (info.get(k) or []) if not str(x).startswith(("talker.", "code2wav."))]
+                     for k in ("missing_keys", "unexpected_keys", "mismatched_keys")}
+              assert not any(bad.values()), f"weights did not load cleanly: {bad}"
+              head = JointSchemaHead(**json.loads((MODEL / "joint_head_config.json").read_text()))
+              head.load_state_dict(load_file(MODEL / "joint_head.safetensors"), strict=True)
+              head = head.to(device="cuda", dtype=torch.bfloat16)
+              processor = AutoProcessor.from_pretrained(MODEL)
+              clef = ClefModel(backbone.thinker, head).eval()
+              log(f"loaded in {time.time()-t0:.0f}s;", gpu())
+              impls = {type(m).__name__: getattr(getattr(m, "config", None), "_experts_implementation", "?")
+                       for m in backbone.modules() if type(m).__name__.endswith("Experts")}
+              log("experts modules / implementation:", impls)
+
+              def score(record):
+                  enc = encode_record(processor.tokenizer, record, processor=processor)
+                  batch = collate_records([enc], processor.tokenizer.pad_token_id, torch.device("cuda"))
+                  with torch.no_grad():
+                      logits = clef(batch)[0]
+                  return {q.question_id: dict(zip(q.option_ids, lg.float().softmax(-1).tolist()))
+                          for q, lg in zip(enc.questions, logits)}, len(enc.input_ids)
+
+              # ---------- media + records ----------
+              def synth_image(rng):
+                  from PIL import Image, ImageDraw
+                  w, h = int(rng.integers(224, 641)), int(rng.integers(224, 641))
+                  im = Image.new("RGB", (w, h), tuple(int(x) for x in rng.integers(0, 255, 3)))
+                  d = ImageDraw.Draw(im)
+                  for _ in range(int(rng.integers(3, 12))):
+                      x0, y0 = int(rng.integers(0, w - 20)), int(rng.integers(0, h - 20))
+                      box = (x0, y0, x0 + int(rng.integers(10, w // 2)), y0 + int(rng.integers(10, h // 2)))
+                      col = tuple(int(x) for x in rng.integers(0, 255, 3))
+                      (d.ellipse if rng.random() < .5 else d.rectangle)(box, fill=col)
+                  return im
+
+              def synth_video(rng):
+                  n, s = int(rng.choice([4, 6, 8])), int(rng.choice([128, 160, 224]))
+                  x, y = np.meshgrid(np.linspace(0, 1, s), np.linspace(0, 1, s))
+                  k = rng.uniform(2, 12, 3)
+                  return np.stack([(np.stack([0.5 + 0.5 * np.sin(x * k[0] + i), y ** (1 + i / n),
+                                              0.5 + 0.5 * np.cos(y * k[2] - i * k[1] / 6)], -1) * 255).astype("uint8")
+                                   for i in range(n)])
+
+              def synth_audio(rng, rate=16000):
+                  t = np.arange(int(rng.uniform(1.0, 4.0) * rate), dtype="float32") / rate
+                  sig = sum(rng.uniform(.05, .3) * np.sin(2 * math.pi * rng.uniform(80, 2000) * t) for _ in range(3))
+                  sig = sig + rng.uniform(0, .05) * rng.standard_normal(len(t))
+                  return (sig * np.hanning(len(t))).astype("float32")
+
+              def load_texts():
+                  try:
+                      from huggingface_hub import hf_hub_download
+                      import pyarrow.parquet as pq
+                      p = hf_hub_download("HuggingFaceH4/ultrachat_200k", repo_type="dataset",
+                                          filename="data/test_sft-00000-of-00001-f7dfac4afe5b93f4.parquet")
+                      rows = pq.read_table(p, columns=["prompt", "messages"]).to_pylist()
+                      out = []
+                      for r in rows:
+                          reply = next((m["content"] for m in r["messages"] if m["role"] == "assistant"), "")
+                          out.append((r["prompt"][:1200], reply[:2400]))
+                      log(f"ultrachat test_sft rows: {len(out)}")
+                      return out
+                  except Exception as e:
+                      log("ultrachat unavailable, synthetic text only:", repr(e))
+                      words = "agent player wall door enemy ladder coin map key light shadow path river bridge tower".split()
+                      rng = random.Random(7)
+                      return [(" ".join(rng.choices(words, k=30)), " ".join(rng.choices(words, k=120))) for _ in range(4000)]
+
+              VERBS = ["move forward", "turn left", "turn right", "wait", "jump", "retreat", "interact", "stop"]
+              def make_record(i, text, rng):
+                  prompt, reply = text
+                  state = {"task": prompt, "observation": reply}
+                  if rng.random() < .3:
+                      state["history"] = "\n".join(f"step {j}: {rng.choice(VERBS)}" for j in range(int(rng.integers(2, 40))))
+                  qs = {}
+                  for qi in range(int(rng.integers(1, 4))):
+                      kind = rng.choice(["choice", "noul", "score"])
+                      if kind == "choice":
+                          opts = list(rng.choice(VERBS, size=int(rng.integers(2, 6)), replace=False))
+                          qs[f"q{qi}"] = {"type": "choice", "instructions": "Which response best serves the task?",
+                                          "criteria": {o.replace(" ", "_"): o for o in opts}}
+                      elif kind == "noul":
+                          qs[f"q{qi}"] = {"type": "noul", "instructions": "Does the observation answer the task correctly?"}
+                      else:
+                          qs[f"q{qi}"] = {"type": "score", "instructions": "Rate the observation's helpfulness",
+                                          "criteria": ["useless", "weak", "adequate", "good", "excellent"][: int(rng.integers(3, 6))]}
+                  rec = {"id": f"r{i}", "state": state, "questions": qs}
+                  u = rng.random()
+                  if u < .10:
+                      rec["images"] = [synth_image(rng)]
+                  elif u < .15:
+                      rec["videos"] = [synth_video(rng)]
+                  elif u < .20:
+                      rec["audio"] = [synth_audio(rng)]
+                  return rec
+
+              texts = load_texts()
+              order = list(range(len(texts))); random.Random(145).shuffle(order)
+              calib_idx, eval_idx = order[:N_CALIB], order[N_CALIB:N_CALIB + N_EVAL]
+              rng_c, rng_e = np.random.default_rng(1), np.random.default_rng(2)
+              calib = [make_record(i, texts[i], rng_c) for i in calib_idx]
+              evals = [make_record(i, texts[i], rng_e) for i in eval_idx]
+
+              # ---------- gate: Stage 1 goldens reproduce with the eager experts path ----------
+              goldens = [json.loads(l) for l in open("/work/bf16-results/smoke_bf16.jsonl")]
+              # rebuild the exact Stage-1 cases from the smoke script itself (single source of truth)
+              src = open("/work/smoke_bf16.py").read()
+              ns = {}
+              exec(src[src.index("def synth_image"):src.index("print(f\"[{time.strftime")], {"np": np, "math": math, **ns}, ns)
+              stage1 = dict(ns["CASES"])
+              worst = 0.0
+              for g in goldens:
+                  rec = dict(stage1[g["case_id"]])
+                  if g["case_id"] == "image": rec["images"] = [ns["synth_image"]()]
+                  if g["case_id"] == "video": rec["videos"] = [ns["synth_video"]()]
+                  if g["case_id"] == "audio": rec["audio"] = [ns["synth_audio"]()]
+                  probs, _ = score(rec)
+                  for qid, d in g["probabilities"].items():
+                      for o, p in d.items():
+                          worst = max(worst, abs(probs[qid][o] - p))
+              log(f"Stage-1 golden reproduction: max |dp| = {worst:.5f} (eager experts vs Stage-1 default)")
+              assert worst < 0.02, "eager-experts BF16 path does not reproduce the Stage-1 goldens"
+
+              # ---------- 3a. BF16 eval reference ----------
+              t0 = time.time()
+              ref, kept = [], []
+              for r in evals:
+                  try:
+                      ref.append(score(r)[0]); kept.append(r)
+                  except Exception as e:
+                      log(f"  eval record {r['id']} dropped (BF16 failed): {type(e).__name__}: {e}")
+              evals = kept
+              log(f"BF16 eval scored ({len(evals)} records) in {time.time()-t0:.0f}s;", gpu())
+
+              # ---------- quantize ----------
+              import modelopt.torch.quantization as mtq
+              import modelopt.torch.opt as mto
+              cfg = copy.deepcopy(mtq.NVFP4_EXPERTS_ONLY_CFG)
+              cfg["quant_cfg"] = list(cfg["quant_cfg"]) + [{"quantizer_name": p, "enable": False} for p in
+                  ("*audio_tower*", "*visual*", "*talker*", "*code2wav*", "*lm_head*", "*mlp.gate.*", "*embed*")]
+              json.dump(cfg, open(RES / "quant_cfg.json", "w"), indent=1, default=str)
+
+              def forward_loop(_model):
+                  t, ntok = time.time(), 0
+                  for k, r in enumerate(calib):
+                      try:
+                          ntok += score(r)[1]
+                      except Exception as e:
+                          log(f"  calib record {k} skipped: {type(e).__name__}: {e}")
+                      if k % 64 == 0:
+                          log(f"  calib {k}/{len(calib)} tokens={ntok} {time.time()-t:.0f}s;", gpu())
+                  log(f"calibration forward done: {ntok} tokens in {time.time()-t:.0f}s")
+
+              log("mtq.quantize (experts-only NVFP4, max)")
+              mtq.quantize(backbone, cfg, forward_loop)
+              with open(RES / "quant_summary.txt", "w") as f:
+                  import contextlib
+                  with contextlib.redirect_stdout(f):
+                      mtq.print_quant_summary(backbone)
+
+              # gate: every expert got a calibrated weight amax; input quantizers saw data
+              stats = {"expert_modules": 0, "weight_q": 0, "weight_q_uncalibrated": 0, "input_q_uncalibrated": 0}
+              for name, m in backbone.named_modules():
+                  if hasattr(m, "gate_up_proj_weight_quantizers"):
+                      stats["expert_modules"] += 1
+                      for attr in ("gate_up_proj_weight_quantizers", "down_proj_weight_quantizers"):
+                          for q in getattr(m, attr):
+                              stats["weight_q"] += 1
+                              a = getattr(q, "amax", None)
+                              if a is None or not torch.isfinite(a).all() or (a == 0).all():
+                                  stats["weight_q_uncalibrated"] += 1
+                      for attr in ("gate_up_proj_input_quantizer", "down_proj_input_quantizer"):
+                          q = getattr(m, attr, None)
+                          if q is None or getattr(q, "amax", None) is None:
+                              stats["input_q_uncalibrated"] += 1
+              log("quantizer stats:", stats)
+              assert stats["expert_modules"] > 0, "no fused-experts wrappers: experts were NOT quantized"
+              assert stats["input_q_uncalibrated"] == 0, "expert input quantizers never saw data (non-eager path?)"
+
+              torch.save({"modelopt_state": mto.modelopt_state(backbone),
+                          "quantizer_state_dict": {k: v.detach().cpu() for k, v in backbone.state_dict().items() if "quantizer" in k}},
+                         RES / "quantizer_state.pt")
+              log("saved quantizer state;", gpu())
+
+              # ---------- 3b. fake-quant parity ----------
+              rows, agree, total, tvs, flips = [], 0, 0, [], []
+              for r, base in zip(evals, ref):
+                  q, _ = score(r)
+                  for qid, bd in base.items():
+                      qd = q[qid]
+                      tv = 0.5 * sum(abs(bd[o] - qd[o]) for o in bd)
+                      b_top, q_top = max(bd, key=bd.get), max(qd, key=qd.get)
+                      srt = sorted(bd.values(), reverse=True)
+                      margin = srt[0] - (srt[1] if len(srt) > 1 else 0)
+                      total += 1; agree += b_top == q_top; tvs.append(tv)
+                      if b_top != q_top:
+                          flips.append({"record": r["id"], "question": qid, "bf16": b_top, "nvfp4": q_top, "bf16_margin": round(margin, 4)})
+                      rows.append({"record": r["id"], "question": qid, "tv": round(tv, 6), "bf16": bd, "nvfp4": qd})
+              parity = {"questions": total, "top1_agreement": round(agree / total, 4),
+                        "mean_tv": round(float(np.mean(tvs)), 5), "p95_tv": round(float(np.percentile(tvs, 95)), 5),
+                        "max_tv": round(float(np.max(tvs)), 5), "flips": flips,
+                        "gate_top1_ge_0.98": agree / total >= .98, "gate_mean_tv_le_0.03": float(np.mean(tvs)) <= .03}
+              json.dump(parity, open(RES / "parity_fakequant.json", "w"), indent=1)
+              with open(RES / "parity_fakequant_rows.jsonl", "w") as f:
+                  for row in rows: f.write(json.dumps(row) + "\n")
+              log("FAKE-QUANT PARITY:", json.dumps({k: v for k, v in parity.items() if k != "flips"}), f"flips={len(flips)}")
+
+              # ---------- 4. export ----------
+              from modelopt.torch.export import export_hf_checkpoint
+              backbone.thinker.lm_head = clef.output_embeddings      # ClefModel swapped it for Identity
+              # Qwen3OmniMoeForConditionalGeneration defines no forward() (generate-only), but the
+              # exporter's shared-input/fusion pass runs model(fake_input_ids). Route it to the thinker,
+              # which owns every quantized module.
+              import types
+              def _thinker_forward(self, input_ids=None, *args, **kwargs):
+                  kwargs.setdefault("use_cache", False)
+                  return self.thinker(input_ids=input_ids, **kwargs)
+              backbone.forward = types.MethodType(_thinker_forward, backbone)
+              del clef, head; torch.cuda.empty_cache()
+              if EXPORT.exists(): shutil.rmtree(EXPORT)
+              t0 = time.time()
+              export_hf_checkpoint(backbone, export_dir=str(EXPORT), max_shard_size="5GB")
+              log(f"exported in {time.time()-t0:.0f}s;", gpu())
+              for p in MODEL.iterdir():
+                  if p.is_file() and not p.name.startswith(".") and not p.name.startswith("model") \
+                     and not (EXPORT / p.name).exists():
+                      shutil.copy2(p, EXPORT / p.name)
+
+              # ---------- artifact scan ----------
+              from safetensors import safe_open
+              scan = {"files": {}, "dtypes": {}, "nan_scale_bytes": 0, "fp4_packed_tensors": 0, "bf16_expert_weights": 0}
+              for f in sorted(EXPORT.glob("*.safetensors")):
+                  scan["files"][f.name] = f.stat().st_size
+                  if f.name == "joint_head.safetensors":
+                      continue
+                  with safe_open(str(f), "pt") as st:
+                      for k in st.keys():
+                          t = st.get_tensor(k)
+                          scan["dtypes"][str(t.dtype)] = scan["dtypes"].get(str(t.dtype), 0) + 1
+                          if ".experts." in k and k.endswith(".weight"):
+                              if t.dtype == torch.uint8: scan["fp4_packed_tensors"] += 1
+                              elif t.dtype == torch.bfloat16: scan["bf16_expert_weights"] += 1
+                          if t.dtype == torch.float8_e4m3fn:
+                              b = t.view(torch.uint8)
+                              scan["nan_scale_bytes"] += int(((b == 0x7F) | (b == 0xFF)).sum())
+                          elif t.is_floating_point() and not torch.isfinite(t.float()).all():
+                              scan.setdefault("nonfinite_tensors", []).append(k)
+              def sha(p):
+                  with open(p, "rb") as f:
+                      return hashlib.file_digest(f, "sha256").hexdigest()
+              scan["head_sha256_matches"] = sha(EXPORT / "joint_head.safetensors") == sha(MODEL / "joint_head.safetensors")
+              scan["export_bytes"] = sum(scan["files"].values())
+              qc = EXPORT / "hf_quant_config.json"
+              scan["hf_quant_config"] = json.loads(qc.read_text()).get("quantization", {}) if qc.exists() else None
+              if scan["hf_quant_config"]:
+                  scan["hf_quant_config"]["exclude_modules"] = len(scan["hf_quant_config"].get("exclude_modules", []))
+              json.dump(scan, open(RES / "artifact_scan.json", "w"), indent=1, default=str)
+              with open(EXPORT / "SHA256SUMS", "w") as f:
+                  for p in sorted(EXPORT.iterdir()):
+                      if p.is_file() and p.name != "SHA256SUMS": f.write(f"{sha(p)}  {p.name}\n")
+              log("ARTIFACT SCAN:", json.dumps({k: v for k, v in scan.items() if k != "files"}, default=str))
+              ok = scan["nan_scale_bytes"] == 0 and scan["fp4_packed_tensors"] > 0 and scan["bf16_expert_weights"] == 0 \
+                   and scan["head_sha256_matches"] and "nonfinite_tensors" not in scan
+              log("STAGE 2a", "PASS" if ok else "FAIL (see artifact_scan.json)")
+              sys.exit(0 if ok else 2)
+              PY
+              "$VENV/bin/python" /work/quant_experts.py 2>&1 | tee /work/logs/quant-experts.log
+              rc=${PIPESTATUS[0]}
+              echo "[$(date -u +%FT%TZ)] Stage 2a rc=$rc"; du -sh /work/nvfp4-experts/* 2>/dev/null
+              exit $rc
+          resources:
+            requests: { cpu: "2", memory: 12Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: model, mountPath: /work }
+      volumes:
+        - { name: model, persistentVolumeClaim: { claimName: clef-omni-hdd } }
