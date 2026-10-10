@@ -1,9 +1,9 @@
-# Persistent GPU power-limit enforcer (2026-07-27)
+# Persistent GPU power-limit enforcer (2026-07-27; per-GPU maps added 2026-10-10 for #146 prep)
 #
 # The RTX PRO 6000 Blackwell WS defaults/max = 600W but kept getting reset to
 # 400W (a manual `nvidia-smi -pl` does NOT stick — reverts within ~1 min, and
-# resets on reboot). This DaemonSet CONTINUOUSLY re-applies -pl 600 (every 60s)
-# so it holds against whatever re-asserts 400W and survives reboots — GitOps-
+# resets on reboot). This DaemonSet CONTINUOUSLY re-applies the limit (every 60s)
+# so it holds against whatever re-asserts it and survives reboots — GitOps-
 # managed, the persistent fix for "it doesn't stick".
 #
 # NOTE: it requests NO nvidia.com/gpu (just driver access via NVIDIA_VISIBLE_
@@ -19,6 +19,34 @@
 # (issue #46 GSP bug, dI/dt transients). This 60s enforcer had been overriding the
 # nvidia-power-cap 400W, so the card ran at the most transient-prone 600W. Back to
 # the documented 400W crash-mitigation. Go lower (350/300W) if 400W doesn't hold.
+#
+# ## MULTI-GPU (heterogeneous) — read this before adding a second card
+# Before this change the loop ran a bare `nvidia-smi -pl <W>`, which applies to
+# EVERY GPU on the node. A second card (e.g. a GeForce RTX 5090, 575W TGP) would
+# have been silently clamped to the PRO 6000's 400W crash-mitigation every 60s,
+# with no way to give it its own budget. The enforcer now resolves a limit PER
+# GPU and only writes when the value actually differs:
+#
+#   TARGET_WATTS     fallback limit for any GPU that no matcher selects
+#   DRY_RUN          set to anything to log the intended writes without touching
+#                    the GPU (use it to test a new map before enforcing it)
+#   HEARTBEAT_PASSES passes between state-table logs (default 30 ~ 30 min)
+#   GPU_POWER_MAP    comma-separated "<matcher>=<watts>" pairs, first-listed wins
+#                    matcher = UUID or UUID prefix ("GPU-9d6cf286"), a 0-based
+#                    nvidia-smi index ("0", exact match only), or a
+#                    case-insensitive substring of the GPU name ("PRO 6000")
+#   INTERVAL         seconds between passes (default 60)
+#
+# Example once a 5090 is installed:
+#   GPU_POWER_MAP: "PRO 6000=400,RTX 5090=300"
+# Trap: matchers are NAME SUBSTRINGS — "RTX" matches BOTH "NVIDIA RTX PRO 6000"
+# and "NVIDIA GeForce RTX 5090". Prefer the UUID, or a substring unique to one
+# card. Prefer UUID matchers for anything load-bearing: index order is not stable
+# across a re-enumeration (which is exactly what a FULLCHIP_RESET wedge does).
+#
+# Every 30th pass (~30 min) it logs a per-GPU state table and warns about any
+# matcher that selected nothing, so a renamed/replaced card shows up in the logs
+# instead of silently falling back to TARGET_WATTS.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -38,6 +66,8 @@ spec:
     spec:
       runtimeClassName: nvidia
       priorityClassName: system-node-critical
+      nodeSelector:
+        feature.node.kubernetes.io/pci-10de.present: "true"   # same NFD label HAMi + the watchdog key on
       tolerations:
         - operator: Exists   # single-node control-plane; tolerate all taints
       containers:
@@ -52,6 +82,7 @@ spec:
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: utility
             - name: TARGET_WATTS
+              # Fallback for any GPU not matched by GPU_POWER_MAP.
               # 2026-09-04: DROPPED 400W -> 350W. The card still FULLCHIP-reset at
               # 400W (twice within ~45min under normal serving), so 400W reduced
               # but did not eliminate the GSP crash. Next lever down is 300W.
@@ -59,15 +90,110 @@ spec:
               # prefill pins the card at the cap (99% util, SM ~2.2GHz of 3.09GHz max,
               # ~8.5K tok/s vs upstream ~14.8K). If FULLCHIP resets return, drop back to 350.
               value: "400"
+            - name: GPU_POWER_MAP
+              # Empty today: one GPU on the node, TARGET_WATTS covers it. Add a
+              # per-card entry the moment a second GPU goes in, e.g.
+              #   "PRO 6000=400,RTX 5090=300"
+              value: ""
+            - name: INTERVAL
+              value: "60"
+            - name: HEARTBEAT_PASSES
+              value: "30"
+            # Leave unset in GitOps. Set it with `kubectl set env` only to trial a
+            # new GPU_POWER_MAP against the real card before enforcing it.
+            # - name: DRY_RUN
+            #   value: "1"
           command:
             - /bin/sh
             - -c
             - |
-              echo "[gpu-power-limit] enforcing ${TARGET_WATTS}W every 60s"
-              nvidia-smi -pm 1 || true
+              set -u
+              MAP="${GPU_POWER_MAP:-}"
+              DEF="${TARGET_WATTS:-400}"
+              EVERY="${INTERVAL:-60}"
+              HB="${HEARTBEAT_PASSES:-30}"   # heartbeat: every N passes
+              DRY="${DRY_RUN:-}"
+
+              log(){ echo "[$(date -u +%FT%TZ)] [gpu-power-limit] $*"; }
+              trim(){ printf '%s' "$1" | tr -d '\r\n' | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//'; }
+
+              # Resolve the watts for ONE gpu: $1=index $2=uuid $3=name.
+              # First matching entry in MAP wins; unlisted GPUs get DEF.
+              want_watts(){
+                w="$DEF"
+                IFS=,
+                for pair in $MAP; do
+                  IFS=,
+                  pair=$(trim "$pair"); [ -n "$pair" ] || continue
+                  key=$(trim "${pair%%=*}"); val=$(trim "${pair##*=}")
+                  [ -n "$key" ] && [ -n "$val" ] || continue
+                  hit=0
+                  case "$2" in "$key"*) hit=1 ;; esac                       # UUID / UUID prefix
+                  [ "$1" = "$key" ] && hit=1                                # exact nvidia-smi index
+                  echo "$3" | grep -qi -- "$key" && hit=1                   # case-insensitive name substring
+                  if [ "$hit" = 1 ]; then w="$val"; break; fi
+                done
+                IFS=$oldIFS
+                echo "$w"
+              }
+
+              log "start: map='${MAP}' default=${DEF}W interval=${EVERY}s dry_run='${DRY:-no}'"
+              log "GPUs visible:"
+              nvidia-smi --query-gpu=index,uuid,name,power.limit,power.max_limit,persistence_mode --format=csv,noheader \
+                || log "WARN: initial nvidia-smi query failed (driver not ready / GPU in reset?)"
+              nvidia-smi -pm 1 >/dev/null 2>&1 || log "WARN: -pm 1 (persistence mode) failed"
+
+              i=0
               while true; do
-                nvidia-smi -pl "${TARGET_WATTS}" >/dev/null 2>&1 || true
-                sleep 60
+                i=$((i+1))
+                oldIFS=$IFS
+                nvidia-smi --query-gpu=index,uuid,name,power.limit --format=csv,noheader,nounits 2>/dev/null \
+                  | while IFS=, read -r idx uuid nm plim; do
+                      oldIFS=$IFS
+                      idx=$(trim "$idx"); uuid=$(trim "$uuid"); nm=$(trim "$nm"); plim=$(trim "$plim")
+                      IFS=$oldIFS
+                      [ -n "$idx" ] || continue
+                      w=$(want_watts "$idx" "$uuid" "$nm")
+                      case "$plim" in *[!0-9.]*|"") cur="" ;; *) cur="$plim" ;; esac
+                      if [ -z "$cur" ] || [ "$(awk -v a="$cur" -v b="$w" 'BEGIN{d=a-b; if(d<0)d=-d; print (d>0.5)?1:0}')" = "1" ]; then
+                        if [ -n "$DRY" ]; then
+                          log "DRY-RUN GPU[$idx] ${nm}: would set ${cur:-n/a}W -> ${w}W"
+                        elif out=$(nvidia-smi -i "$idx" -pl "$w" 2>&1); then
+                          log "GPU[$idx] ${nm}: ${cur:-n/a}W -> ${w}W"
+                        else
+                          log "GPU[$idx] ${nm}: FAILED to set ${w}W: $(printf '%s' "$out" | tail -1)"
+                        fi
+                      fi
+                    done
+                IFS=$oldIFS
+
+                if [ $((i % HB)) -eq 0 ]; then
+                  log "heartbeat (${i} passes), map='${MAP}'"
+                  nvidia-smi --query-gpu=index,uuid,name,power.limit,power.used,persistence_mode --format=csv,noheader \
+                    || log "WARN: heartbeat query failed"
+                  IFS=,
+                  for pair in $MAP; do
+                    IFS=,
+                    pair=$(trim "$pair"); [ -n "$pair" ] || continue
+                    key=$(trim "${pair%%=*}")
+                    # A matcher that selects nothing = a renamed/replaced/absent card.
+                    # Index-only matchers ("0") are checked exactly, since "0" also
+                    # appears inside UUID hex.
+                    case "$key" in
+                      ''|*[!0-9]*)
+                        nvidia-smi --query-gpu=index,uuid,name --format=csv,noheader 2>/dev/null \
+                          | grep -qi -- "$key" || log "WARN: matcher '${key}' selected NO gpu (its GPUs fall back to ${DEF}W)"
+                        ;;
+                      *)
+                        nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | grep -qx -- "$key" \
+                          || log "WARN: index matcher '${key}' selected NO gpu (falling back to ${DEF}W)"
+                        ;;
+                    esac
+                  done
+                  IFS=$oldIFS
+                  nvidia-smi -pm 1 >/dev/null 2>&1 || log "WARN: -pm 1 re-assert failed"
+                fi
+                sleep "$EVERY"
               done
           resources:
             requests:
