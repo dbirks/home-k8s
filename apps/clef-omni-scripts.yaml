@@ -212,6 +212,81 @@ data:
 
     if __name__ == "__main__":
         main()
+  hf_publish.py: |
+    """Publish (or refresh) a Clef-Omni quant on the Hugging Face Hub (issue #150).
+
+        python hf_publish.py --repo dbirks/clef-omni-int4 --export /work/int4/export --card cards/clef-omni-int4.md \
+            --private --tag v0.1                       # new repo: whole export, private, tagged
+        python hf_publish.py --repo dbirks/clef-omni-nvfp4 --export /work/nvfp4-experts/export \
+            --card cards/clef-omni-nvfp4.md --only README.md serve_clef.py SHA256SUMS   # refresh docs only
+
+    The card becomes README.md and serve_clef.py ships next to the weights. SHA256SUMS is rewritten so it
+    stays true. The token must belong to the repo's namespace. New repos are created private unless --public.
+    """
+    import argparse
+    import hashlib
+    import shutil
+    from pathlib import Path
+
+    from huggingface_hub import HfApi
+
+    HERE = Path(__file__).resolve().parent
+
+
+    def sha256(p):
+        with open(p, "rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--repo", required=True)
+        ap.add_argument("--export", required=True)
+        ap.add_argument("--card", required=True)
+        vis = ap.add_mutually_exclusive_group()
+        vis.add_argument("--private", action="store_true", default=True)
+        vis.add_argument("--public", action="store_true")
+        ap.add_argument("--tag", default=None)
+        ap.add_argument("--tag-message", default=None)
+        ap.add_argument("--only", nargs="*", default=None, help="upload just these files (docs refresh)")
+        args = ap.parse_args()
+        export = Path(args.export)
+        card = Path(args.card) if Path(args.card).is_absolute() else HERE / args.card
+
+        api = HfApi()
+        who = api.whoami()["name"]
+        assert args.repo.split("/")[0] == who, f"token belongs to {who}, not {args.repo.split('/')[0]}"
+
+        shutil.copy2(card, export / "README.md")
+        shutil.copy2(HERE / "serve_clef.py", export / "serve_clef.py")
+        files = sorted(p for p in export.iterdir() if p.is_file() and not p.name.startswith(".") and p.name != "SHA256SUMS")
+        (export / "SHA256SUMS").write_text("".join(f"{sha256(p)}  {p.name}\n" for p in files))
+        print(f"staged README.md, serve_clef.py, SHA256SUMS ({len(files)} files) in {export}", flush=True)
+
+        exists = api.repo_exists(args.repo)
+        if not exists:
+            api.create_repo(args.repo, private=not args.public, exist_ok=True)
+            print(f"created {args.repo} ({'public' if args.public else 'private'})", flush=True)
+        if args.only:
+            for name in args.only:
+                api.upload_file(path_or_fileobj=str(export / name), path_in_repo=name, repo_id=args.repo,
+                                commit_message=f"Update {name}")
+        else:
+            api.upload_large_folder(repo_id=args.repo, repo_type="model", folder_path=str(export),
+                                    ignore_patterns=[".cache/**"], num_workers=4)
+        remote = set(api.list_repo_files(args.repo))
+        wanted = set(args.only) if args.only else {p.name for p in export.iterdir() if p.is_file() and not p.name.startswith(".")}
+        missing = sorted(wanted - remote)
+        assert not missing, f"missing on the Hub: {missing}"
+        info = api.model_info(args.repo)
+        if args.tag and args.tag not in {t.name for t in api.list_repo_refs(args.repo).tags}:
+            api.create_tag(args.repo, tag=args.tag, revision=info.sha, tag_message=args.tag_message or args.tag)
+        print(f"PUBLISHED https://huggingface.co/{args.repo} @ {info.sha} private={info.private} "
+              f"({len(remote)} files){' tag ' + args.tag if args.tag else ''}", flush=True)
+
+
+    if __name__ == "__main__":
+        main()
   quant_int4_autoround.py: |
     """Clef-Omni INT4 (W4A16, group 128) with Intel AutoRound 0.16.0 (issue #152).
 
@@ -686,3 +761,249 @@ data:
 
     if __name__ == "__main__":
         main()
+  card_clef-omni-int4.md: |
+    ---
+    license: apache-2.0
+    base_model: Cloudflare/clef-omni
+    base_model_relation: quantized
+    tags:
+      - int4
+      - w4a16
+      - auto-round
+      - qwen3_omni_moe
+      - clef
+      - decision-model
+    ---
+
+    # clef-omni-int4
+
+    INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
+
+    ## Which Clef-Omni quant should I use?
+
+    | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
+    |---|---|---|---|---|---|---|
+    | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
+    | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
+    | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | pending | 60 GiB | pending | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
+    | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
+
+    **Recommended for:**
+
+    - **clef-omni-int4**: any recent NVIDIA GPU (Ampere, Ada, Hopper, Blackwell) when you want the smallest VRAM footprint today; loads in plain transformers.
+    - **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
+    - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
+    - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
+
+    *Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.
+
+    ## Quick start
+
+    Serve it with [`serve_clef.py`](serve_clef.py) (also in [the repo it is maintained in](https://github.com/dbirks/home-k8s/blob/main/scripts/clef-omni/serve_clef.py)), a single-file [PEP 723](https://peps.python.org/pep-0723/) script, so `uv` installs everything it needs:
+
+    ```bash
+    # uv runs a PEP 723 script straight from its URL (or download serve_clef.py and `uv run` it locally)
+    uv run https://huggingface.co/dbirks/clef-omni-int4/resolve/main/serve_clef.py --model dbirks/clef-omni-int4 --demo
+    uv run https://huggingface.co/dbirks/clef-omni-int4/resolve/main/serve_clef.py --model dbirks/clef-omni-int4 --port 8000
+    ```
+
+    The first command answers one built-in decision and exits; the second starts the SystemOne HTTP server (`GET /healthz` turns 200 once the model is loaded):
+
+    ```bash
+    curl -s localhost:8000/v1/systemone -H 'Content-Type: application/json' -d '{
+      "model": "clef-omni",
+      "state": {"observation": "The player is facing a wall."},
+      "questions": {"action": {"type": "choice", "criteria": {"left": "Turn left", "right": "Turn right", "forward": "Move forward"}}}
+    }'
+    ```
+
+    Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one forward pass, per-option probabilities from the original BF16 joint decision head. Inputs can include images, audio and video (see the [base model card](https://huggingface.co/Cloudflare/clef-omni)).
+
+    ## How this checkpoint runs
+
+    transformers loads this checkpoint natively (AutoRound format, int4 kernels), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly with a much smaller VRAM footprint than BF16. Works on non-Blackwell cards.
+
+    ## What was quantized
+
+    | Part | Precision |
+    |---|---|
+    | Thinker MoE experts | **INT4 weights**, group size 128, symmetric (auto_round format, auto_gptq packing), BF16 activations |
+    | Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |
+    | Clef joint head | BF16, byte-identical to the original |
+
+    ## Recipe
+
+    AutoRound 0.16.0 `scheme=W4A16`, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell.
+
+    ## Evaluation
+
+    Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
+
+
+    ## License
+
+    Apache-2.0, as the base model. All credit for the model goes to Cloudflare; this repo only changes the weight precision.
+  card_clef-omni-nvfp4.md: |
+    ---
+    license: apache-2.0
+    base_model: Cloudflare/clef-omni
+    base_model_relation: quantized
+    tags:
+      - nvfp4
+      - fp4
+      - modelopt
+      - qwen3_omni_moe
+      - clef
+      - decision-model
+      - blackwell
+    ---
+
+    # clef-omni-nvfp4
+
+    NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0. **22.0 GB instead of 70.8 GB.** Only the thinker's MoE experts (about 91% of the loaded weights) are FP4; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.
+
+    > **Status:** experimental first pass (`v0.1-max`, `max` calibration). It agrees with BF16 on 91.1% of held-out decisions; the target is 98%. See the table for higher-fidelity variants.
+
+    ## Which Clef-Omni quant should I use?
+
+    | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
+    |---|---|---|---|---|---|---|
+    | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
+    | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
+
+    **Recommended for:**
+
+    - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
+    - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
+
+    *Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.
+
+    ## Quick start
+
+    Serve it with [`serve_clef.py`](serve_clef.py) (also in [the repo it is maintained in](https://github.com/dbirks/home-k8s/blob/main/scripts/clef-omni/serve_clef.py)), a single-file [PEP 723](https://peps.python.org/pep-0723/) script, so `uv` installs everything it needs:
+
+    ```bash
+    # uv runs a PEP 723 script straight from its URL (or download serve_clef.py and `uv run` it locally)
+    uv run https://huggingface.co/dbirks/clef-omni-nvfp4/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4 --demo
+    uv run https://huggingface.co/dbirks/clef-omni-nvfp4/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4 --port 8000
+    ```
+
+    The first command answers one built-in decision and exits; the second starts the SystemOne HTTP server (`GET /healthz` turns 200 once the model is loaded):
+
+    ```bash
+    curl -s localhost:8000/v1/systemone -H 'Content-Type: application/json' -d '{
+      "model": "clef-omni",
+      "state": {"observation": "The player is facing a wall."},
+      "questions": {"action": {"type": "choice", "criteria": {"left": "Turn left", "right": "Turn right", "forward": "Move forward"}}}
+    }'
+    ```
+
+    Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one forward pass, per-option probabilities from the original BF16 joint decision head. Inputs can include images, audio and video (see the [base model card](https://huggingface.co/Cloudflare/clef-omni)).
+
+    ## How this checkpoint runs
+
+    `serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact) and, because this is a W4A4 checkpoint, also rounds every expert input to NVFP4 exactly the way ModelOpt calibrated it, so answers match the quantized model. Memory and speed are BF16-like. Native FP4 execution needs an engine with NVFP4 kernels (vLLM's ModelOpt NVFP4 MoE path on Blackwell) and a way to feed the thinker's hidden states into the Clef head, which no engine provides yet.
+
+    ## What was quantized
+
+    | Part | Precision |
+    |---|---|
+    | Thinker MoE experts (48 layers x 128 experts, gate/up/down) | **NVFP4 W4A4**: E2M1 weights in blocks of 16 with FP8 E4M3 block scales + FP32 global scale; FP4 activations |
+    | Attention, router (`mlp.gate`), embeddings, `lm_head` | BF16 |
+    | Vision and audio towers | BF16 |
+    | Clef joint head (`joint_head.safetensors`) | BF16, byte-identical to the original |
+
+    ## Recipe
+
+    ModelOpt `NVFP4_EXPERTS_ONLY_CFG`, `max` calibration, plus exclusions for towers, talker, `lm_head`, router and embeddings; torch 2.11.0+cu130, transformers 5.10.2 (fused MoE experts, quantized per expert by ModelOpt 0.47 and split back on export); 512 Clef-format calibration records (383K tokens), 52 min on one RTX PRO 6000.
+
+    ## Evaluation
+
+    Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
+
+
+    ## License
+
+    Apache-2.0, as the base model. All credit for the model goes to Cloudflare; this repo only changes the weight precision.
+  card_clef-omni-nvfp4a16.md: |
+    ---
+    license: apache-2.0
+    base_model: Cloudflare/clef-omni
+    base_model_relation: quantized
+    tags:
+      - nvfp4
+      - w4a16
+      - modelopt
+      - qwen3_omni_moe
+      - clef
+      - decision-model
+    ---
+
+    # clef-omni-nvfp4a16
+
+    NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0: FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
+
+    ## Which Clef-Omni quant should I use?
+
+    | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
+    |---|---|---|---|---|---|---|
+    | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
+    | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
+    | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | pending | 60 GiB | pending | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
+    | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
+
+    **Recommended for:**
+
+    - **clef-omni-int4**: any recent NVIDIA GPU (Ampere, Ada, Hopper, Blackwell) when you want the smallest VRAM footprint today; loads in plain transformers.
+    - **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
+    - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
+    - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
+
+    *Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.
+
+    ## Quick start
+
+    Serve it with [`serve_clef.py`](serve_clef.py) (also in [the repo it is maintained in](https://github.com/dbirks/home-k8s/blob/main/scripts/clef-omni/serve_clef.py)), a single-file [PEP 723](https://peps.python.org/pep-0723/) script, so `uv` installs everything it needs:
+
+    ```bash
+    # uv runs a PEP 723 script straight from its URL (or download serve_clef.py and `uv run` it locally)
+    uv run https://huggingface.co/dbirks/clef-omni-nvfp4a16/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4a16 --demo
+    uv run https://huggingface.co/dbirks/clef-omni-nvfp4a16/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4a16 --port 8000
+    ```
+
+    The first command answers one built-in decision and exits; the second starts the SystemOne HTTP server (`GET /healthz` turns 200 once the model is loaded):
+
+    ```bash
+    curl -s localhost:8000/v1/systemone -H 'Content-Type: application/json' -d '{
+      "model": "clef-omni",
+      "state": {"observation": "The player is facing a wall."},
+      "questions": {"action": {"type": "choice", "criteria": {"left": "Turn left", "right": "Turn right", "forward": "Move forward"}}}
+    }'
+    ```
+
+    Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one forward pass, per-option probabilities from the original BF16 joint decision head. Inputs can include images, audio and video (see the [base model card](https://huggingface.co/Cloudflare/clef-omni)).
+
+    ## How this checkpoint runs
+
+    `serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact), so it runs anywhere transformers runs, with BF16-like memory. vLLM's ModelOpt loader runs `W4A16_NVFP4` MoE checkpoints on its Marlin kernels (memory saving, BF16-class speed), but no engine yet feeds the thinker's hidden states into the Clef head.
+
+    ## What was quantized
+
+    | Part | Precision |
+    |---|---|
+    | Thinker MoE experts | **NVFP4 weights** (E2M1, blocks of 16, FP8 E4M3 block scales + FP32 global scale), BF16 activations |
+    | Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |
+    | Clef joint head | BF16, byte-identical to the original |
+
+    ## Recipe
+
+    ModelOpt `NVFP4_EXPERTS_ONLY_CFG` with the expert input quantizers disabled (weight-only), `max` calibration straight from the weights (no calibration data needed), same exclusions as the W4A4 variant; torch 2.11.0+cu130, transformers 5.10.2, ModelOpt 0.47.0.
+
+    ## Evaluation
+
+    Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
+
+
+    ## License
+
+    Apache-2.0, as the base model. All credit for the model goes to Cloudflare; this repo only changes the weight precision.
