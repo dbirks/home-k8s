@@ -1,0 +1,164 @@
+# Publish the Clef-Omni Stage 2a NVFP4 export (issue #145) to https://huggingface.co/dbirks/clef-omni-nvfp4
+# (public), then tag that first upload v0.1-max. CPU-only: no GPU, so Pennyroyal is untouched.
+#
+# The export on the clef-omni-hdd PVC (/work/nvfp4-experts/export) still carries Cloudflare's README.md;
+# the card below replaces it, and the README.md line in SHA256SUMS is recomputed so the sums stay true.
+# upload_large_folder is resumable (re-running the Job continues instead of restarting), and its
+# .cache/ dir is excluded from the repo. Token: hf-write-token secret. The Job refuses to upload
+# unless the token belongs to dbirks.
+# Retire to .yaml.hold once the repo and tag are verified.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clef-omni-nvfp4-card
+  namespace: default
+data:
+  README.md: |
+    ---
+    license: apache-2.0
+    base_model: Cloudflare/clef-omni
+    base_model_relation: quantized
+    tags:
+      - nvfp4
+      - fp4
+      - modelopt
+      - qwen3_omni_moe
+      - clef
+      - decision-model
+      - blackwell
+    ---
+
+    # clef-omni-nvfp4
+
+    NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni)
+    (revision `0db1cd2`), made with NVIDIA ModelOpt 0.47.0 on a single RTX PRO 6000 Blackwell (SM120).
+
+    **22.0 GB, down from 70.8 GB.** Only the thinker's MoE experts (about 91% of the loaded weights) are
+    FP4. Everything else stays BF16, including the Clef joint decision head.
+
+    > **Status: experimental first pass.** Against the BF16 original on held-out records, it matches
+    > the top answer **91.1%** of the time (mean total variation 0.055). My target is 98% (TV 0.03),
+    > so this version misses it. It has also **not yet been benchmarked** on the Decision Index and
+    > **not yet been shown to run on native FP4 kernels** (see "Running it"). Better-calibrated versions
+    > will replace this one in the same repo; this one stays available at the `v0.1-max` tag.
+
+    ## What was quantized
+
+    | Part | Precision |
+    |---|---|
+    | Thinker MoE experts (48 layers × 128 experts, gate/up/down) | **NVFP4 W4A4**: FP4 E2M1 weights, block size 16, FP8 E4M3 block scales + FP32 global scale, FP4 activations |
+    | Attention (q/k/v/o) | BF16 |
+    | MoE router (`mlp.gate`) | BF16 |
+    | Embeddings, `lm_head` (Clef scores options with it) | BF16 |
+    | Vision and audio towers | BF16 |
+    | Clef joint head (`joint_head.safetensors`) | BF16, byte-identical to the original (sha256 checked) |
+
+    Expert weights use the standard per-expert layout
+    (`thinker.model.layers.N.mlp.experts.E.{gate,up,down}_proj.{weight,weight_scale,weight_scale_2,input_scale}`),
+    the same layout as other ModelOpt Qwen3-Omni NVFP4 checkpoints.
+
+    ## Recipe
+
+    - ModelOpt `NVFP4_EXPERTS_ONLY_CFG`, `max` calibration; also excludes `*audio_tower*`, `*visual*`,
+      `*talker*`, `*code2wav*`, `*lm_head*`, `*mlp.gate.*`, `*embed*`.
+    - torch 2.11.0+cu130, transformers 5.10.2, nvidia-modelopt 0.47.0. transformers 5 fuses MoE
+      experts into 3-D tensors; ModelOpt 0.47 quantizes them per expert and splits them back on export.
+      The experts must run in eager mode during calibration.
+    - Calibration: 512 records in Clef's `state`/`questions` format (choice / yes-no / score questions),
+      with text from ultrachat_200k `test_sft` and about 20% synthetic image, video or audio inputs.
+      383K tokens in total.
+    - Calibration took 52 min on one RTX PRO 6000 (eager experts are slow). Export took 3.5 min.
+
+    ## Evaluation (so far)
+
+    Fake-quant parity against the BF16 original, computed in the same process, on 128 held-out records
+    (258 questions) kept separate from calibration:
+
+    | Metric | Result | Target |
+    |---|---|---|
+    | Top-answer agreement with BF16 | 91.1% (23 of 258 differ) | ≥ 98% |
+    | Mean total variation | 0.055 | ≤ 0.03 |
+    | p95 / max total variation | 0.184 / 0.372 | |
+
+    The held-out records are synthetic, so this measures drift from BF16, not task accuracy. A Decision
+    Index comparison against Cloudflare's published scores is planned.
+
+    Export checks: 18,432 packed FP4 expert tensors, 0 NaN bytes in the FP8 scales, no BF16 expert
+    weights left, Clef head hash unchanged. `SHA256SUMS` lists every file.
+
+    ## Running it
+
+    The repo includes Cloudflare's `joint_schema_model.py`, the tokenizer and the processor, but
+    **`load_release_model` expects BF16 weights and will not run this checkpoint as-is.** Running it as
+    a Clef decision model needs a loader that runs the NVFP4 thinker (for example through vLLM or
+    vLLM-Omni ModelOpt NVFP4 support) and feeds its hidden states into the BF16 joint head. That serving
+    path has not been built yet.
+
+    ## License
+
+    Apache-2.0, the same as the base model. All credit for the model goes to Cloudflare; this repo
+    only changes the weight precision.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-nvfp4-hf-upload-20261010
+  namespace: default
+spec:
+  backoffLimit: 2                      # resumable upload: a retry continues where it stopped
+  activeDeadlineSeconds: 43200
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-nvfp4-hf-upload }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: upload
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              EXPORT=/work/nvfp4-experts/export
+              export HF_HOME=/work/.hf-home HF_HUB_DISABLE_TELEMETRY=1
+              cp /card/README.md "$EXPORT/README.md"
+              sum=$(sha256sum "$EXPORT/README.md" | cut -d' ' -f1)
+              sed -i "s/^[0-9a-f]\{64\}  README.md$/$sum  README.md/" "$EXPORT/SHA256SUMS"
+              grep -q "^$sum  README.md$" "$EXPORT/SHA256SUMS"
+              ls -la "$EXPORT"; du -sh "$EXPORT"
+              /work/venv/bin/python - <<'PY'
+              import os
+              from huggingface_hub import HfApi
+              api = HfApi()
+              who = api.whoami()["name"]
+              assert who == "dbirks", f"token belongs to {who}, refusing to upload"
+              repo = "dbirks/clef-omni-nvfp4"
+              api.create_repo(repo, repo_type="model", private=False, exist_ok=True)
+              api.upload_large_folder(repo_id=repo, repo_type="model", folder_path="/work/nvfp4-experts/export",
+                                      ignore_patterns=[".cache/**"], num_workers=4)
+              files = set(api.list_repo_files(repo))
+              local = {f for f in os.listdir("/work/nvfp4-experts/export") if not f.startswith(".")}
+              missing = sorted(local - files)
+              assert not missing, f"missing on the Hub: {missing}"
+              head = api.model_info(repo).sha
+              tags = {t.name for t in api.list_repo_refs(repo).tags}
+              if "v0.1-max" not in tags:
+                  api.create_tag(repo, tag="v0.1-max", revision=head,
+                                 tag_message="Stage 2a: experts-only NVFP4, max calibration, top-1 parity 0.911")
+              print(f"UPLOADED https://huggingface.co/{repo} @ {head} ({len(files)} files), tag v0.1-max")
+              PY
+          env:
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "4", memory: 6Gi }
+          volumeMounts:
+            - { name: model, mountPath: /work }
+            - { name: card, mountPath: /card, readOnly: true }
+      volumes:
+        - { name: model, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: card, configMap: { name: clef-omni-nvfp4-card } }
