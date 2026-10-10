@@ -1,3 +1,22 @@
+# SUSPENDED 2026-10-10 (issue #146 prep) — superseded by apps/gpu-power-limit.yaml.
+#
+# WHY retired rather than converted:
+#   1. It duplicated gpu-power-limit (both do `-pm 1` + `-pl 400`) and the two have a
+#      HISTORY of fighting: the 2026-09-03 note in gpu-power-limit records the 60s
+#      enforcer silently overriding this hourly one, so the card ran at the most
+#      crash-prone 600W. Two writers of one register is the bug, not the cure.
+#   2. It is multi-GPU-blind: a bare `nvidia-smi -pl 400` applies to EVERY GPU, so a
+#      second card (e.g. a 575W RTX 5090) would be clamped to the PRO 6000's 400W
+#      crash-mitigation with no way to give it its own budget.
+# gpu-power-limit now covers both jobs: persistence mode is re-asserted on every
+# heartbeat, and limits resolve PER GPU via GPU_POWER_MAP (uuid / index / name
+# substring) with TARGET_WATTS as the fallback.
+#
+# To revive: rename back to .yaml — but prefer setting GPU_POWER_MAP instead, and do
+# NOT run both enforcers at once. Audit the applied state with:
+#   kubectl exec ds/gpu-power-limit -- nvidia-smi --query-gpu=index,uuid,name,power.limit,persistence_mode --format=csv
+#
+
 # NVIDIA GPU power cap + persistence mode DaemonSet
 #
 # Mitigation for GSP firmware crashes (Xid 79) on RTX PRO 6000 Blackwell.

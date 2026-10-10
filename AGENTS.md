@@ -68,7 +68,7 @@ kubectl create secret generic sops-age --namespace=flux-system \
 - **All changes must go through GitOps** — edit files in the repo, commit, and let Flux reconcile. Do not patch deployments directly with kubectl.
 - Suspended apps are renamed to `.yaml.hold` so Flux ignores them
 - Scaled-down deployments use `replicas: 0` in their yaml (e.g. `apps/vllm-tts.yaml`)
-- Node IP is DHCP-assigned (currently **10.0.0.194**, verified via `kubectl get nodes -o wide` 2026-10-08 — it moves often, always re-check before using it). If it changes, update the kubeconfig cluster server and the talosctl endpoints. NOTE: `talos/talconfig.yaml` and the talosctl examples below still reference the older `10.0.0.177`; reconcile those to the live IP when convenient.
+- Node IP is DHCP-assigned (currently **10.0.0.194**, verified via `kubectl get nodes -o wide` 2026-10-08 — it moves often, always re-check before using it). If it changes, update the kubeconfig cluster server and the talosctl endpoints. NOTE: `talos/talconfig.yaml` still carries the older `10.0.0.177` in `endpoint`/`ipAddress` (regenerate rather than hand-editing); every talosctl example in this file now uses `$NODE_IP`.
 - `enableServiceLinks: false` is required on vLLM pods (K8s service named "vllm" conflicts with vLLM's VLLM_PORT env var)
 - GPU workloads need `runtimeClassName: nvidia`
 - Node needs label `feature.node.kubernetes.io/pci-10de.present=true` for nvidia-device-plugin DaemonSet
@@ -110,10 +110,28 @@ What serves models today:
 
 ## Talos
 
-- Schematic uses `nvidia-open-gpu-kernel-modules` (required for Blackwell GPUs)
-- Schematic ID: `036d341b186bfa76a1c0a545125bbd667908a09a50dfe5e7ab32cc93901b84a2`
-- Talos config: `talosctl --talosconfig _newconfig/talosconfig -e 10.0.0.177 -n 10.0.0.177`
+- Schematic uses `nvidia-open-gpu-kernel-modules` + `nvidia-container-toolkit` (the open modules are required for Blackwell GPUs) — see `talos/talos-nvidia-schematic.yaml`
+- Schematic ID: **read it from the live node, don't trust docs.** `kubectl get node -o jsonpath='{.metadata.annotations.extensions\.talos\.dev/schematic}'` (observed `40b13a8d4f3202c7d7c95f0cc0fa5cecea2d480ea9f1f1dd3122395cd68f6e9d`, 2026-10-10; the `extensions.talos.dev/*` node LABELS list the installed extension versions, which is how you confirm the driver is really in the image)
+- Talos config (node IP is DHCP — always re-read it):
+  `NODE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'); talosctl --talosconfig _newconfig/talosconfig -e "$NODE_IP" -n "$NODE_IP" <cmd>`
 - Kubeconfig context: `admin@home`
+- No shell on the node: use the talos-hardware-inventory skill for PCI/DMI/module/disk questions (`talosctl list`/`read`/`mounts` do everything `lspci`/`lsblk`/`df` would)
+
+
+## GPUs — one real slot, and what a second card would need
+
+Hardware facts (measured 2026-10-10; re-verify with the talos-hardware-inventory skill):
+
+- **Board: Gigabyte B550 EAGLE WIFI6** (AM4, BIOS F2). Expansion: **1× PCIEX16 wired to the CPU (PCIe 4.0 x16)** — the RTX PRO 6000 Blackwell WS lives there, negotiated `16.0 GT/s x16` — plus **4 full-length slots that run at PCIe 3.0 ×1 only**, and 2 M.2 (`M2A_CPU` Gen4 x4 = the boot NVMe; `M2B_SB` off the chipset).
+- **Thunderbolt / USB4 eGPU: not possible on this box, ever.** No TB/USB4 controller on the board, no `/sys/bus/thunderbolt`, and the Talos kernel ships **neither** `thunderbolt`/`usb4` **nor `pciehp`** (checked in both `modules.builtin` and `modules.dep`) — so no TB host card, and **no PCIe hot-plug**: any card goes in cold (power off → seat → boot). Upstream talos#13896 also reports the NVIDIA extension blocking boot / hard-hanging on a hot-plugged eGPU.
+- A second in-board card must ride a **chipset ×1 Gen3 (~1 GB/s, shared with the NIC + SATA HDD via the DMI)** or an M.2→adapter (Gen3 x4 through the same DMI). Fine for VRAM-resident decode; bad for anything that streams (sleep/wake weight reload, KV migration, PLE/NVMe-style offload, big media uploads).
+- **Driver is already fine for consumer Blackwell:** 580.167.08 (open) covers GB202 / GeForce RTX 5090 (`10de:2b85`) — r580 spans Maxwell→Blackwell and Blackwell *requires* the open driver, which this schematic already has. **No schematic rebuild needed.** The NFD label `feature.node.kubernetes.io/pci-10de.present=true` matches the HAMi plugin and the GPU DaemonSets, so a new card is adopted automatically on next boot.
+- BIOS: enable **Above-4G Decoding + ReBAR** before adding a second large-BAR GPU.
+- `NVreg_DynamicPowerManagement=0x00` (from `talos/patches/nvidia-module-options.yaml`) is a **global module option** — it covers every card, but verify per boot: `talosctl … read /proc/driver/nvidia/params | grep DynamicPowerManagement` → `0`.
+- Power/thermals: the PRO 6000 is capped at 400 W (see below); a 575 W-class second card plus GB202 transient spikes means PSU/airflow/ slot-spacing must be checked physically — not observable from software.
+
+Code prep that a second GPU depends on (all in repo, exercised by the skills' test scripts):
+`gpu-power-limit` resolves limits **per GPU** (`GPU_POWER_MAP`) — a bare `nvidia-smi -pl` used to clamp *every* card to the PRO 6000's crash-mitigation value; the duplicate `nvidia-power-cap` DaemonSet is retired (`.yaml.hold`) because two writers of one register is a documented failure mode; the workstation wedge-watchdog detects a **per-UUID** disappearance (a `capacity==0`-only trigger stops working the moment a second card exists); HAMi defaults to `gpuSchedulerPolicy: binpack` with pod-level pinning via `nvidia.com/use-gputype` / `use-gpuuuid` (substring matching: `"RTX"` matches BOTH cards). Skills: **gpu-power-management**, **gpu-wedge-recovery**, **hami-gpu-accounting**, **talos-hardware-inventory**.
 
 ## GPU crash recovery (FULLCHIP_RESET wedge) — the one command to remember
 
@@ -129,7 +147,7 @@ talosctl --talosconfig _newconfig/talosconfig -e "$NODE_IP" -n "$NODE_IP" reboot
 
 The `--mode powercycle` is the key part: it escalates to the BMC to actually cut and restore power. The node comes back in ~2-3 min, the GPU re-enumerates (`nvidia.com/gpu: 10`), and ninfer/qwen38 pods recover on their own. Clean up any leftover dead pods with `kubectl delete pods --field-selector=status.phase=Failed -A`.
 
-**Auto-recovery is installed** as a user systemd timer on David's workstation (NOT in-cluster): `~/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh`, fired every 2 min by `gpu-wedge-watchdog.timer`. It power-cycles ONLY on a confirmed, persistent wedge (`gpu cap 0` AND dmesg `GPU_IN_FULLCHIP_RESET`, held ≥120s), with a 30-min cooldown to prevent reboot loops. Logs: `~/.local/share/home-k8s-auto/gpu-wedge-watchdog.log`. Check it with `systemctl --user list-timers gpu-wedge-watchdog.timer`.
+**Auto-recovery is installed** as a user systemd timer on David's workstation (NOT in-cluster): `~/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh`, fired every 2 min by `gpu-wedge-watchdog.timer`. It power-cycles ONLY on a confirmed, persistent wedge — dmesg `GPU_IN_FULLCHIP_RESET` (mandatory) AND an unserviceable device (node advertises `nvidia.com/gpu: 0`, *or* `hami-device-plugin` unhealthy, *or* an expected **GPU UUID** has vanished from the bus — that third signal is what keeps recovery working once the node has more than one card), held ≥120s, with a 30-min cooldown. Logs: `~/.local/share/home-k8s-auto/gpu-wedge-watchdog.log`. Check it with `systemctl --user list-timers gpu-wedge-watchdog.timer`; `--status` / `--learn` / `--check` on the script itself. Canonical tracked copy + tests: the **gpu-wedge-recovery** skill. **After any intentional hardware change run `gpu-wedge-watchdog.sh --learn`** so the expected-UUID list matches reality.
 
 **First, though, CHECK THE POWER CAP.** A recurring ~fixed-interval crash storm (every ~18 min) was caused by the `gpu-power-limit` DaemonSet re-asserting 600W and overriding the 400W `nvidia-power-cap`. Keep it at **400W** (`apps/gpu-power-limit.yaml` `TARGET_WATTS: "400"`); if crashes persist at 400W, drop to 350W → 300W. Do NOT raise it.
 

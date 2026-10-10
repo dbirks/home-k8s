@@ -61,6 +61,25 @@ spec:
       gpuHookPath: /var/lib/hami
 
     scheduler:
+      # Placement policy across devices. With ONE GPU these are no-ops; they matter the
+      # day a second, *different*-sized card joins (issue #146: an RTX 5090 next to the
+      # 96GB PRO 6000). Chart defaults are node=binpack / gpu=spread — 'spread' would
+      # balance pods over both cards, i.e. park a random small workload on the 32GB card
+      # and fragment it. binpack keeps work consolidated on the big card and leaves the
+      # small card whole. Anything size-sensitive must PIN itself (see below), never rely
+      # on this tie-breaker.
+      defaultSchedulerPolicy:
+        nodeSchedulerPolicy: binpack
+        gpuSchedulerPolicy: binpack
+      # PINNING (verified against HAMi v2.9.0 pkg/device/nvidia/device.go): pod annotations
+      #   nvidia.com/use-gputype:  "PRO 6000"      # allow-list, comma-separated
+      #   nvidia.com/nouse-gputype: "RTX 5090"     # deny-list
+      #   nvidia.com/use-gpuuuid:  "GPU-9d6cf286-..."
+      #   nvidia.com/nouse-gpuuuid: "..."
+      # Type matching is CASE-INSENSITIVE SUBSTRING on the registered card name, so "RTX"
+      # matches BOTH 'NVIDIA RTX PRO 6000 Blackwell Workstation Edition' and 'NVIDIA GeForce
+      # RTX 5090'. Use a substring unique to one card, or the UUID.
+      # Every pinned pod STILL needs an explicit nvidia.com/gpumem (the defaultMemory:0 trap).
       kubeScheduler:
         enabled: true                    # bundled 2nd scheduler + extender
         image:
@@ -78,8 +97,12 @@ spec:
         ctrPath: /var/lib/hami/vgpu/containers
       nvidiaNodeSelector:                 # reuse the existing GPU node label (no new label needed)
         feature.node.kubernetes.io/pci-10de.present: "true"
-      deviceSplitCount: 10                # up to 10 pods share the card (we need ~4)
+      deviceSplitCount: 10                # up to 10 pods share EACH card (we need ~4)
       deviceMemoryScaling: 1              # NO oversubscription (46GB host RAM, no swap; pool = 96GB)
+      # Multi-GPU arithmetic: capacity is per-device, so a second card doubles the
+      # advertised units (nvidia.com/gpu 10 -> 20) and a 32GB card sliced 10 ways gives
+      # 3.2GB units — a pod asking for gpumem 4096 can NEVER land on it. Don't raise
+      # deviceSplitCount to compensate; pin instead. See .agents/skills/hami-gpu-accounting.
 
     prometheus:
       enabled: false                      # no ServiceMonitor CRD in this cluster
