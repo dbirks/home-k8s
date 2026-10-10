@@ -30,11 +30,12 @@ Checkpoint kinds, detected from the repo's config:
   * AutoRound INT4 (quant_method auto-round): transformers loads it with real int4 kernels.
   * ModelOpt NVFP4 / NVFP4A16 (hf_quant_config.json) and AutoRound NVFP4 / NVFP4A16 (auto-round,
     data_type nv_fp): transformers cannot load packed NVFP4 (AutoRound has no backend for its own
-    weight-only nv_fp), so the FP4 expert weights are DEQUANTIZED to BF16 on load (bit-exact quantized
-    values, BF16 memory and speed). For W4A4 checkpoints, --simulate-fp4-activations also rounds the
-    expert inputs to NVFP4 exactly as the quantizer calibrated them (per-16 block scales in FP8 E4M3
-    under the exported per-tensor input scale), reproducing the quantized model's answers; it is slow,
-    so it is off by default.
+    weight-only nv_fp), so the FP4 experts stay PACKED in VRAM (~22 GB for Clef) and each MoE layer is
+    dequantized just in time to BF16 (bit-exact quantized values) for transformers' grouped_mm, then freed;
+    --no-packed-nvfp4 dequantizes everything on load instead (~60 GB, BF16 speed). For W4A4 checkpoints,
+    --simulate-fp4-activations also rounds the expert inputs to NVFP4 exactly as the quantizer calibrated
+    them (per-16 block scales in FP8 E4M3 under the exported per-tensor input scale), reproducing the
+    quantized model's answers; it is slow, so it is off by default (and it uses the up-front dequant).
     Native FP4 execution needs an engine such as vLLM, plus a hidden-state path into the head.
 """
 import argparse
@@ -48,6 +49,7 @@ from pathlib import Path
 import torch
 
 E2M1 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0])
+E2M1_PAIRS = torch.stack((E2M1[torch.arange(256) & 15], E2M1[torch.arange(256) >> 4]), dim=-1)   # byte -> (lo, hi)
 
 
 def log(*a):
@@ -81,8 +83,7 @@ def kind_of(path):
 
 def unpack_e2m1(packed):
     """Two E2M1 codes per byte, low nibble first, bit 3 = sign (ModelOpt and AutoRound/llm-compressor alike)."""
-    codes = torch.stack((packed & 0x0F, packed >> 4), dim=-1).reshape(*packed.shape[:-1], -1).long()
-    return E2M1.to(packed.device)[codes]
+    return E2M1_PAIRS.to(packed.device)[packed.int()].reshape(*packed.shape[:-1], -1)   # one gather per byte
 
 
 def recip(t):
@@ -161,14 +162,84 @@ def simulate_fp4_activations(experts, gu_quant, dn_quant):
     experts.forward = forward
 
 
-def load_nvfp4(path, device, simulate_activations=False):
+class PackedNVFP4Experts(torch.nn.Module):
+    """All experts of one MoE layer kept as packed NVFP4 in VRAM: gate|up and down as [E, out, in/2] uint8
+    codes, [E, out, in/16] E4M3 block scales and a per-row fp32 global scale (gate and up rows each carry
+    their own tensor's scale). forward dequantizes the layer into transient BF16 [E, out, in] weights (the
+    transformers-5 parameter layout, bit-identical to the up-front dequant) and runs transformers'
+    grouped_mm experts forward with is_transposed=False; the temporaries are freed on return."""
+
+    def __init__(self, experts, divisor, chunk_bytes=256 << 20):
+        super().__init__()
+        self.num_experts, self.act_fn, self.divisor = experts.num_experts, experts.act_fn, divisor
+        self.shapes = {"gate_up": (2 * experts.intermediate_dim, experts.hidden_dim),
+                       "down": (experts.hidden_dim, experts.intermediate_dim)}
+        self.chunk_bytes = chunk_bytes   # bounds the dequant transient (int32 index + fp32 values: ~32 B per packed byte)
+
+    def set_weights(self, name, parts):
+        """parts: per expert, the (packed, e4m3 scale, global scale) of each projection, concatenated by row."""
+        rows, cols = self.shapes[name]
+        packed = torch.stack([torch.cat([p for p, _, _ in ps]) for ps in parts])
+        scale = torch.stack([torch.cat([s for _, s, _ in ps]) for ps in parts])
+        gs = torch.stack([torch.cat([g.float().reshape(1, 1).expand(p.shape[0], 1) for p, _, g in ps]) for ps in parts])
+        if (tuple(packed.shape) != (self.num_experts, rows, cols // 2) or packed.dtype != torch.uint8
+                or tuple(scale.shape) != (self.num_experts, rows, cols // 16) or scale.dtype != torch.float8_e4m3fn):
+            raise RuntimeError(f"unexpected packed NVFP4 {name}: {tuple(packed.shape)} {packed.dtype}, "
+                               f"scales {tuple(scale.shape)} {scale.dtype}; want E={self.num_experts} [{rows}, {cols}]")
+        self.register_buffer(f"{name}_packed", packed)
+        self.register_buffer(f"{name}_scale", scale)
+        self.register_buffer(f"{name}_global", gs.contiguous())
+
+    def weight(self, name):
+        packed, scale, gs = (getattr(self, f"{name}_{t}") for t in ("packed", "scale", "global"))
+        out = torch.empty(*packed.shape[:-1], packed.shape[-1] * 2, device=packed.device, dtype=torch.bfloat16)
+        deq = dequant_nvfp4_ar if self.divisor else dequant_nvfp4
+        step = max(1, self.chunk_bytes // (32 * packed[0].numel()))
+        for e in range(0, self.num_experts, step):
+            out[e:e + step] = deq(packed[e:e + step], scale[e:e + step], gs[e:e + step])
+        return out
+
+    def _apply_gate(self, gate_up):
+        gate, up = gate_up.chunk(2, dim=-1)
+        return self.act_fn(gate) * up
+
+    def forward(self, hidden_states, top_k_index, top_k_weights):
+        from types import SimpleNamespace
+        from transformers.integrations.moe import grouped_mm_experts_forward
+        view = SimpleNamespace(num_experts=self.num_experts, has_gate=True, has_bias=False, is_transposed=False,
+                               gate_up_proj=self.weight("gate_up"), down_proj=self.weight("down"),
+                               _apply_gate=self._apply_gate)
+        return grouped_mm_experts_forward(view, hidden_states, top_k_index, top_k_weights)
+
+
+def packed_expert_layers(path, shards):
+    """Expert prefixes whose every gate/up/down weight is packed FP4 (ModelOpt uint8 .weight or AutoRound
+    .weight_packed), read from the safetensors headers only. Layers with any BF16 expert stay unpacked."""
+    from safetensors import safe_open
+    packed, plain = set(), set()
+    for shard in shards:
+        with safe_open(str(path / shard), "pt") as st:
+            for k in st.keys():
+                base, attr = k.rsplit(".", 1)
+                if ".mlp.experts." in k and attr in ("weight", "weight_packed") and base.rsplit(".", 1)[-1] in ("gate_proj", "up_proj", "down_proj"):
+                    prefix = base.rsplit(".", 2)[0]
+                    is_fp4 = attr == "weight_packed" or st.get_slice(k).get_dtype() == "U8"
+                    (packed if is_fp4 else plain).add(prefix)
+    return packed - plain
+
+
+def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
     """ModelOpt or AutoRound NVFP4: build the BF16 backbone directly on the GPU, then fill it shard by shard
-    (host RAM stays small), dequantizing the FP4 experts. The two formats differ only in tensor names and
-    global-scale direction: ModelOpt .weight/.weight_scale_2/.input_scale (multipliers), AutoRound
-    .weight_packed/.weight_global_scale/.input_global_scale (divisors)."""
+    (host RAM stays small). The two formats differ only in tensor names and global-scale direction: ModelOpt
+    .weight/.weight_scale_2/.input_scale (multipliers), AutoRound .weight_packed/.weight_global_scale/
+    .input_global_scale (divisors). packed_experts (default, ignored when simulating activations): the FP4
+    experts stay packed (PackedNVFP4Experts, ~4.5 bits/weight) and are dequantized one layer at a time inside
+    forward; the BF16 expert parameters are never allocated. Otherwise every expert is dequantized to BF16
+    on load (Clef: ~60 GB instead of ~22 GB)."""
     from functools import partial
     from safetensors import safe_open
     from transformers import AutoConfig, Qwen3OmniMoeForConditionalGeneration
+    from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as mq
     config = AutoConfig.from_pretrained(path)
     config.enable_audio_output = False
     if simulate_activations:   # per-expert F.linear is where the activation rounding hooks in (slow)
@@ -178,14 +249,32 @@ def load_nvfp4(path, device, simulate_activations=False):
     for c in (config, thinker, getattr(thinker, "text_config", None)):   # else transformers tries AutoRound
         if c is not None and hasattr(c, "quantization_config"):
             delattr(c, "quantization_config")
-    with torch.device(device):
-        model = Qwen3OmniMoeForConditionalGeneration._from_config(config, dtype=torch.bfloat16)
-    model.eval()
-    params = dict(model.state_dict())
-    filled, experts, in_scales = set(), {}, {}
     index = json.loads((path / "model.safetensors.index.json").read_text())["weight_map"] \
         if (path / "model.safetensors.index.json").exists() else None
     shards = sorted(set(index.values())) if index else ["model.safetensors"]
+    packable = packed_expert_layers(path, shards) if packed_experts and not simulate_activations else set()
+    experts_cls, experts_init = mq.Qwen3OmniMoeThinkerTextExperts, mq.Qwen3OmniMoeThinkerTextExperts.__init__
+    if packable:   # experts' 3-D BF16 params go to 'meta': no 60 GB transient; materialized below if not packed
+        def meta_init(self, *a, **k):
+            with torch.device("meta"):
+                experts_init(self, *a, **k)
+        experts_cls.__init__ = meta_init
+    try:
+        with torch.device(device):
+            model = Qwen3OmniMoeForConditionalGeneration._from_config(config, dtype=torch.bfloat16)
+    finally:
+        experts_cls.__init__ = experts_init
+    model.eval()
+    packed_mods = {}
+    for name, block in list(model.named_modules()):
+        if isinstance(getattr(block, "experts", None), experts_cls) and block.experts.gate_up_proj.is_meta:
+            if f"{name}.experts" in packable:
+                block.experts = packed_mods[f"{name}.experts"] = PackedNVFP4Experts(
+                    block.experts, divisor=None)   # format (multiplier vs divisor) set from the tensors below
+            else:
+                block.experts.to_empty(device=device)
+    params = dict(model.state_dict())
+    filled, experts, in_scales = set(), {}, {}
     for shard in shards:
         with safe_open(str(path / shard), "pt", device=str(device)) as st:
             keys = list(st.keys())
@@ -193,11 +282,21 @@ def load_nvfp4(path, device, simulate_activations=False):
                 base, attr = k.rsplit(".", 1)
                 if ".mlp.experts." in k and attr in ("weight", "weight_packed") and base.rsplit(".", 1)[-1] in ("gate_proj", "up_proj", "down_proj"):
                     w = st.get_tensor(k)
+                    prefix, e, proj = base.rsplit(".", 2)          # ...mlp.experts, E, gate_proj
+                    if prefix in packed_mods:            # keep packed: (codes, e4m3 block scale, global scale)
+                        ar = attr == "weight_packed"
+                        mod = packed_mods[prefix]
+                        if mod.divisor is not None and mod.divisor != ar:
+                            raise RuntimeError(f"{prefix}: mixed ModelOpt / AutoRound expert tensors")
+                        mod.divisor = ar
+                        experts.setdefault(prefix, {})[(int(e), proj)] = (
+                            w, st.get_tensor(base + ".weight_scale"),
+                            st.get_tensor(base + (".weight_global_scale" if ar else ".weight_scale_2")))
+                        continue
                     if attr == "weight_packed":
                         w = dequant_nvfp4_ar(w, st.get_tensor(base + ".weight_scale"), st.get_tensor(base + ".weight_global_scale"))
                     elif w.dtype == torch.uint8:
                         w = dequant_nvfp4(w, st.get_tensor(base + ".weight_scale"), st.get_tensor(base + ".weight_scale_2"))
-                    prefix, e, proj = base.rsplit(".", 2)          # ...mlp.experts, E, gate_proj
                     experts.setdefault(prefix, {})[(int(e), proj)] = w.to(torch.bfloat16)
                 elif ".mlp.experts." in k and attr in ("input_scale", "input_global_scale"):
                     prefix, e, proj = base.rsplit(".", 2)
@@ -216,6 +315,15 @@ def load_nvfp4(path, device, simulate_activations=False):
         # fuse completed expert layers into the transformers-5 3-D parameters as we go
         for prefix in list(experts):
             got = experts[prefix]
+            if prefix in packed_mods:
+                mod = packed_mods[prefix]
+                if len(got) < 3 * mod.num_experts:
+                    continue
+                n = range(mod.num_experts)
+                mod.set_weights("gate_up", [(got[(e, "gate_proj")], got[(e, "up_proj")]) for e in n])
+                mod.set_weights("down", [(got[(e, "down_proj")],) for e in n])
+                del experts[prefix]
+                continue
             gu, dn = params[prefix + ".gate_up_proj"], params[prefix + ".down_proj"]
             n_exp, inter = gu.shape[0], gu.shape[1] // 2
             if len(got) < 3 * n_exp:
@@ -232,6 +340,9 @@ def load_nvfp4(path, device, simulate_activations=False):
     if experts or missing:
         raise RuntimeError(f"incomplete load: {len(missing)} params unfilled (e.g. {missing[:3]}), "
                            f"{len(experts)} expert layers incomplete")
+    if packed_mods:
+        nbytes = sum(b.numel() * b.element_size() for m in packed_mods.values() for b in m.buffers())
+        log(f"packed NVFP4 experts: {len(packed_mods)} layers (weights {nbytes / 2**30:.2f} GiB)")
     if simulate_activations:
         if not in_scales:
             raise RuntimeError("no expert input scale tensors: this checkpoint has no FP4 activations to simulate")
@@ -338,10 +449,11 @@ def fast_int4_moe(model):
     return done
 
 
-def load(path, device, simulate_fp4_activations=None, fast_moe=True):
+def load(path, device, simulate_fp4_activations=None, fast_moe=True, packed_nvfp4=True):
     """simulate_fp4_activations: off unless asked. On W4A4 checkpoints it reproduces the quantized model's
     answers exactly (for benchmarking), at a large speed cost (eager per-expert path).
-    fast_moe: AutoRound INT4 g128 checkpoints run experts as dequant + grouped_mm (see fast_int4_moe)."""
+    fast_moe: AutoRound INT4 g128 checkpoints run experts as dequant + grouped_mm (see fast_int4_moe).
+    packed_nvfp4: NVFP4 checkpoints keep experts packed, dequantized per layer in forward (PackedNVFP4Experts)."""
     sys.path.insert(0, str(path))
     import joint_schema_model as jsm
     kind = kind_of(path)
@@ -353,8 +465,9 @@ def load(path, device, simulate_fp4_activations=None, fast_moe=True):
     from transformers import AutoConfig, AutoProcessor, Qwen3OmniMoeForConditionalGeneration
     if kind.startswith(("modelopt:", "auto-round:nvfp4")):
         simulate_fp4_activations = bool(simulate_fp4_activations) and kind in ("modelopt:NVFP4", "auto-round:nvfp4")
-        backbone = load_nvfp4(path, device, simulate_fp4_activations)
+        backbone = load_nvfp4(path, device, simulate_fp4_activations, packed_nvfp4)
         kind += "+fp4-activations" if simulate_fp4_activations else ""
+        kind += "+packed-experts" if any(isinstance(m, PackedNVFP4Experts) for m in backbone.modules()) else ""
     else:
         config = AutoConfig.from_pretrained(path)
         config.enable_audio_output = False
@@ -395,12 +508,15 @@ def main():
                          "model's answers exactly (slow; for benchmarking). Default: FP4 weights, BF16 activations")
     ap.add_argument("--no-fast-moe", dest="fast_moe", action="store_false",
                     help="AutoRound INT4: keep AutoRound's per-expert QuantLinear loop instead of dequant + grouped_mm")
+    ap.add_argument("--no-packed-nvfp4", dest="packed_nvfp4", action="store_false",
+                    help="NVFP4: dequantize every expert to BF16 on load (~60 GB on Clef) instead of keeping them "
+                         "packed (~22 GB) and dequantizing one layer at a time in forward")
     args = ap.parse_args()
 
     path = resolve(args.model, args.revision)
     if args.demo or args.request:
         t0 = time.time()
-        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe)
+        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe, args.packed_nvfp4)
         log(f"ready in {time.time() - t0:.0f}s")
         req = DEMO if args.demo else json.loads(Path(args.request).read_text())
         print(json.dumps(jsm.systemone(model, processor, req), indent=2))
@@ -414,7 +530,7 @@ def main():
 
     def _load():
         t0 = time.time()
-        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe)
+        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe, args.packed_nvfp4)
         state.update(model=model, processor=processor, jsm=jsm, kind=kind, ready=True, load_s=round(time.time() - t0, 1))
         log(f"ready in {state['load_s']}s")
 

@@ -130,7 +130,7 @@
       "size_gb": 20.8,
       "vram_gib": 19.4,
       "parity": {
-        "top1": 0.957,
+        "top1": 0.961,
         "mean_tv": 0.033
       },
       "bench": {
@@ -146,7 +146,7 @@
         "decision-model"
       ],
       "summary": "INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
-      "status": "first release (`v0.1`). Agrees with BF16 on 95.7% of held-out decisions (mean TV 0.033), the closest of the family so far to the 98% target, and the only variant that actually saves VRAM today (19.4 GiB of weights vs about 60 GiB). Known issue: about 2.7 s per decision in transformers on our test card, likely a slow int4 kernel path; faster kernels are being investigated.",
+      "status": "`v0.2`. Agrees with BF16 on 96.1% of held-out decisions (mean TV 0.033), the closest of the family so far to the 98% target. It is also the only variant that actually saves VRAM today (19.4 GiB of weights, 20.8 GiB peak, vs about 60 GiB) at BF16-like speed (about 0.21 s per decision on an RTX PRO 6000 with `serve_clef.py`'s grouped int4 path). Decision Index benchmarks are in progress.",
       "serving": [
         "transformers loads this checkpoint natively (AutoRound format). `serve_clef.py` then re-groups each layer's 128 int4 experts and runs them as one dequantize + grouped matmul per layer (`--no-fast-moe` turns this off), instead of AutoRound's per-expert Python loop. Weights stay int4 in VRAM (about 19.4 GiB) and Cloudflare's head runs unchanged. Works on non-Blackwell cards."
       ],
@@ -166,6 +166,11 @@
           "tag": "v0.1",
           "date": "2026-10-10",
           "note": "First release: AutoRound 0.16.0 INT4 W4A16 g128, experts-only, 200 SignRound steps per block on 512 Clef-format records (113 min on one RTX PRO 6000). Export graded through serve_clef.py: 95.7% top-answer agreement with BF16 (mean TV 0.033), 19.4 GiB weights in VRAM."
+        },
+        {
+          "tag": "v0.2",
+          "date": "2026-10-10",
+          "note": "Docs and script only, weights unchanged: serve_clef.py now regroups the 128 int4 experts per layer and runs them as dequant + grouped matmul, so a decision takes 212 ms instead of 2,689 ms (median, RTX PRO 6000) with the same answers (96.1% top-answer agreement with BF16 on the exported checkpoint) and 19.4 GiB of weights in VRAM."
         }
       ]
     },

@@ -3,7 +3,7 @@
 #   for each MODEL: start scripts/clef-omni/serve_clef.py (the published PEP 723 server) on localhost,
 #   run the kit's `http` engine over the SAME stratified sample, score it, and score it again paired with
 #   the BF16 run (`score --reference`). Resumable: results.jsonl is kept, so a restart continues.
-# MODELS entries are name=path[:flags]. W4A4 checkpoints are benchmarked FAITHFULLY (FP4 activation replay).
+# MODELS entries are name=path[:flags], run in order (BF16 first: it is the reference for paired scoring). W4A4 checkpoints are benchmarked FAITHFULLY (FP4 activation replay).
 # Kit: /work/decision-index (apolinario/decision-index @ 9eb2dbe, suite hash-verified). Pennyroyal at 0.
 ---
 apiVersion: batch/v1
