@@ -15,13 +15,15 @@ tags:
 
 NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0: FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
 
+> **Status:** first pass (`v0.1`). Agrees with BF16 on 93.4% of held-out decisions (W4A4 sibling: 91.1%), so rounding activations costs about 2 points and most of the gap is weight rounding under plain `max` calibration. The target is 98%; tuned calibrations are in progress.
+
 ## Which Clef-Omni quant should I use?
 
 | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
 |---|---|---|---|---|---|---|
 | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
 | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
-| [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | pending | 60 GiB | pending | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
+| [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 93.4% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
 | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
 
 **Recommended for:**
@@ -75,6 +77,14 @@ ModelOpt `NVFP4_EXPERTS_ONLY_CFG` with the expert input quantizers disabled (wei
 
 Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
+
+## Version history
+
+Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins it). Newest last.
+
+| Version | Date | Notes |
+|---|---|---|
+| `v0.1` | 2026-10-10 | First release: ModelOpt W4A16_NVFP4, experts-only, weight-only `max` calibration (no calibration data). 93.4% top-answer agreement with BF16 (mean TV 0.043). Ships serve_clef.py. |
 
 ## License
 

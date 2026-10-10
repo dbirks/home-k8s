@@ -228,7 +228,7 @@ DEMO = {
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(prog="serve_clef.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("--model", default="dbirks/clef-omni-nvfp4", help="HF repo id or local directory")
     ap.add_argument("--revision", default=None)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

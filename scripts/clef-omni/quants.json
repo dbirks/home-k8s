@@ -80,11 +80,11 @@
       "repo": "dbirks/clef-omni-nvfp4a16",
       "public": false,
       "format": "NVFP4 W4A16 (ModelOpt)",
-      "size_gb": null,
+      "size_gb": 22.0,
       "vram_gib": 60,
       "parity": {
-        "top1": null,
-        "mean_tv": null
+        "top1": 0.934,
+        "mean_tv": 0.043
       },
       "bench": {
         "index": null
@@ -99,7 +99,7 @@
         "decision-model"
       ],
       "summary": "NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0: FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
-      "status": null,
+      "status": "first pass (`v0.1`). Agrees with BF16 on 93.4% of held-out decisions (W4A4 sibling: 91.1%), so rounding activations costs about 2 points and most of the gap is weight rounding under plain `max` calibration. The target is 98%; tuned calibrations are in progress.",
       "serving": [
         "`serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact), so it runs anywhere transformers runs, with BF16-like memory. vLLM's ModelOpt loader runs `W4A16_NVFP4` MoE checkpoints on its Marlin kernels (memory saving, BF16-class speed), but no engine yet feeds the thinker's hidden states into the Clef head."
       ],
@@ -114,7 +114,13 @@
         "ModelOpt `NVFP4_EXPERTS_ONLY_CFG` with the expert input quantizers disabled (weight-only), `max` calibration straight from the weights (no calibration data needed), same exclusions as the W4A4 variant; torch 2.11.0+cu130, transformers 5.10.2, ModelOpt 0.47.0."
       ],
       "eval_extra": [],
-      "versions": []
+      "versions": [
+        {
+          "tag": "v0.1",
+          "date": "2026-10-10",
+          "note": "First release: ModelOpt W4A16_NVFP4, experts-only, weight-only `max` calibration (no calibration data). 93.4% top-answer agreement with BF16 (mean TV 0.043). Ships serve_clef.py."
+        }
+      ]
     },
     {
       "id": "int4",

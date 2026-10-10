@@ -21,7 +21,7 @@ INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/
 |---|---|---|---|---|---|---|
 | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
 | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
-| [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | pending | 60 GiB | pending | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
+| [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 93.4% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
 | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
 
 **Recommended for:**
