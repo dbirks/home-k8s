@@ -46,7 +46,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: clef-omni-quant-experts-20261010-r2
+  name: clef-omni-quant-experts-20261010-r3
   namespace: default
 spec:
   backoffLimit: 0
@@ -76,8 +76,20 @@ spec:
               [ -x "$VENV/bin/python" ] || { echo "FATAL: Stage 1 venv missing on the PVC"; exit 1; }
               "$VENV/bin/pip" freeze | grep -E '^(torch|torchvision|transformers|accelerate|safetensors|huggingface.hub)==' > /work/.tmp/constraints.txt
               cat /work/.tmp/constraints.txt
-              "$VENV/bin/python" -c 'import modelopt, pyarrow' 2>/dev/null || \
-                "$VENV/bin/pip" install --no-input -c /work/.tmp/constraints.txt 'nvidia-modelopt==0.47.0' pyarrow || exit 1
+              "$VENV/bin/python" -c 'import modelopt, pyarrow, requests' 2>/dev/null || \
+                "$VENV/bin/pip" install --no-input -c /work/.tmp/constraints.txt 'nvidia-modelopt==0.47.0' pyarrow requests || exit 1
+              # Preflight the EXACT imports the script makes, before the ~10 min weight load. ModelOpt
+              # 0.47 imports `requests` unconditionally without declaring it (r2 died there after loading);
+              # install whatever else turns up missing, a bounded number of times.
+              PRE='import modelopt.torch.quantization, modelopt.torch.opt, modelopt.torch.export, safetensors, pyarrow.parquet, huggingface_hub'
+              for i in 1 2 3 4 5; do
+                err=$("$VENV/bin/python" -c "$PRE" 2>&1) && break
+                mod=$(printf '%s\n' "$err" | sed -n "s/.*No module named '\([^'.]*\).*/\1/p" | tail -1)
+                [ -n "$mod" ] || { printf '%s\n' "$err"; echo "FATAL: import preflight failed"; exit 1; }
+                echo "preflight: installing missing module $mod"
+                "$VENV/bin/pip" install --no-input -c /work/.tmp/constraints.txt "$mod" || exit 1
+              done
+              "$VENV/bin/python" -c "$PRE" || { echo "FATAL: import preflight still failing"; exit 1; }
               "$VENV/bin/pip" freeze > /work/logs/pip-freeze-quant.txt
               "$VENV/bin/python" -c 'import torch, transformers, modelopt; print("torch", torch.__version__, "transformers", transformers.__version__, "modelopt", modelopt.__version__)'
 
@@ -86,9 +98,16 @@ spec:
               import copy, glob, hashlib, json, math, os, random, shutil, sys, time, traceback
               from pathlib import Path
               import numpy as np, torch
-              MODEL = Path("/work/clef-omni")
-              ROOT = Path("/work/nvfp4-experts"); RES = ROOT / "results"; EXPORT = ROOT / "export"
-              N_CALIB, N_EVAL = int(os.environ.get("N_CALIB", 512)), int(os.environ.get("N_EVAL", 128))
+              # CLEF_REHEARSAL=1: same code path end to end on a tiny RANDOM backbone + head built from the
+              # real config (real tokenizer/processor/vocab), so quantize/export/scan bugs surface in about
+              # a minute instead of after a ~10 min weight load. Runs on CPU too (local dry run).
+              REHEARSAL = os.environ.get("CLEF_REHEARSAL") == "1"
+              MODEL = Path(os.environ.get("CLEF_MODEL_DIR", "/work/clef-omni"))
+              ROOT = Path(os.environ.get("CLEF_ROOT", "/work/nvfp4-experts")); RES = ROOT / "results"; EXPORT = ROOT / "export"
+              N_CALIB = int(os.environ.get("N_CALIB", 16 if REHEARSAL else 512))
+              N_EVAL = int(os.environ.get("N_EVAL", 8 if REHEARSAL else 128))
+              DEV = "cuda" if torch.cuda.is_available() else "cpu"
+              RES.mkdir(parents=True, exist_ok=True)
               sys.path.insert(0, str(MODEL))
               from joint_schema_model import ClefModel, JointSchemaHead, encode_record, collate_records
 
@@ -101,6 +120,8 @@ spec:
                           return round(int(line.split()[1]) / 2**20, 1)
 
               def gpu():
+                  if DEV != "cuda":
+                      return f"cpu, host avail {avail_gib()} GiB"
                   return f"gpu alloc {torch.cuda.memory_allocated()/2**30:.1f} GiB peak {torch.cuda.max_memory_allocated()/2**30:.1f} GiB, host avail {avail_gib()} GiB"
 
               # ---------- 1. load (mirrors load_release_model, keeps the backbone) ----------
@@ -108,17 +129,37 @@ spec:
               from transformers import AutoConfig, AutoProcessor, Qwen3OmniMoeForConditionalGeneration
               config = AutoConfig.from_pretrained(MODEL)
               config.enable_audio_output = False
-              log("loading BF16 backbone, experts_implementation=eager;", gpu())
               t0 = time.time()
-              backbone, info = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
-                  MODEL, config=config, dtype=torch.bfloat16, device_map={"": "cuda"},
-                  output_loading_info=True, experts_implementation="eager")
-              bad = {k: [x for x in (info.get(k) or []) if not str(x).startswith(("talker.", "code2wav."))]
-                     for k in ("missing_keys", "unexpected_keys", "mismatched_keys")}
-              assert not any(bad.values()), f"weights did not load cleanly: {bad}"
-              head = JointSchemaHead(**json.loads((MODEL / "joint_head_config.json").read_text()))
-              head.load_state_dict(load_file(MODEL / "joint_head.safetensors"), strict=True)
-              head = head.to(device="cuda", dtype=torch.bfloat16)
+              if REHEARSAL:
+                  tc = config.thinker_config
+                  t = tc.text_config
+                  t.num_hidden_layers, t.hidden_size, t.intermediate_size, t.moe_intermediate_size = 2, 256, 128, 128
+                  t.num_experts, t.num_experts_per_tok, t.num_attention_heads, t.num_key_value_heads = 8, 2, 4, 2
+                  v = tc.vision_config
+                  v.depth, v.hidden_size, v.num_heads, v.intermediate_size, v.out_hidden_size = 3, 64, 2, 128, 256
+                  v.deepstack_visual_indexes = [0, 1, 2]
+                  a = tc.audio_config
+                  a.d_model, a.encoder_layers, a.encoder_attention_heads, a.encoder_ffn_dim, a.output_dim = 64, 1, 2, 128, 256
+                  config._experts_implementation = "eager"
+                  torch.manual_seed(0)
+                  log("REHEARSAL: tiny random backbone from the real config")
+                  backbone = Qwen3OmniMoeForConditionalGeneration._from_config(config, dtype=torch.bfloat16).to(DEV).eval()
+                  head = JointSchemaHead(hidden_size=256, width=64, routing_layers=1, layers=1, heads=2, feedforward=128)
+                  head_file = ROOT / "rehearsal_head.safetensors"
+                  from safetensors.torch import save_file
+                  save_file({k: v.contiguous() for k, v in head.state_dict().items()}, str(head_file))
+              else:
+                  log("loading BF16 backbone, experts_implementation=eager;", gpu())
+                  backbone, info = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
+                      MODEL, config=config, dtype=torch.bfloat16, device_map={"": DEV},
+                      output_loading_info=True, experts_implementation="eager")
+                  bad = {k: [x for x in (info.get(k) or []) if not str(x).startswith(("talker.", "code2wav."))]
+                         for k in ("missing_keys", "unexpected_keys", "mismatched_keys")}
+                  assert not any(bad.values()), f"weights did not load cleanly: {bad}"
+                  head = JointSchemaHead(**json.loads((MODEL / "joint_head_config.json").read_text()))
+                  head_file = MODEL / "joint_head.safetensors"
+                  head.load_state_dict(load_file(head_file), strict=True)
+              head = head.to(device=DEV, dtype=torch.bfloat16)
               processor = AutoProcessor.from_pretrained(MODEL)
               clef = ClefModel(backbone.thinker, head).eval()
               log(f"loaded in {time.time()-t0:.0f}s;", gpu())
@@ -128,7 +169,7 @@ spec:
 
               def score(record):
                   enc = encode_record(processor.tokenizer, record, processor=processor)
-                  batch = collate_records([enc], processor.tokenizer.pad_token_id, torch.device("cuda"))
+                  batch = collate_records([enc], processor.tokenizer.pad_token_id, torch.device(DEV))
                   with torch.no_grad():
                       logits = clef(batch)[0]
                   return {q.question_id: dict(zip(q.option_ids, lg.float().softmax(-1).tolist()))
@@ -216,12 +257,13 @@ spec:
               evals = [make_record(i, texts[i], rng_e) for i in eval_idx]
 
               # ---------- gate: Stage 1 goldens reproduce with the eager experts path ----------
-              goldens = [json.loads(l) for l in open("/work/bf16-results/smoke_bf16.jsonl")]
+              goldens = [] if REHEARSAL else [json.loads(l) for l in open("/work/bf16-results/smoke_bf16.jsonl")]
               # rebuild the exact Stage-1 cases from the smoke script itself (single source of truth)
-              src = open("/work/smoke_bf16.py").read()
-              ns = {}
-              exec(src[src.index("def synth_image"):src.index("print(f\"[{time.strftime")], {"np": np, "math": math, **ns}, ns)
-              stage1 = dict(ns["CASES"])
+              ns, stage1 = {}, {}
+              if goldens:
+                  src = open("/work/smoke_bf16.py").read()
+                  exec(src[src.index("def synth_image"):src.index("print(f\"[{time.strftime")], {"np": np, "math": math}, ns)
+                  stage1 = dict(ns["CASES"])
               # Eager vs the grouped_mm path Stage 1 ran on are different BF16 reductions, and a near-tied
               # router can pick a different expert, so small drifts are expected (r1 measured 0.053).
               # A broken path shows up as a flipped answer or a large shift: that is the hard gate. Parity
@@ -343,7 +385,8 @@ spec:
                   kwargs.setdefault("use_cache", False)
                   return self.thinker(input_ids=input_ids, **kwargs)
               backbone.forward = types.MethodType(_thinker_forward, backbone)
-              del clef, head; torch.cuda.empty_cache()
+              del clef, head
+              if DEV == "cuda": torch.cuda.empty_cache()
               if EXPORT.exists(): shutil.rmtree(EXPORT)
               t0 = time.time()
               export_hf_checkpoint(backbone, export_dir=str(EXPORT), max_shard_size="5GB")
@@ -375,7 +418,9 @@ spec:
               def sha(p):
                   with open(p, "rb") as f:
                       return hashlib.file_digest(f, "sha256").hexdigest()
-              scan["head_sha256_matches"] = sha(EXPORT / "joint_head.safetensors") == sha(MODEL / "joint_head.safetensors")
+              if REHEARSAL:
+                  shutil.copy2(head_file, EXPORT / "joint_head.safetensors")
+              scan["head_sha256_matches"] = sha(EXPORT / "joint_head.safetensors") == sha(head_file)
               scan["export_bytes"] = sum(scan["files"].values())
               qc = EXPORT / "hf_quant_config.json"
               scan["hf_quant_config"] = json.loads(qc.read_text()).get("quantization", {}) if qc.exists() else None
@@ -391,6 +436,11 @@ spec:
               log("STAGE 2a", "PASS" if ok else "FAIL (see artifact_scan.json)")
               sys.exit(0 if ok else 2)
               PY
+              echo "[$(date -u +%FT%TZ)] --- rehearsal: tiny random Clef-Omni, full quantize/parity/export/scan path ---"
+              rm -rf /work/nvfp4-rehearsal
+              CLEF_REHEARSAL=1 CLEF_ROOT=/work/nvfp4-rehearsal "$VENV/bin/python" /work/quant_experts.py 2>&1 | tee /work/logs/quant-rehearsal.log
+              [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "FATAL: rehearsal failed; NOT loading the real checkpoint"; exit 1; }
+              echo "[$(date -u +%FT%TZ)] --- rehearsal passed; real run ---"
               "$VENV/bin/python" /work/quant_experts.py 2>&1 | tee /work/logs/quant-experts.log
               rc=${PIPESTATUS[0]}
               echo "[$(date -u +%FT%TZ)] Stage 2a rc=$rc"; du -sh /work/nvfp4-experts/* 2>/dev/null
