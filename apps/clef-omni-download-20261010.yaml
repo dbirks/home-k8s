@@ -1,0 +1,83 @@
+# One-off: download the official Cloudflare/clef-omni BF16 checkpoint (~70.8 GB, 15 shards +
+# joint_head.safetensors) to the clef-omni-hdd HDD PVC — issue #145 Stage 0. No GPU, no Pennyroyal
+# disruption: pure network/disk, so it can run while Pennyroyal holds the card.
+#
+# Pinned to the HF revision that was current when this was written (main @ 0db1cd2, 2026-10-09) so a
+# later Flux re-apply cannot silently move the weights under the quantization run.
+#
+# Transfer stack: huggingface_hub's default Xet backend first, then fall back to hf_transfer, then to
+# plain HTTP resume — GHCR/HF single streams stall from this network, so the loop is resumable and
+# retries rather than trusting one backend. `hf download --local-dir` resumes partial files in place.
+#
+# Retire this file to .yaml.hold once the download verifies (the clef-omni-hdd PVC persists).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-download-20261010
+  namespace: default
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 172800        # 48h ceiling
+  ttlSecondsAfterFinished: 259200      # auto-GC 3d after finish
+  template:
+    metadata:
+      labels: { app: clef-omni-download }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: python:3.12-slim      # already present on the node
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              REV=0db1cd2607d76a7bdb2a382f659e7b313079f84b
+              DST=/models/clef-omni
+              pip install --quiet --no-cache-dir 'huggingface_hub[cli,hf_transfer]' || exit 1
+              echo "[$(date)] hf version: $(hf version 2>/dev/null || python3 -c 'import huggingface_hub as h;print(h.__version__)')"
+              echo "[$(date)] Cloudflare/clef-omni @ $REV -> $DST (resumable)"
+
+              attempt=0
+              mode=xet
+              while [ $attempt -lt 60 ]; do
+                attempt=$((attempt+1))
+                case "$mode" in
+                  xet)   unset HF_HUB_ENABLE_HF_TRANSFER ;;
+                  hftr)  export HF_HUB_ENABLE_HF_TRANSFER=1 ;;
+                  http)  unset HF_HUB_ENABLE_HF_TRANSFER; export HF_HUB_ETAG_TIMEOUT=60 ;;
+                esac
+                echo "[$(date)] attempt $attempt (backend=$mode)"
+                if hf download Cloudflare/clef-omni --revision "$REV" --local-dir "$DST" --max-workers 4; then
+                  echo "[$(date)] download loop returned success"; break
+                fi
+                echo "[$(date)] attempt $attempt failed — $(du -sh "$DST" 2>/dev/null | cut -f1) on disk, retrying in 30s"
+                [ $attempt -eq 4 ] && { echo "[$(date)] switching to hf_transfer"; mode=hftr; }
+                [ $attempt -eq 10 ] && { echo "[$(date)] switching to plain HTTP"; mode=http; }
+                sleep 30
+              done
+              [ $attempt -ge 60 ] && { echo "FATAL: exhausted retries"; exit 1; }
+
+              echo "[$(date)] inventory:"
+              du -sh "$DST"
+              echo "shards (expect 15): $(ls "$DST"/model-*-of-00015.safetensors 2>/dev/null | wc -l)"
+              echo "total safetensors: $(ls "$DST"/*.safetensors 2>/dev/null | wc -l)"
+              for f in joint_head.safetensors joint_schema_model.py config.json tokenizer_config.json; do
+                [ -s "$DST/$f" ] && echo "OK  $f ($(stat -c %s "$DST/$f") bytes)" || { echo "MISSING $f"; exit 1; }
+              done
+              echo "expect ~70.76 GB total; per-shard:"
+              ls -l "$DST"/*.safetensors | awk '{printf "%.2f GB  %s\n", $5/1073741824, $9}'
+              sha256sum "$DST"/joint_schema_model.py "$DST"/joint_head.safetensors | tee "$DST/.clef-omni.sha256"
+              echo "[$(date)] DONE"
+              sleep 120
+          env:
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "500m", memory: 1Gi }
+            limits: { cpu: "4", memory: 6Gi }
+          volumeMounts:
+            - { name: model, mountPath: /models }
+      volumes:
+        - name: model
+          persistentVolumeClaim: { claimName: clef-omni-hdd }

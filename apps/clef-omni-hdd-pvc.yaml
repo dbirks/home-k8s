@@ -1,0 +1,19 @@
+# Durable, standalone owner for the official Cloudflare/clef-omni BF16 checkpoint (issue #145,
+# Stage 0 scratch). Staged on the HDD (local-path-hdd, ~1.9TB free) because NVMe /var had only
+# ~190GB free at 80% used — landing 71GB there, then the ~30GB NVFP4 export, would cross kubelet's
+# 10%-free DiskPressure threshold (same call as flashnext-radixark-hdd; see that file's note).
+# When the quantization Job actually runs, rsync /models/clef-omni to an NVMe PVC first: PTQ
+# calibration re-reads the shards and the HDD costs ~8 min per model load.
+# Sized 250Gi per issue #145: originals + exports + calibration logs in one workspace.
+# Standalone file (incident lesson): retiring the download Job manifest must never prune the weights.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clef-omni-hdd
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 250Gi
