@@ -140,6 +140,8 @@ data:
         ap.add_argument("--simulate-fp4-activations", action=argparse.BooleanOptionalAction, default=None,
                         help="NVFP4 W4A4: reproduce FP4 activation rounding (default off, see serve_clef.load)")
         ap.add_argument("--limit", type=int, default=None)
+        ap.add_argument("--fast-moe", action=argparse.BooleanOptionalAction, default=True,
+                        help="AutoRound INT4: grouped int4 MoE fast path (see serve_clef.fast_int4_moe)")
         ap.add_argument("--fakequant-rows", default=None,
                         help="a quant job's parity_fakequant_rows.jsonl: also report how closely the export reproduces it")
         args = ap.parse_args()
@@ -154,7 +156,8 @@ data:
 
         t0 = time.time()
         model, processor, jsm, kind = serve_clef.load(Path(args.export), "cuda",
-                                                      simulate_fp4_activations=args.simulate_fp4_activations)
+                                                      simulate_fp4_activations=args.simulate_fp4_activations,
+                                                      fast_moe=args.fast_moe)
         load_s = time.time() - t0
         clef_records.log(f"loaded {args.export} ({kind}) in {load_s:.0f}s; "
                          f"gpu {torch.cuda.memory_allocated() / 2**30:.1f} GiB")
@@ -182,7 +185,7 @@ data:
                     flips.append({"record": rec["id"], "question": q.question_id, "bf16": b_top, "quant": q_top,
                                   "bf16_margin": round(srt[0] - (srt[1] if len(srt) > 1 else 0), 4)})
                 rows.append({"record": rec["id"], "question": q.question_id, "tv": round(tv, 6), "bf16": bd, "quant": qd})
-        parity = {"export": args.export, "kind": kind, "simulate_fp4_activations": args.simulate_fp4_activations,
+        parity = {"export": args.export, "kind": kind, "fast_moe": args.fast_moe, "simulate_fp4_activations": args.simulate_fp4_activations,
                   "questions": total, "top1_agreement": round(agree / total, 4),
                   "mean_tv": round(float(np.mean(tvs)), 5), "p95_tv": round(float(np.percentile(tvs, 95)), 5),
                   "max_tv": round(float(np.max(tvs)), 5), "flips": flips,

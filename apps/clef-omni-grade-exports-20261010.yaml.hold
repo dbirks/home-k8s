@@ -1,0 +1,53 @@
+# Grade every exported Clef-Omni checkpoint THROUGH serve_clef.py (issues #151 #152): the artifacts users
+# download, loaded the way users load them, on the same 128 held-out records vs the BF16 reference.
+#   int4      fast grouped int4 MoE (new default) vs --no-fast-moe: parity must match the 95.7% run; speed
+#   nvfp4a16  dequantized ModelOpt W4A16 export (default path)
+#   nvfp4     default (dequantized weights, BF16 activations) for speed, and --simulate-fp4-activations
+#             with --fakequant-rows: proves the replay reproduces ModelOpt's own fake-quant answers
+# Writes /work/<variant>/results/parity_export*.json. Needs the GPU (Pennyroyal at 0).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-grade-exports
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 14400
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-grade-exports }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: grade
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              export HF_HOME=/work/.hf-home HF_HUB_OFFLINE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+              command -v gcc >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev >/dev/null; }
+              PY=/work/venv/bin/python; E=/scripts/eval_export.py; fail=0
+              run() { local name=$1; shift; echo "[$(date -u +%FT%TZ)] === $name ==="
+                      "$PY" "$E" "$@" 2>&1 | tee "/work/logs/grade-$name.log" | grep -E 'EXPORT PARITY|fast grouped|simulating|Traceback|Error' | grep -v Warning
+                      [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "FAILED: $name"; fail=1; }; }
+              run int4-fast       --export /work/int4/export --out /work/int4/results/fast
+              run int4-slow       --export /work/int4/export --out /work/int4/results/slow --limit 32 --no-fast-moe
+              run nvfp4a16        --export /work/nvfp4a16/export --out /work/nvfp4a16/results/export
+              run nvfp4-default   --export /work/nvfp4-experts/export --out /work/nvfp4-experts/results/export-default
+              run nvfp4-simulated --export /work/nvfp4-experts/export --out /work/nvfp4-experts/results/export-sim \
+                                  --simulate-fp4-activations --fakequant-rows /work/nvfp4-experts/results/parity_fakequant_rows.jsonl
+              echo "[$(date -u +%FT%TZ)] grading done, fail=$fail"; exit $fail
+          resources:
+            requests: { cpu: "2", memory: 12Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: scripts, configMap: { name: clef-omni-scripts } }
