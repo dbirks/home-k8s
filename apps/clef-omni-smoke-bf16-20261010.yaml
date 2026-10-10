@@ -1,0 +1,279 @@
+# Clef-Omni Stage 0 + 1 (issue #145): preflight + the OFFICIAL BF16 reference run on the
+# RTX PRO 6000 Blackwell (SM120), capturing the goldens that Stage 2 quantization is graded against.
+#
+# Not a quantization attempt. Definition of "done" here: `load_release_model` + `systemone` run
+# on this card without a host-RAM OOM, over text / image / video / audio / multi-question /
+# long-context cases, with per-question probability distributions that are finite and sum to 1,
+# plus peak-VRAM and timing numbers. A checkpoint that merely loads is NOT the gate.
+#
+# WHY THESE CHOICES
+#  * Whole card: the BF16 release is 35.26B params (~65.7 GiB resident). Pennyroyal is at
+#    replicas: 0 for this window, so request gpumem 97000 of 97887 (HAMi's defaultMemory:0 trap:
+#    a GPU pod with no gpumem would claim the card anyway, but never rely on that).
+#  * venv on the HDD PVC, not the container FS: ~6 GB of torch/CUDA wheels; survives pod
+#    restarts and keeps NVMe (only ~200 GB free, DiskPressure at ~10 %) clean.
+#  * Toolchain = the pair Cloudflare's model card tested: torch 2.11.0+cu130 (+ torchvision 0.26.0,
+#    its matching release) and transformers 5.10.2. cu130 also matches driver 580.167.08 and the
+#    CUDA-13 toolchain Pennyroyal proved on this node. The loader calls from_pretrained(dtype=...),
+#    the transformers-5 spelling — a v4 install fails, hence the assert. PyPI's default torch is
+#    2.14.1 now; do NOT float to it, keep the tested pair until a parity failure justifies it.
+#  * HF_HUB_OFFLINE=1: the checkpoint is already on the PVC at /work/clef-omni (rev 0db1cd2,
+#    sha256-manifested). If anything tries to reach the network, that is a finding.
+#  * Media is SYNTHESIZED at runtime (PIL image, numpy frames, numpy samples) instead of
+#    committing fixtures: the repo is public, and load_audio/load_video accept raw arrays,
+#    so no ffmpeg/libsndfile is needed to exercise the vision/audio towers.
+#  * Memory gate (#145): device_map={"":"cuda"} implies low_cpu_mem_usage, so shards should
+#    stream to the GPU one at a time (~5 GB each) rather than staging 70 GB in RAM. This Job
+#    PRINTS host MemAvailable around the load so a violation is caught here, not by the OOM
+#    killer eating the node. If the load ever needs > ~34 GiB RSS, STOP and rethink loading.
+#
+# Results land on the PVC: /work/bf16-results/, /work/logs/ (host path
+# /var/mnt/hdd-storage/default-clef-omni-hdd-*/bf16-results/).
+# Retire to .yaml.hold when the goldens are captured.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-smoke-bf16-20261010
+  namespace: default
+spec:
+  backoffLimit: 0                   # one attempt: a re-run costs ~10 min of weight loading, and the
+                                # goldens/logs are on the PVC, so a failure is debugged, not retried
+  activeDeadlineSeconds: 10800          # 3h: ~6GB of installs + one ~66GiB weight load
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-smoke-bf16 }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: smoke
+          image: python:3.12-slim       # already on the node
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              MODEL=/work/clef-omni
+              VENV=/work/venv
+              export PIP_CACHE_DIR=/work/.pip-cache TMPDIR=/work/.tmp HF_HUB_OFFLINE=1
+              mkdir -p /work/.tmp /work/bf16-results /work/logs
+              echo "[$(date -u +%FT%TZ)] === Stage 0: preflight ==="
+              nvidia-smi --query-gpu=name,compute_cap,memory.total,memory.free,power.limit,driver_version --format=csv | tee /work/logs/stage0-gpu.txt
+              echo "-- host memory before (46GB, NO SWAP: this is the binding constraint) --"
+              # no `free` in -slim images; read /proc/meminfo directly
+              awk '/MemTotal|MemAvailable|SwapTotal/{printf "%-14s %8.1f GiB\n", $1, $2/1048576}' /proc/meminfo | tee /work/logs/stage0-mem.txt
+              echo "cgroup memory.max = $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+              df -h /work | tail -1
+
+              if [ ! -x "$VENV/bin/python" ]; then
+                echo "[$(date -u +%FT%TZ)] creating venv on the PVC (first run only)"
+                python -m venv "$VENV"
+              fi
+              "$VENV/bin/python" -c 'import torch, transformers' 2>/dev/null || {
+                echo "[$(date -u +%FT%TZ)] installing pinned toolchain (cu130 torch + transformers 5.10.2)"
+                "$VENV/bin/pip" install --no-input --upgrade pip
+                "$VENV/bin/pip" install --no-input 'torch==2.11.0+cu130' 'torchvision==0.26.0+cu130' \
+                  --index-url https://download.pytorch.org/whl/cu130 || exit 1
+                "$VENV/bin/pip" install --no-input 'transformers==5.10.2' accelerate safetensors \
+                  'huggingface_hub>=0.34' numpy pillow av || exit 1
+              }
+              "$VENV/bin/pip" freeze > /work/logs/pip-freeze.txt
+
+              # --- gate: right GPU, right library generation, offline checkpoint intact ---
+              "$VENV/bin/python" - <<'PY'
+              import json, sys, torch
+              from transformers.utils import logging
+              print("torch", torch.__version__, "cuda", torch.version.cuda, "transformers", __import__("transformers").__version__)
+              assert torch.cuda.is_available(), "no CUDA device visible"
+              cap = torch.cuda.get_device_capability(0)
+              print("capability", cap, torch.cuda.get_device_name(0))
+              assert cap == (12, 0), f"expected SM120 (12,0), got {cap} — NVFP4/FlashInfer story does not apply"
+              cfg = json.load(open("/work/clef-omni/config.json"))
+              print("model_type", cfg.get("model_type"), "arch", cfg.get("architectures"))
+              assert cfg.get("model_type") == "qwen3_omni_moe", "unexpected checkpoint"
+              import transformers
+              assert transformers.__version__.startswith("5."), "loader uses from_pretrained(dtype=) — needs transformers 5.x"
+              print("STAGE0 OK")
+              PY
+              [ $? -eq 0 ] || { echo "FATAL: Stage 0 gate failed"; exit 1; }
+
+              echo "[$(date -u +%FT%TZ)] === Stage 1: official BF16 reference ==="
+              cat > /work/smoke_bf16.py <<'PY'
+              """Official Cloudflare Clef-Omni loader over the full modality matrix. Writes goldens."""
+              import json, math, os, sys, time, traceback
+              import numpy as np, torch
+              MODEL = os.environ.get("CLEF_MODEL_DIR", "/work/clef-omni")
+              OUT = os.environ.get("CLEF_OUT", "/work/bf16-results")
+              sys.path.insert(0, MODEL)
+              from joint_schema_model import load_release_model, encode_record, collate_records, systemone
+
+              def avail_kib():
+                  for line in open("/proc/meminfo"):
+                      if line.startswith("MemAvailable"):
+                          return int(line.split()[1])
+                  return -1
+
+              def probe():
+                  return {"memAvailableMiB": round(avail_kib() / 1024, 1),
+                          "gpuAllocatedGiB": round(torch.cuda.memory_allocated() / 2**30, 3),
+                          "gpuReservedGiB": round(torch.cuda.memory_reserved() / 2**30, 3)}
+
+              def synth_image(w=512, h=512):
+                  from PIL import Image, ImageDraw
+                  im = Image.new("RGB", (w, h), (20, 30, 60))
+                  d = ImageDraw.Draw(im)
+                  for i in range(0, w, 32):
+                      d.line((i, 0, w - i, h), fill=(200, 180 - (i % 180), 40 + (i % 120)), width=3)
+                  d.rectangle((w // 4, h // 4, w // 2, h // 2), fill=(240, 240, 240))
+                  d.ellipse((3 * w // 5, 3 * h // 5, 7 * w // 8, 7 * h // 8), fill=(10, 200, 120))
+                  return im
+
+              def synth_video(n=8, size=128):
+                  idx = np.arange(n, dtype=np.float32)
+                  x, y = np.meshgrid(np.linspace(0, 1, size), np.linspace(0, 1, size))
+                  frames = []
+                  for i in idx:
+                      r = (0.5 + 0.5 * np.sin(x * 6.28 + i)).astype("float32")
+                      g = y.copy()
+                      b = (0.5 + 0.5 * np.cos(y * 6.28 - i)).astype("float32")
+                      f = np.stack([r, g, b], -1)
+                      frames.append((f * 255).astype("uint8"))
+                  return np.stack(frames)                      # even count; arrays are used as given
+
+              def synth_audio(seconds=1.5, rate=16000):
+                  t = np.arange(int(seconds * rate), dtype="float32") / rate
+                  sig = 0.3 * np.sin(2 * math.pi * 440 * t) + 0.1 * np.sin(2 * math.pi * 880 * t)
+                  return (sig * np.hanning(len(t))).astype("float32")
+
+              CASES = [
+                ("text-choice", {
+                  "state": {"goal": "Choose the next game action", "observation": "The player is facing a wall."},
+                  "questions": {"action": {"type": "choice", "instructions": "What is a sensible next action?",
+                    "criteria": {"forward": "Move forward", "left": "Turn left", "right": "Turn right", "stop": "Stop"}}}}),
+                ("text-noul", {
+                  "state": {"claim": "The observation is safe to act on", "observation": "The player is facing a wall."},
+                  "questions": {"valid": {"type": "noul", "instructions": "Is the claim supported by the state?"}}}),
+                ("text-score", {
+                  "state": {"task": "Rate the risk of the described action", "action": "Run full speed through a crowd"},
+                  "questions": {"risk": {"type": "score", "instructions": "Rate risk 0 (none) to 4 (severe)",
+                    "criteria": ["none", "low", "moderate", "high", "severe"]}}}),
+                ("multi-question", {
+                  "state": {"scene": "A red cup sits on a table next to a laptop."},
+                  "questions": {
+                    "surface": {"type": "choice", "instructions": "Where is the cup?",
+                                "criteria": {"table": "on the table", "floor": "on the floor", "air": "floating"}},
+                    "supported": {"type": "noul", "instructions": "Is the cup resting on something?"},
+                    "clutter": {"type": "score", "instructions": "Rate scene clutter", "criteria": ["bare", "tidy", "busy", "cluttered"]}}}),
+                ("image", {
+                  "state": {"task": "Describe the synthetic test image"},
+                  "questions": {"dominant": {"type": "choice", "instructions": "Dominant colour region?",
+                    "criteria": {"blue": "dark blue field", "white": "bright square", "green": "green disc", "red": "red area"}}}}),
+                ("video", {
+                  "state": {"task": "Watch the 8 synthetic frames"},
+                  "questions": {"motion": {"type": "choice", "instructions": "Is the pattern changing over time?",
+                    "criteria": {"static": "unchanged", "moving": "changing", "corrupt": "undecodable"}}}}),
+                ("audio", {
+                  "state": {"task": "Listen to the 1.5s tone"},
+                  "questions": {"tone": {"type": "choice", "instructions": "Is there an audible tone?",
+                    "criteria": {"yes": "a tone is present", "no": "silence", "noise": "broadband noise"}}}}),
+              ]
+              # long-context arm: ~4K tokens of state, to size the prefill workspace early
+              CASES.append(("long-4k", {
+                "state": {"log": "\n".join(f"event {i}: the agent observed step {i} and continued" for i in range(220))},
+                "questions": {"decision": {"type": "choice", "instructions": "Given the log, continue or stop?",
+                  "criteria": {"continue": "keep going", "stop": "halt"}}}}))
+
+              print(f"[{time.strftime('%FT%T')}] loading BF16 release from {MODEL} (offline)", flush=True)
+              t0 = time.time(); before = avail_kib()
+              torch.cuda.reset_peak_memory_stats()
+              model, processor = load_release_model(MODEL, device="cuda")
+              load_s = round(time.time() - t0, 1)
+              after = avail_kib()
+              print(f"loaded in {load_s}s; host MemAvailable {before/1024:.1f} -> {after/1024:.1f} GiB "
+                    f"(dip {(before-after)/1024:.1f} GiB); GPU allocated {torch.cuda.memory_allocated()/2**30:.2f} GiB "
+                    f"reserved {torch.cuda.memory_reserved()/2**30:.2f} GiB", flush=True)
+              modules = {}
+              for name, p in model.named_parameters():
+                  top = name.split(".")[0]
+                  modules[top] = modules.get(top, 0) + p.numel() * p.element_size()
+              print("resident parameter bytes by top module (GiB):",
+                    {k: round(v / 2**30, 2) for k, v in sorted(modules.items(), key=lambda kv: -kv[1])}, flush=True)
+
+              media = {}
+              results, failures = [], []
+              for case_id, record in CASES:
+                  rec = dict(record)
+                  if case_id == "image":
+                      media["image"] = synth_image(); rec["images"] = [media["image"]]
+                  if case_id == "video":
+                      media["video"] = synth_video(); rec["videos"] = [media["video"]]
+                  if case_id == "audio":
+                      media["audio"] = synth_audio(); rec["audio"] = [media["audio"]]
+                  row = {"case_id": case_id, "rev": "0db1cd2607d76a7bdb2a382f659e7b313079f84b"}
+                  row.update(probe())
+                  try:
+                      torch.cuda.synchronize(); tc = time.time()
+                      enc = encode_record(processor.tokenizer, rec, processor=processor)
+                      batch = collate_records([enc], processor.tokenizer.pad_token_id, torch.device("cuda"))
+                      torch.cuda.synchronize(); te = time.time()
+                      with torch.inference_mode():
+                          logits = model(batch)[0]
+                      torch.cuda.synchronize(); tf = time.time()
+                      probs = {}
+                      for q, lg in zip(enc.questions, logits):
+                          v = lg.float().softmax(-1).tolist()
+                          probs[q.question_id] = dict(zip(q.option_ids, [round(x, 6) for x in v]))
+                      ans = systemone(model, processor, {"model": "clef-omni-bf16", **rec})["answers"]
+                      ok = all(math.isfinite(x) and x >= 0 for d in probs.values() for x in d.values())
+                      sums = {qid: round(sum(d.values()), 6) for qid, d in probs.items()}
+                      ok = ok and all(abs(s - 1.0) < 1e-3 for s in sums.values())
+                      modality = "text" if not any(k in rec for k in ("images", "videos", "audio")) else \
+                                 ("long" if case_id == "long-4k" else ("image" if "images" in rec else ("video" if "videos" in rec else "audio")))
+                      row.update({"ok": bool(ok), "modalities": [modality], "input_tokens": len(enc.input_ids),
+                                  "encode_s": round(te - tc, 3), "forward_s": round(tf - te, 3),
+                                  "probabilities": probs, "probability_sums": sums, "answers": ans,
+                                  "peakAllocatedGiB": round(torch.cuda.max_memory_allocated() / 2**30, 3),
+                                  "peakReservedGiB": round(torch.cuda.max_memory_reserved() / 2**30, 3),
+                                  "media_keys": sorted((enc.media or {}).keys())})
+                      print(f"  {case_id:16s} ok={row['ok']} tokens={row['input_tokens']:6d} "
+                            f"encode={row['encode_s']:6.3f}s fwd={row['forward_s']:7.3f}s "
+                            f"media={row['media_keys']} {sums}", flush=True)
+                      if not ok:
+                          failures.append(case_id)
+                      results.append(row)
+                  except Exception as e:
+                      row.update({"ok": False, "error": f"{type(e).__name__}: {e}",
+                                  "trace": traceback.format_exc()[-1500:]})
+                      print(f"  {case_id:16s} FAILED {row['error']}", flush=True)
+                      failures.append(case_id); results.append(row)
+                  with open(f"{OUT}/smoke_bf16.jsonl", "w") as f:
+                      for r in results:
+                          f.write(json.dumps(r, sort_keys=True) + "\n")
+
+              summary = {"loaded_in_s": load_s, "load_dip_host_GiB": round((before - after) / 1024, 1),
+                         "cases": len(results), "failures": failures,
+                         "peakAllocatedGiB": round(torch.cuda.max_memory_allocated() / 2**30, 3),
+                         "peakReservedGiB": round(torch.cuda.max_memory_reserved() / 2**30, 3),
+                         "probe_after_all": probe()}
+              with open(f"{OUT}/summary.json", "w") as f:
+                  json.dump(summary, f, indent=1, sort_keys=True)
+              print(json.dumps(summary, indent=1, sort_keys=True), flush=True)
+              print("goldens:", os.listdir(OUT), flush=True)
+              sys.exit(1 if failures else 0)
+              PY
+              "$VENV/bin/python" /work/smoke_bf16.py 2>&1 | tee /work/logs/smoke_bf16.log
+              rc=${PIPESTATUS[0]}
+              echo "[$(date -u +%FT%TZ)] Stage 1 rc=$rc (nonzero = at least one case failed; see /work/bf16-results/summary.json)"
+              awk '/MemAvailable/{printf "host MemAvailable after: %8.1f GiB\n", $2/1048576}' /proc/meminfo
+              exit $rc
+          # Device resources go in LIMITS (the HAMi webhook + pennyroyal convention); NVIDIA_VISIBLE_
+          # DEVICES is left to the runtime/HAMi injection — setting it by hand fights the CDI spec.
+          resources:
+            requests: { cpu: "2", memory: 12Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: model, mountPath: /work }
+      volumes:
+        - { name: model, persistentVolumeClaim: { claimName: clef-omni-hdd } }

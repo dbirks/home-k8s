@@ -22,7 +22,13 @@ metadata:
   namespace: default
   labels: { app: pennyroyal-flashnext }
 spec:
-  replicas: 1
+  # 2026-10-10: scaled to 0 for the Clef-Omni BF16 reference run (issue #145 Stage 1) — the
+  # RTX PRO 6000 is one whole card and this pod reserves 97,800 of 97,887 MB in HAMi, so the
+  # quant work cannot schedule while it is up. RESTORE TO replicas: 1 when the Clef window is
+  # done; boot takes ~7 min to `/health` + `The server is fired up and ready to roll!`, and the
+  # contributors reach it directly at pennyroyal-flashnext.default.svc.cluster.local:8001,
+  # so they will error (not degrade) until it is back. See the pennyroyal-flashnext skill.
+  replicas: 0
   strategy: { type: Recreate }        # never two whole-card pods
   selector:
     matchLabels: { app: pennyroyal-flashnext }
