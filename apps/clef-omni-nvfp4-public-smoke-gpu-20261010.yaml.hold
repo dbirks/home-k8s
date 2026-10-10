@@ -1,0 +1,67 @@
+# "Does the public model actually run?" (issue #151): run dbirks/clef-omni-nvfp4 EXACTLY as a stranger
+# would from the model card: a bare python:3.12-slim container with only uv, the script fetched from the
+# public HF URL, the model from the public repo, PyPI's default CUDA torch. Nothing from this cluster's
+# venv, PVC checkpoints or scripts. The PVC only holds download caches.
+#
+# prefetch (CPU, runs immediately): fills the HF + uv caches (22 GB model, torch wheels) so the GPU Job
+# does not hold the card while downloading. smoke (GPU): --demo, then the HTTP server + curl requests
+# (text choice, multi-question with noul/score, image as a data URL), /healthz, VRAM and latency.
+# Needs Pennyroyal at 0. Retire both to .yaml.hold once green.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-nvfp4-public-smoke
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-nvfp4-public-smoke }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: smoke
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              export HF_HOME=/work/.hf-public UV_CACHE_DIR=/work/.uv-cache-public HF_HUB_DISABLE_TELEMETRY=1
+              until [ -d /work/.hf-public/hub/models--dbirks--clef-omni-nvfp4/snapshots ] && \
+                    ls /work/.hf-public/hub/models--dbirks--clef-omni-nvfp4/snapshots/*/model-00005-of-00005.safetensors >/dev/null 2>&1; do
+                echo "waiting for the prefetch Job"; sleep 30; done
+              pip install -q uv
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends curl gcc libc6-dev >/dev/null
+              URL=https://huggingface.co/dbirks/clef-omni-nvfp4/resolve/main/serve_clef.py
+              echo "=== 1. the model card's --demo command ==="
+              s=$(date +%s); uv run "$URL" --model dbirks/clef-omni-nvfp4 --demo 2> /tmp/demo.err | tee /tmp/demo.json
+              rc=${PIPESTATUS[0]}; grep -E '^\[' /tmp/demo.err; echo "demo wall time: $(( $(date +%s) - s )) s"
+              [ "$rc" -eq 0 ] || { tail -40 /tmp/demo.err; echo "SMOKE FAIL: --demo rc=$rc"; exit 1; }
+
+              echo "=== 2. the HTTP server + curl ==="
+              uv run "$URL" --model dbirks/clef-omni-nvfp4 --host 127.0.0.1 --port 8000 > /tmp/server.log 2>&1 &
+              until curl -sf localhost:8000/healthz >/dev/null; do sleep 10; kill -0 $! 2>/dev/null || { tail -30 /tmp/server.log; echo "SMOKE FAIL: server died"; exit 1; }; done
+              curl -s localhost:8000/healthz; echo
+              t() { curl -s -w '\n  (%{time_total} s)\n' localhost:8000/v1/systemone -H 'Content-Type: application/json' -d "$1"; }
+              echo "-- text choice (model card example)"
+              t '{"model":"clef-omni","state":{"observation":"The player is facing a wall."},"questions":{"action":{"type":"choice","criteria":{"left":"Turn left","right":"Turn right","forward":"Move forward"}}}}'
+              echo "-- multi-question: choice + noul + score"
+              t '{"model":"clef-omni","state":{"ticket":"Customer says they were charged twice for the same order and wants a refund today."},"questions":{"route":{"type":"choice","instructions":"Which team should handle this?","criteria":{"billing":"Billing","shipping":"Shipping","tech":"Technical support"}},"refund":{"type":"noul","instructions":"Is a refund plausibly owed?"},"urgency":{"type":"score","criteria":["Can wait","This week","Today"]}}}'
+              echo "-- image (data URL): which shape is red?"
+              IMG=$(uv run --with pillow python -c 'import base64,io; from PIL import Image,ImageDraw; im=Image.new("RGB",(256,256),"white"); d=ImageDraw.Draw(im); d.ellipse((20,20,120,120),fill="red"); d.rectangle((140,140,236,236),fill="blue"); b=io.BytesIO(); im.save(b,"PNG"); print("data:image/png;base64,"+base64.b64encode(b.getvalue()).decode())')
+              t "{\"model\":\"clef-omni\",\"state\":{\"task\":\"Look at the image\"},\"images\":[\"$IMG\"],\"questions\":{\"red\":{\"type\":\"choice\",\"instructions\":\"Which shape is red?\",\"criteria\":{\"circle\":\"the circle\",\"square\":\"the square\"}}}}"
+              nvidia-smi --query-gpu=memory.used --format=csv,noheader
+              grep -E 'simulating|loading|ready' /tmp/server.log
+              echo "SMOKE PASS"
+          resources:
+            requests: { cpu: "2", memory: 8Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
