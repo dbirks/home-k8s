@@ -1,0 +1,42 @@
+# Publish the INT4 export docs+script refresh of dbirks/clef-omni-int4 as v0.3 (made public) (issue #152), via
+# scripts/clef-omni/hf_publish.py (card + serve_clef.py into the export, SHA256SUMS rewritten,
+# resumable upload, annotated tag carrying the quants.json version note). CPU-only.
+# Retire to .yaml.hold once verified.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-publish-int4-v0.3
+  namespace: default
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 43200
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-publish }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: publish
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              export HF_HOME=/work/.hf-home HF_HUB_DISABLE_TELEMETRY=1
+              /work/venv/bin/python /scripts/hf_publish.py --repo dbirks/clef-omni-int4 \
+                --export /work/int4/export --card /scripts/card_clef-omni-int4.md --set-public --tag v0.3 --only README.md serve_clef.py SHA256SUMS
+          env:
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "4", memory: 6Gi }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: scripts, configMap: { name: clef-omni-scripts } }

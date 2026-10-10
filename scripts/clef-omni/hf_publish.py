@@ -34,6 +34,7 @@ def main():
     ap.add_argument("--tag", default=None)
     ap.add_argument("--tag-message", default=None)
     ap.add_argument("--only", nargs="*", default=None, help="upload just these files (docs refresh)")
+    ap.add_argument("--set-public", action="store_true", help="flip an existing private repo to public")
     args = ap.parse_args()
     export = Path(args.export)
     card = Path(args.card) if Path(args.card).is_absolute() else HERE / args.card
@@ -63,6 +64,9 @@ def main():
     wanted = set(args.only) if args.only else {p.name for p in export.iterdir() if p.is_file() and not p.name.startswith(".")}
     missing = sorted(wanted - remote)
     assert not missing, f"missing on the Hub: {missing}"
+    if args.set_public:
+        api.update_repo_settings(args.repo, private=False)
+        print(f"{args.repo} is now public", flush=True)
     info = api.model_info(args.repo)
     if args.tag and args.tag not in {t.name for t in api.list_repo_refs(args.repo).tags}:
         note = args.tag_message

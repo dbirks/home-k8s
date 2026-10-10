@@ -15,7 +15,7 @@ tags:
 
 INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
 
-> **Status:** `v0.2`. Agrees with BF16 on 96.1% of held-out decisions (mean TV 0.033), the closest of the family so far to the 98% target. It is also the only variant that actually saves VRAM today (19.4 GiB of weights, 20.8 GiB peak, vs about 60 GiB) at BF16-like speed (about 0.21 s per decision on an RTX PRO 6000 with `serve_clef.py`'s grouped int4 path). Decision Index benchmarks are in progress.
+> **Status:** recommended. Agrees with BF16 on 96.1% of held-out decisions (mean TV 0.033), the best of the family so far (target 98%). It is also the only variant that actually saves VRAM today: 19.4 GiB of weights (20.8 GiB peak) vs about 60 GiB, at BF16-like speed (about 0.21 s per decision on an RTX PRO 6000 with `serve_clef.py`). Decision Index benchmarks are in progress.
 
 ## Which Clef-Omni quant should I use?
 
@@ -23,15 +23,11 @@ INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/
 |---|---|---|---|---|---|---|
 | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
 | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 92.3% | pending | Blackwell, native FP4 engines |
-| [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
-| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | pending | Any recent NVIDIA GPU, smallest VRAM |
-| [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
-| [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
+| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | pending | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
 
 **Recommended for:**
 
 - **clef-omni-int4**: any recent GPU when you want the smallest VRAM footprint today; loads in plain transformers. Also the best bet on AMD (ROCm): AutoRound's PyTorch/Triton kernels run there, though we have not tested it.
-- **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
 - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
 - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
 
@@ -88,6 +84,7 @@ Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins i
 |---|---|---|
 | `v0.1` | 2026-10-10 | First release: AutoRound 0.16.0 INT4 W4A16 g128, experts-only, 200 SignRound steps per block on 512 Clef-format records (113 min on one RTX PRO 6000). Export graded through serve_clef.py: 95.7% top-answer agreement with BF16 (mean TV 0.033), 19.4 GiB weights in VRAM. |
 | `v0.2` | 2026-10-10 | Docs and script only, weights unchanged: serve_clef.py now regroups the 128 int4 experts per layer and runs them as dequant + grouped matmul, so a decision takes 212 ms instead of 2,689 ms (median, RTX PRO 6000) with the same answers (96.1% top-answer agreement with BF16 on the exported checkpoint) and 19.4 GiB of weights in VRAM. |
+| `v0.3` | 2026-10-10 | Made public. README only: quant comparison table now links the public NVFP4 sibling, with parity measured on the exported files; weights and serve_clef.py unchanged from v0.2. |
 
 ## License
 
