@@ -15,6 +15,8 @@ tags:
 
 INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
 
+> **Status:** first release (`v0.1`). Agrees with BF16 on 95.7% of held-out decisions (mean TV 0.033), the closest of the family so far to the 98% target, and the only variant that actually saves VRAM today (19.4 GiB of weights vs about 60 GiB). Known issue: about 2.7 s per decision in transformers on our test card, likely a slow int4 kernel path; faster kernels are being investigated.
+
 ## Which Clef-Omni quant should I use?
 
 | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
@@ -22,7 +24,7 @@ INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/
 | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
 | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
 | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 93.4% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
-| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
+| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 95.7% | pending | Any recent NVIDIA GPU, smallest VRAM |
 | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
 | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
 
@@ -77,6 +79,14 @@ AutoRound 0.16.0 `scheme=W4A16`, `iters=200`, `nsamples=512` Clef-format records
 
 Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
+
+## Version history
+
+Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins it). Newest last.
+
+| Version | Date | Notes |
+|---|---|---|
+| `v0.1` | 2026-10-10 | First release: AutoRound 0.16.0 INT4 W4A16 g128, experts-only, 200 SignRound steps per block on 512 Clef-format records (113 min on one RTX PRO 6000). Export graded through serve_clef.py: 95.7% top-answer agreement with BF16 (mean TV 0.033), 19.4 GiB weights in VRAM. |
 
 ## License
 

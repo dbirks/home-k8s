@@ -127,11 +127,11 @@
       "repo": "dbirks/clef-omni-int4",
       "public": false,
       "format": "INT4 W4A16 g128 (AutoRound)",
-      "size_gb": null,
-      "vram_gib": null,
+      "size_gb": 20.8,
+      "vram_gib": 19.4,
       "parity": {
-        "top1": null,
-        "mean_tv": null
+        "top1": 0.957,
+        "mean_tv": 0.033
       },
       "bench": {
         "index": null
@@ -146,7 +146,7 @@
         "decision-model"
       ],
       "summary": "INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
-      "status": null,
+      "status": "first release (`v0.1`). Agrees with BF16 on 95.7% of held-out decisions (mean TV 0.033), the closest of the family so far to the 98% target, and the only variant that actually saves VRAM today (19.4 GiB of weights vs about 60 GiB). Known issue: about 2.7 s per decision in transformers on our test card, likely a slow int4 kernel path; faster kernels are being investigated.",
       "serving": [
         "transformers loads this checkpoint natively (AutoRound format, int4 kernels), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly with a much smaller VRAM footprint than BF16. Works on non-Blackwell cards."
       ],
@@ -161,7 +161,13 @@
         "AutoRound 0.16.0 `scheme=W4A16`, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
       ],
       "eval_extra": [],
-      "versions": []
+      "versions": [
+        {
+          "tag": "v0.1",
+          "date": "2026-10-10",
+          "note": "First release: AutoRound 0.16.0 INT4 W4A16 g128, experts-only, 200 SignRound steps per block on 512 Clef-format records (113 min on one RTX PRO 6000). Export graded through serve_clef.py: 95.7% top-answer agreement with BF16 (mean TV 0.033), 19.4 GiB weights in VRAM."
+        }
+      ]
     },
     {
       "public": false,
