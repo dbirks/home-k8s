@@ -51,6 +51,34 @@ Placement default is set explicitly in `prereqs/hami.yaml` to
 across both cards and fragment the new one). Treat that only as a tie-breaker — anything
 size-sensitive must pin.
 
+## The single-node rollout trap (this bit us on 2026-10-10, #146/#147)
+The chart hard-codes a **required** `podAntiAffinity` on `kubernetes.io/hostname` for
+`hami-scheduler` and renders **no** `spec.strategy`, so the Deployment gets the API default
+`RollingUpdate, maxSurge 25%`. On a one-node cluster the surged pod can never be placed →
+```
+Helm upgrade failed ... timeout waiting for: [Deployment/kube-system/hami-scheduler status: 'InProgress']
+```
+Flux **rolls the change back** (so your edit silently vanishes) and `prereqs` stays unhealthy,
+which blocks `infra` then `apps` via `dependsOn` — the entire repo stops reconciling, 5 min per
+retry. Symptom to look for: `flux get kustomization` shows `prereqs` "Reconciliation in progress"
+and a `Pending` hami-scheduler pod, and no new commits are being applied anywhere.
+
+```bash
+.agents/skills/hami-gpu-accounting/scripts/hami-rollout-guard.sh --check     # strategy + wedge + chain
+.agents/skills/hami-gpu-accounting/scripts/hami-rollout-guard.sh --enforce   # strategy.type=Recreate
+.agents/skills/hami-gpu-accounting/scripts/hami-rollout-guard.sh --unstick   # recovery for a CONFIRMED wedge
+.agents/skills/hami-gpu-accounting/scripts/hami-rollout-guard.sh --post      # caps/register/serving afterwards
+```
+`--unstick` refuses unless it sees a Pending scheduler pod **and** an UpgradeFailed/timeout HR, so
+it cannot be fired at an unrelated outage. Recovery = force `Recreate` → resume the HR if suspended
+→ `reconcile hr hami` → reconcile `prereqs`, `infra`, `apps` in that order. Cost is a few seconds
+with no GPU scheduler: already-bound pods (Pennyroyal) keep running, new GPU pods can't bind.
+`Recreate` is durable here precisely *because* the chart renders no `spec.strategy` — Helm's 3-way
+merge never rewrites a field the chart doesn't own. Express it declaratively with HelmRelease
+`spec.postRender` once the Flux CRDs are refreshed (the deployed `helmreleases` v2 CRD has no
+`postRender` field even though helm-controller is v1.6.2 — the toolkit's CRDs are behind its
+controllers, issue #148); until then this is intentional out-of-band drift, so don't "clean it up".
+
 ## Talos-specific overrides already baked in (don't lose them)
 `/usr/local` is read-only → hook dir is `/var/lib/hami` (`global.gpuHookPath`,
 `devicePlugin.libPath`, `monitor.ctrPath`); bundled kube-scheduler tag MUST equal the

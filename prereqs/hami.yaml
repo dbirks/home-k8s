@@ -44,6 +44,27 @@ spec:
   upgrade:
     remediation:
       retries: 3
+  # SINGLE-NODE ROLLOUT TRAP (learned the hard way 2026-10-10, #146/#147) — READ BEFORE CHANGING
+  # ANY VALUE BELOW.
+  # The chart hard-codes a *required* podAntiAffinity on kubernetes.io/hostname for hami-scheduler,
+  # and the Deployment gets the API default strategy (RollingUpdate, maxSurge 25%). On a ONE-NODE
+  # cluster the surged pod can never be placed — the old pod holds the only hostname. So any edit
+  # that mutates the scheduler Deployment (a flag, an env, the scheduler-policy args, an image/tag
+  # bump, a kube-scheduler tag on a k8s upgrade) sits Pending ~5 min, then:
+  #   "Helm upgrade failed ... timeout waiting for: [Deployment/kube-system/hami-scheduler status: 'InProgress']"
+  # and Flux ROLLS BACK, silently reverting your change. Worse: the `prereqs` Kustomization stays
+  # unhealthy, and because infra->prereqs and apps->infra are dependsOn chains, **nothing else in the
+  # repo reconciles** while it loops (each retry burns another 5 min).
+  # FIX (already applied to the live object): strategy.type=Recreate — delete-then-create works on one
+  # node. It is durable here because the chart manifest contains no `spec.strategy` at all, so Helm's
+  # 3-way merge never rewrites it. It is NOT expressed in git, because this cluster's
+  # helmreleases.helm.toolkit.fluxcd.io v2 CRD has no `spec.postRender` (despite helm-controller
+  # v1.6.2) — the declarative fix is blocked on refreshing the Flux CRDs (issue #148).
+  # Assert/repair it before and after any HAMi edit:
+  #   .agents/skills/hami-gpu-accounting/scripts/hami-rollout-guard.sh --enforce
+  # If a rollout is already wedged: same script with --diagnose prints the exact unstick.
+  # Cost of Recreate: a few seconds with no GPU scheduler. Already-bound pods (Pennyroyal) keep
+  # running; new GPU pods can't bind during that window — do it off-peak, never mid-quant.
   chart:
     spec:
       chart: hami
