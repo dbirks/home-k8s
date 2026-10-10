@@ -1,4 +1,7 @@
-"""Clef-Omni INT4 (W4A16, group 128) with Intel AutoRound 0.16.0 (issue #152).
+"""Clef-Omni quants with Intel AutoRound 0.16.0 (issue #152): INT4 W4A16 g128, NVFP4 (W4A4) and NVFP4A16.
+
+AR_SCHEME selects the variant: W4A16 (int4, group 128, default), NVFP4 (FP4 weights + FP4 activations,
+blocks of 16) or NVFP4A16 (FP4 weights, 16-bit activations). Output root defaults per variant.
 
 Experts-only like the ModelOpt quants (router, attention, lm_head, embeddings, vision/audio towers and
 the Clef head stay BF16). AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into
@@ -28,11 +31,13 @@ from clef_records import log  # noqa: E402
 
 REHEARSAL = os.environ.get("CLEF_REHEARSAL") == "1"
 MODEL = Path(os.environ.get("CLEF_MODEL_DIR", "/work/clef-omni"))
-ROOT = Path(os.environ.get("CLEF_ROOT", "/work/int4-rehearsal" if REHEARSAL else "/work/int4"))
+SCHEME = os.environ.get("AR_SCHEME", "W4A16")
+_ROOTS = {"W4A16": "int4", "NVFP4": "nvfp4-ar", "NVFP4A16": "nvfp4a16-ar"}
+ROOT = Path(os.environ.get("CLEF_ROOT", f"/work/{_ROOTS[SCHEME]}{'-rehearsal' if REHEARSAL else ''}"))
+SCHEME_ARG = {"bits": 4, "group_size": 16, "data_type": "nv_fp", "act_bits": 16} if SCHEME == "NVFP4A16" else SCHEME
 EXPORT, RES = ROOT / "export", ROOT / "results"
 ITERS = int(os.environ.get("AR_ITERS", 2 if REHEARSAL else 200))
 N_CALIB = int(os.environ.get("N_CALIB", 16 if REHEARSAL else 512))
-SCHEME = os.environ.get("AR_SCHEME", "W4A16")
 sys.path.insert(0, str(MODEL))
 import joint_schema_model as jsm  # noqa: E402
 
@@ -133,7 +138,7 @@ def main():
     guard_host_ram(backbone)
 
     from auto_round import AutoRound
-    ar = AutoRound(backbone, tokenizer=processor.tokenizer, processor=processor, scheme=SCHEME, dataset=data,
+    ar = AutoRound(backbone, tokenizer=processor.tokenizer, processor=processor, scheme=SCHEME_ARG, dataset=data,
                    nsamples=len(data), seqlen=8192, iters=ITERS, batch_size=1, gradient_accumulate_steps=8,
                    device_map=0, low_gpu_mem_usage=False, ignore_layers="mlp.gate,lm_head,self_attn")
     log(f"AutoRound {type(ar).__name__}: scheme={SCHEME} iters={ITERS} nsamples={len(data)}")
@@ -162,7 +167,7 @@ def main():
             for k in st.keys():
                 if k.startswith(("talker.", "code2wav.")):
                     scan["talker_tensors"] += 1
-                if ".mlp.experts." in k and k.endswith(".qweight"):
+                if ".mlp.experts." in k and k.endswith((".qweight", ".weight_packed")):
                     scan["qweight_tensors"] += 1
                 if ".mlp.experts." in k and k.endswith(".weight"):
                     scan["expert_bf16_weights"] += 1
@@ -173,7 +178,7 @@ def main():
     json.dump(scan, open(RES / "artifact_scan.json", "w"), indent=1)
     log("ARTIFACT SCAN:", json.dumps({k: v for k, v in scan.items() if k not in ("files", "quantization_config")}))
     ok = scan["qweight_tensors"] > 0 and scan["expert_bf16_weights"] == 0 and scan["talker_tensors"] == 0
-    log("INT4 ARTIFACT", "PASS" if ok else "FAIL")
+    log(f"{SCHEME} ARTIFACT", "PASS" if ok else "FAIL")
     sys.exit(0 if ok else 2)
 
 

@@ -294,7 +294,10 @@ data:
     if __name__ == "__main__":
         main()
   quant_int4_autoround.py: |
-    """Clef-Omni INT4 (W4A16, group 128) with Intel AutoRound 0.16.0 (issue #152).
+    """Clef-Omni quants with Intel AutoRound 0.16.0 (issue #152): INT4 W4A16 g128, NVFP4 (W4A4) and NVFP4A16.
+
+    AR_SCHEME selects the variant: W4A16 (int4, group 128, default), NVFP4 (FP4 weights + FP4 activations,
+    blocks of 16) or NVFP4A16 (FP4 weights, 16-bit activations). Output root defaults per variant.
 
     Experts-only like the ModelOpt quants (router, attention, lm_head, embeddings, vision/audio towers and
     the Clef head stay BF16). AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into
@@ -324,11 +327,13 @@ data:
 
     REHEARSAL = os.environ.get("CLEF_REHEARSAL") == "1"
     MODEL = Path(os.environ.get("CLEF_MODEL_DIR", "/work/clef-omni"))
-    ROOT = Path(os.environ.get("CLEF_ROOT", "/work/int4-rehearsal" if REHEARSAL else "/work/int4"))
+    SCHEME = os.environ.get("AR_SCHEME", "W4A16")
+    _ROOTS = {"W4A16": "int4", "NVFP4": "nvfp4-ar", "NVFP4A16": "nvfp4a16-ar"}
+    ROOT = Path(os.environ.get("CLEF_ROOT", f"/work/{_ROOTS[SCHEME]}{'-rehearsal' if REHEARSAL else ''}"))
+    SCHEME_ARG = {"bits": 4, "group_size": 16, "data_type": "nv_fp", "act_bits": 16} if SCHEME == "NVFP4A16" else SCHEME
     EXPORT, RES = ROOT / "export", ROOT / "results"
     ITERS = int(os.environ.get("AR_ITERS", 2 if REHEARSAL else 200))
     N_CALIB = int(os.environ.get("N_CALIB", 16 if REHEARSAL else 512))
-    SCHEME = os.environ.get("AR_SCHEME", "W4A16")
     sys.path.insert(0, str(MODEL))
     import joint_schema_model as jsm  # noqa: E402
 
@@ -429,7 +434,7 @@ data:
         guard_host_ram(backbone)
 
         from auto_round import AutoRound
-        ar = AutoRound(backbone, tokenizer=processor.tokenizer, processor=processor, scheme=SCHEME, dataset=data,
+        ar = AutoRound(backbone, tokenizer=processor.tokenizer, processor=processor, scheme=SCHEME_ARG, dataset=data,
                        nsamples=len(data), seqlen=8192, iters=ITERS, batch_size=1, gradient_accumulate_steps=8,
                        device_map=0, low_gpu_mem_usage=False, ignore_layers="mlp.gate,lm_head,self_attn")
         log(f"AutoRound {type(ar).__name__}: scheme={SCHEME} iters={ITERS} nsamples={len(data)}")
@@ -458,7 +463,7 @@ data:
                 for k in st.keys():
                     if k.startswith(("talker.", "code2wav.")):
                         scan["talker_tensors"] += 1
-                    if ".mlp.experts." in k and k.endswith(".qweight"):
+                    if ".mlp.experts." in k and k.endswith((".qweight", ".weight_packed")):
                         scan["qweight_tensors"] += 1
                     if ".mlp.experts." in k and k.endswith(".weight"):
                         scan["expert_bf16_weights"] += 1
@@ -469,7 +474,7 @@ data:
         json.dump(scan, open(RES / "artifact_scan.json", "w"), indent=1)
         log("ARTIFACT SCAN:", json.dumps({k: v for k, v in scan.items() if k not in ("files", "quantization_config")}))
         ok = scan["qweight_tensors"] > 0 and scan["expert_bf16_weights"] == 0 and scan["talker_tensors"] == 0
-        log("INT4 ARTIFACT", "PASS" if ok else "FAIL")
+        log(f"{SCHEME} ARTIFACT", "PASS" if ok else "FAIL")
         sys.exit(0 if ok else 2)
 
 
@@ -932,6 +937,89 @@ data:
           ],
           "eval_extra": [],
           "versions": []
+        },
+        {
+          "public": false,
+          "vram_gib": null,
+          "size_gb": null,
+          "parity": {
+            "top1": null,
+            "mean_tv": null
+          },
+          "bench": {
+            "index": null
+          },
+          "status": null,
+          "versions": [],
+          "eval_extra": [],
+          "id": "nvfp4-ar",
+          "repo": "dbirks/clef-omni-nvfp4-autoround",
+          "format": "NVFP4 W4A4 (AutoRound, tuned)",
+          "best_for": "Blackwell, native FP4, tuned rounding",
+          "tags": [
+            "nvfp4",
+            "fp4",
+            "auto-round",
+            "qwen3_omni_moe",
+            "clef",
+            "decision-model",
+            "blackwell"
+          ],
+          "summary": "NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights (blocks of 16, FP8 E4M3 scales + global scale) and FP4 activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
+          "serving": [
+            "transformers loads this checkpoint through AutoRound (`auto_round` format, llm-compressor-style packing), simulating the FP4 weight and activation rounding in PyTorch, so `serve_clef.py` reproduces the quantized model's answers with BF16-class speed. vLLM can load the same packing for native FP4 on Blackwell, but no engine yet feeds the thinker's hidden states into the Clef head."
+          ],
+          "quantized": [
+            "| Part | Precision |",
+            "|---|---|",
+            "| Thinker MoE experts | **NVFP4 W4A4**, AutoRound-tuned rounding |",
+            "| Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |",
+            "| Clef joint head | BF16, byte-identical to the original |"
+          ],
+          "recipe": [
+            "`scheme=NVFP4`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
+          ]
+        },
+        {
+          "public": false,
+          "vram_gib": null,
+          "size_gb": null,
+          "parity": {
+            "top1": null,
+            "mean_tv": null
+          },
+          "bench": {
+            "index": null
+          },
+          "status": null,
+          "versions": [],
+          "eval_extra": [],
+          "id": "nvfp4a16-ar",
+          "repo": "dbirks/clef-omni-nvfp4a16-autoround",
+          "format": "NVFP4 W4A16 (AutoRound, tuned)",
+          "best_for": "Highest-fidelity FP4 weights",
+          "tags": [
+            "nvfp4",
+            "w4a16",
+            "auto-round",
+            "qwen3_omni_moe",
+            "clef",
+            "decision-model"
+          ],
+          "summary": "NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
+          "serving": [
+            "transformers loads this checkpoint through AutoRound (`auto_round` format), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly."
+          ],
+          "quantized": [
+            "| Part | Precision |",
+            "|---|---|",
+            "| Thinker MoE experts | **NVFP4 weights** (blocks of 16), AutoRound-tuned, BF16 activations |",
+            "| Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |",
+            "| Clef joint head | BF16, byte-identical to the original |"
+          ],
+          "recipe": [
+            "`scheme={bits: 4, group_size: 16, data_type: nv_fp, act_bits: 16}`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
+          ]
         }
       ]
     }
@@ -961,6 +1049,8 @@ data:
     | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
     | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 93.4% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
     | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
+    | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
+    | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
 
     **Recommended for:**
 
@@ -1008,6 +1098,91 @@ data:
     ## Recipe
 
     AutoRound 0.16.0 `scheme=W4A16`, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell.
+
+    ## Evaluation
+
+    Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
+
+
+    ## License
+
+    Apache-2.0, as the base model. All credit for the model goes to Cloudflare; this repo only changes the weight precision.
+  card_clef-omni-nvfp4-autoround.md: |
+    ---
+    license: apache-2.0
+    base_model: Cloudflare/clef-omni
+    base_model_relation: quantized
+    tags:
+      - nvfp4
+      - fp4
+      - auto-round
+      - qwen3_omni_moe
+      - clef
+      - decision-model
+      - blackwell
+    ---
+
+    # clef-omni-nvfp4-autoround
+
+    NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights (blocks of 16, FP8 E4M3 scales + global scale) and FP4 activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
+
+    ## Which Clef-Omni quant should I use?
+
+    | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
+    |---|---|---|---|---|---|---|
+    | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
+    | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
+    | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 93.4% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
+    | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
+    | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
+    | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
+
+    **Recommended for:**
+
+    - **clef-omni-int4**: any recent GPU when you want the smallest VRAM footprint today; loads in plain transformers. Also the best bet on AMD (ROCm): AutoRound's PyTorch/Triton kernels run there, though we have not tested it.
+    - **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
+    - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
+    - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
+
+    *Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.
+
+    ## Quick start
+
+    Serve it with [`serve_clef.py`](serve_clef.py) (also in [the repo it is maintained in](https://github.com/dbirks/home-k8s/blob/main/scripts/clef-omni/serve_clef.py)), a single-file [PEP 723](https://peps.python.org/pep-0723/) script, so `uv` installs everything it needs:
+
+    ```bash
+    # uv runs a PEP 723 script straight from its URL (or download serve_clef.py and `uv run` it locally)
+    uv run https://huggingface.co/dbirks/clef-omni-nvfp4-autoround/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4-autoround --demo
+    uv run https://huggingface.co/dbirks/clef-omni-nvfp4-autoround/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4-autoround --port 8000
+    ```
+
+    The first command answers one built-in decision and exits; the second starts the SystemOne HTTP server (`GET /healthz` turns 200 once the model is loaded):
+
+    ```bash
+    curl -s localhost:8000/v1/systemone -H 'Content-Type: application/json' -d '{
+      "model": "clef-omni",
+      "state": {"observation": "The player is facing a wall."},
+      "questions": {"action": {"type": "choice", "criteria": {"left": "Turn left", "right": "Turn right", "forward": "Move forward"}}}
+    }'
+    ```
+
+    Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one forward pass, per-option probabilities from the original BF16 joint decision head. Inputs can include images, audio and video (see the [base model card](https://huggingface.co/Cloudflare/clef-omni)).
+
+    ## How this checkpoint runs
+
+    transformers loads this checkpoint through AutoRound (`auto_round` format, llm-compressor-style packing), simulating the FP4 weight and activation rounding in PyTorch, so `serve_clef.py` reproduces the quantized model's answers with BF16-class speed. vLLM can load the same packing for native FP4 on Blackwell, but no engine yet feeds the thinker's hidden states into the Clef head.
+
+    ## What was quantized
+
+    | Part | Precision |
+    |---|---|
+    | Thinker MoE experts | **NVFP4 W4A4**, AutoRound-tuned rounding |
+    | Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |
+    | Clef joint head | BF16, byte-identical to the original |
+
+    ## Recipe
+
+    `scheme=NVFP4`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell.
 
     ## Evaluation
 
@@ -1108,6 +1283,90 @@ data:
     ## License
 
     Apache-2.0, as the base model. All credit for the model goes to Cloudflare; this repo only changes the weight precision.
+  card_clef-omni-nvfp4a16-autoround.md: |
+    ---
+    license: apache-2.0
+    base_model: Cloudflare/clef-omni
+    base_model_relation: quantized
+    tags:
+      - nvfp4
+      - w4a16
+      - auto-round
+      - qwen3_omni_moe
+      - clef
+      - decision-model
+    ---
+
+    # clef-omni-nvfp4a16-autoround
+
+    NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
+
+    ## Which Clef-Omni quant should I use?
+
+    | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
+    |---|---|---|---|---|---|---|
+    | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
+    | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
+    | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 93.4% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
+    | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
+    | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
+    | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
+
+    **Recommended for:**
+
+    - **clef-omni-int4**: any recent GPU when you want the smallest VRAM footprint today; loads in plain transformers. Also the best bet on AMD (ROCm): AutoRound's PyTorch/Triton kernels run there, though we have not tested it.
+    - **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
+    - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
+    - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
+
+    *Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.
+
+    ## Quick start
+
+    Serve it with [`serve_clef.py`](serve_clef.py) (also in [the repo it is maintained in](https://github.com/dbirks/home-k8s/blob/main/scripts/clef-omni/serve_clef.py)), a single-file [PEP 723](https://peps.python.org/pep-0723/) script, so `uv` installs everything it needs:
+
+    ```bash
+    # uv runs a PEP 723 script straight from its URL (or download serve_clef.py and `uv run` it locally)
+    uv run https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4a16-autoround --demo
+    uv run https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4a16-autoround --port 8000
+    ```
+
+    The first command answers one built-in decision and exits; the second starts the SystemOne HTTP server (`GET /healthz` turns 200 once the model is loaded):
+
+    ```bash
+    curl -s localhost:8000/v1/systemone -H 'Content-Type: application/json' -d '{
+      "model": "clef-omni",
+      "state": {"observation": "The player is facing a wall."},
+      "questions": {"action": {"type": "choice", "criteria": {"left": "Turn left", "right": "Turn right", "forward": "Move forward"}}}
+    }'
+    ```
+
+    Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one forward pass, per-option probabilities from the original BF16 joint decision head. Inputs can include images, audio and video (see the [base model card](https://huggingface.co/Cloudflare/clef-omni)).
+
+    ## How this checkpoint runs
+
+    transformers loads this checkpoint through AutoRound (`auto_round` format), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly.
+
+    ## What was quantized
+
+    | Part | Precision |
+    |---|---|
+    | Thinker MoE experts | **NVFP4 weights** (blocks of 16), AutoRound-tuned, BF16 activations |
+    | Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |
+    | Clef joint head | BF16, byte-identical to the original |
+
+    ## Recipe
+
+    `scheme={bits: 4, group_size: 16, data_type: nv_fp, act_bits: 16}`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell.
+
+    ## Evaluation
+
+    Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
+
+
+    ## License
+
+    Apache-2.0, as the base model. All credit for the model goes to Cloudflare; this repo only changes the weight precision.
   card_clef-omni-nvfp4a16.md: |
     ---
     license: apache-2.0
@@ -1136,6 +1395,8 @@ data:
     | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
     | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 93.4% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
     | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | pending | pending | pending | pending | Any recent NVIDIA GPU, smallest VRAM |
+    | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
+    | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
 
     **Recommended for:**
 

@@ -162,6 +162,89 @@
       ],
       "eval_extra": [],
       "versions": []
+    },
+    {
+      "public": false,
+      "vram_gib": null,
+      "size_gb": null,
+      "parity": {
+        "top1": null,
+        "mean_tv": null
+      },
+      "bench": {
+        "index": null
+      },
+      "status": null,
+      "versions": [],
+      "eval_extra": [],
+      "id": "nvfp4-ar",
+      "repo": "dbirks/clef-omni-nvfp4-autoround",
+      "format": "NVFP4 W4A4 (AutoRound, tuned)",
+      "best_for": "Blackwell, native FP4, tuned rounding",
+      "tags": [
+        "nvfp4",
+        "fp4",
+        "auto-round",
+        "qwen3_omni_moe",
+        "clef",
+        "decision-model",
+        "blackwell"
+      ],
+      "summary": "NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights (blocks of 16, FP8 E4M3 scales + global scale) and FP4 activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
+      "serving": [
+        "transformers loads this checkpoint through AutoRound (`auto_round` format, llm-compressor-style packing), simulating the FP4 weight and activation rounding in PyTorch, so `serve_clef.py` reproduces the quantized model's answers with BF16-class speed. vLLM can load the same packing for native FP4 on Blackwell, but no engine yet feeds the thinker's hidden states into the Clef head."
+      ],
+      "quantized": [
+        "| Part | Precision |",
+        "|---|---|",
+        "| Thinker MoE experts | **NVFP4 W4A4**, AutoRound-tuned rounding |",
+        "| Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |",
+        "| Clef joint head | BF16, byte-identical to the original |"
+      ],
+      "recipe": [
+        "`scheme=NVFP4`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
+      ]
+    },
+    {
+      "public": false,
+      "vram_gib": null,
+      "size_gb": null,
+      "parity": {
+        "top1": null,
+        "mean_tv": null
+      },
+      "bench": {
+        "index": null
+      },
+      "status": null,
+      "versions": [],
+      "eval_extra": [],
+      "id": "nvfp4a16-ar",
+      "repo": "dbirks/clef-omni-nvfp4a16-autoround",
+      "format": "NVFP4 W4A16 (AutoRound, tuned)",
+      "best_for": "Highest-fidelity FP4 weights",
+      "tags": [
+        "nvfp4",
+        "w4a16",
+        "auto-round",
+        "qwen3_omni_moe",
+        "clef",
+        "decision-model"
+      ],
+      "summary": "NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
+      "serving": [
+        "transformers loads this checkpoint through AutoRound (`auto_round` format), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly."
+      ],
+      "quantized": [
+        "| Part | Precision |",
+        "|---|---|",
+        "| Thinker MoE experts | **NVFP4 weights** (blocks of 16), AutoRound-tuned, BF16 activations |",
+        "| Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |",
+        "| Clef joint head | BF16, byte-identical to the original |"
+      ],
+      "recipe": [
+        "`scheme={bits: 4, group_size: 16, data_type: nv_fp, act_bits: 16}`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
+      ]
     }
   ]
 }

@@ -5,17 +5,15 @@ base_model_relation: quantized
 tags:
   - nvfp4
   - w4a16
-  - modelopt
+  - auto-round
   - qwen3_omni_moe
   - clef
   - decision-model
 ---
 
-# clef-omni-nvfp4a16
+# clef-omni-nvfp4a16-autoround
 
-NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0: FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
-
-> **Status:** first pass (`v0.1`). Agrees with BF16 on 93.4% of held-out decisions (W4A4 sibling: 91.1%), so rounding activations costs about 2 points and most of the gap is weight rounding under plain `max` calibration. The target is 98%; tuned calibrations are in progress.
+NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
 
 ## Which Clef-Omni quant should I use?
 
@@ -43,8 +41,8 @@ Serve it with [`serve_clef.py`](serve_clef.py) (also in [the repo it is maintain
 
 ```bash
 # uv runs a PEP 723 script straight from its URL (or download serve_clef.py and `uv run` it locally)
-uv run https://huggingface.co/dbirks/clef-omni-nvfp4a16/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4a16 --demo
-uv run https://huggingface.co/dbirks/clef-omni-nvfp4a16/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4a16 --port 8000
+uv run https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4a16-autoround --demo
+uv run https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround/resolve/main/serve_clef.py --model dbirks/clef-omni-nvfp4a16-autoround --port 8000
 ```
 
 The first command answers one built-in decision and exits; the second starts the SystemOne HTTP server (`GET /healthz` turns 200 once the model is loaded):
@@ -61,32 +59,24 @@ Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one
 
 ## How this checkpoint runs
 
-`serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact), so it runs anywhere transformers runs, with BF16-like memory. vLLM's ModelOpt loader runs `W4A16_NVFP4` MoE checkpoints on its Marlin kernels (memory saving, BF16-class speed), but no engine yet feeds the thinker's hidden states into the Clef head.
+transformers loads this checkpoint through AutoRound (`auto_round` format), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly.
 
 ## What was quantized
 
 | Part | Precision |
 |---|---|
-| Thinker MoE experts | **NVFP4 weights** (E2M1, blocks of 16, FP8 E4M3 block scales + FP32 global scale), BF16 activations |
+| Thinker MoE experts | **NVFP4 weights** (blocks of 16), AutoRound-tuned, BF16 activations |
 | Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |
 | Clef joint head | BF16, byte-identical to the original |
 
 ## Recipe
 
-ModelOpt `NVFP4_EXPERTS_ONLY_CFG` with the expert input quantizers disabled (weight-only), `max` calibration straight from the weights (no calibration data needed), same exclusions as the W4A4 variant; torch 2.11.0+cu130, transformers 5.10.2, ModelOpt 0.47.0.
+`scheme={bits: 4, group_size: 16, data_type: nv_fp, act_bits: 16}`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell.
 
 ## Evaluation
 
 Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
-
-## Version history
-
-Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins it). Newest last.
-
-| Version | Date | Notes |
-|---|---|---|
-| `v0.1` | 2026-10-10 | First release: ModelOpt W4A16_NVFP4, experts-only, weight-only `max` calibration (no calibration data). 93.4% top-answer agreement with BF16 (mean TV 0.043). Ships serve_clef.py. |
 
 ## License
 

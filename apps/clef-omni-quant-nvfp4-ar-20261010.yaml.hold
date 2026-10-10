@@ -1,0 +1,73 @@
+# Clef-Omni NVFP4 W4A4 (AutoRound, tuned) -> dbirks/clef-omni-nvfp4-autoround (issue #152).
+# Same proven Job as the AutoRound INT4 one (apps/clef-omni-quant-int4-20261010.yaml): rehearsal on a tiny
+# random Clef-Omni, host-RAM guard, swallowed-calibration check, real run (512 Clef-format records,
+# iters 200, experts-only), then the EXPORT graded against the BF16 reference through serve_clef.py.
+# AR_SCHEME=NVFP4; output /work/nvfp4-ar/{export,results}. Released from .hold when the GPU queue reaches it.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-quant-nvfp4-ar-20261010
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 28800
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-quant-nvfp4-ar }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: quant
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              VENV=/work/venv
+              export PIP_CACHE_DIR=/work/.pip-cache TMPDIR=/work/.tmp HF_HOME=/work/.hf-home AR_WORK_SPACE=/work/.tmp/ar
+              export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True AR_DISABLE_COPY_MTP_WEIGHTS=1 AR_SCHEME=NVFP4
+              mkdir -p /work/.tmp/ar /work/logs
+              echo "[$(date -u +%FT%TZ)] === Clef-Omni NVFP4 (AutoRound) ==="
+              command -v gcc >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev >/dev/null; } || exit 1
+              "$VENV/bin/pip" freeze | grep -E '^(torch|torchvision|transformers|accelerate|safetensors|huggingface.hub)==' > /work/.tmp/constraints-ar.txt
+              "$VENV/bin/python" -c 'import auto_round' 2>/dev/null || \
+                "$VENV/bin/pip" install -q --no-input -c /work/.tmp/constraints-ar.txt 'auto-round==0.16.0' || exit 1
+              PRE='import auto_round, auto_round.compressors.orchestrator, auto_round.calibration.llm, transformers, pyarrow.parquet'
+              for i in 1 2 3 4 5; do
+                err=$("$VENV/bin/python" -c "$PRE" 2>&1) && break
+                mod=$(printf '%s\n' "$err" | sed -n "s/.*No module named '\([^'.]*\).*/\1/p" | tail -1)
+                [ -n "$mod" ] || { printf '%s\n' "$err"; echo "FATAL: import preflight failed"; exit 1; }
+                echo "preflight: installing missing module $mod"; "$VENV/bin/pip" install -q --no-input -c /work/.tmp/constraints-ar.txt "$mod" || exit 1
+              done
+              "$VENV/bin/python" -c "$PRE; import torch, auto_round; print('torch', torch.__version__, 'transformers', transformers.__version__, 'auto-round', auto_round.__version__)" || exit 1
+              "$VENV/bin/pip" freeze > /work/logs/pip-freeze-nvfp4-ar.txt
+
+              swallowed() { grep -cE 'Calibration forward pass failed|Insufficient number of samples' "$1"; }
+              echo "[$(date -u +%FT%TZ)] --- rehearsal: tiny random Clef-Omni ---"
+              CLEF_REHEARSAL=1 "$VENV/bin/python" /scripts/quant_int4_autoround.py 2>&1 | tee /work/logs/quant-nvfp4-ar-rehearsal.log
+              rc=${PIPESTATUS[0]}; n=$(swallowed /work/logs/quant-nvfp4-ar-rehearsal.log)
+              [ "$rc" -eq 0 ] && [ "$n" -eq 0 ] || { echo "FATAL: rehearsal rc=$rc, swallowed calibration failures=$n"; exit 1; }
+              "$VENV/bin/python" /scripts/eval_export.py --export /work/nvfp4-ar-rehearsal/export --out /work/nvfp4-ar-rehearsal/results --limit 4 \
+                2>&1 | tee /work/logs/eval-nvfp4-ar-rehearsal.log
+              [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "FATAL: rehearsal export does not load/score through serve_clef"; exit 1; }
+              echo "[$(date -u +%FT%TZ)] --- rehearsal passed; real run ---"
+
+              "$VENV/bin/python" /scripts/quant_int4_autoround.py 2>&1 | tee /work/logs/quant-nvfp4-ar.log
+              rc=${PIPESTATUS[0]}; n=$(swallowed /work/logs/quant-nvfp4-ar.log)
+              echo "[$(date -u +%FT%TZ)] quant rc=$rc swallowed=$n"; du -sh /work/nvfp4-ar/export 2>/dev/null
+              [ "$rc" -eq 0 ] && [ "$n" -eq 0 ] || exit 1
+              "$VENV/bin/python" /scripts/eval_export.py --export /work/nvfp4-ar/export --out /work/nvfp4-ar/results 2>&1 | tee /work/logs/eval-nvfp4-ar.log
+              exit ${PIPESTATUS[0]}
+          resources:
+            requests: { cpu: "2", memory: 12Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: scripts, configMap: { name: clef-omni-scripts } }
