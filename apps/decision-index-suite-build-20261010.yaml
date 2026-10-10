@@ -19,7 +19,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: decision-index-suite-build-20261010-r2
+  name: decision-index-suite-build-20261010-r3
   namespace: default
 spec:
   backoffLimit: 1
@@ -62,7 +62,16 @@ spec:
               echo "[$(date -u +%FT%TZ)] suite rebuild"
               # sources are fetched from ~40 upstreams; a transient GitHub fetch error (exit 128 on MuSR)
               # killed both first attempts. rebuild resumes from what is already pinned on disk, so retry.
+              # A fetch that dies midway leaves a repo with .git but no commit, and the kit's resume check
+              # (`git rev-parse HEAD`) then fails forever. Drop such half-fetched source repos first.
+              clean_partial() {
+                for g in $(find work -maxdepth 6 -type d -name .git 2>/dev/null); do
+                  d=$(dirname "$g")
+                  git -C "$d" rev-parse -q --verify HEAD >/dev/null 2>&1 || { echo "removing half-fetched $d"; rm -rf "$d"; }
+                done
+              }
               for attempt in 1 2 3 4 5; do
+                clean_partial
                 venv/bin/python -m decision_index suite rebuild --work work && break
                 [ "$attempt" = 5 ] && { echo "FATAL: suite rebuild failed 5 times"; exit 1; }
                 echo "[$(date -u +%FT%TZ)] rebuild attempt $attempt failed; retrying in 60s"; sleep 60
