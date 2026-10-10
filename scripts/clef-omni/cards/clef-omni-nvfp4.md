@@ -16,14 +16,14 @@ tags:
 
 NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0. **22.0 GB instead of 70.8 GB.** Only the thinker's MoE experts (about 91% of the loaded weights) are FP4; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.
 
-> **Status:** experimental first pass (`v0.1`, `max` calibration). It agrees with BF16 on 91.1% of held-out decisions; the target is 98%. See the table for higher-fidelity variants.
+> **Status:** experimental (`max` calibration). The exported checkpoint, replayed faithfully (FP4 weights and activations), agrees with BF16 on 92.3% of held-out decisions (mean TV 0.057); the target is 98%. See the table for better variants.
 
 ## Which Clef-Omni quant should I use?
 
 | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
 |---|---|---|---|---|---|---|
 | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
-| [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell, native FP4 engines |
+| [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 92.3% | pending | Blackwell, native FP4 engines |
 
 **Recommended for:**
 
@@ -75,6 +75,7 @@ ModelOpt `NVFP4_EXPERTS_ONLY_CFG`, `max` calibration, plus exclusions for towers
 
 Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
+Measured on the exported files through `serve_clef.py`: 92.3% top-answer agreement with `--simulate-fp4-activations` (faithful W4A4), 91.1% with BF16 activations. These differ from ModelOpt's in-memory fake-quant numbers (91.1% at export time) because export recomputes some scales (for example a shared gate/up global scale). The file numbers are the ones that apply to this download.
 
 ## Version history
 
