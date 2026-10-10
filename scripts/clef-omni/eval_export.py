@@ -27,7 +27,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--reference", default="/work/nvfp4-experts/results/parity_fakequant_rows.jsonl")
     ap.add_argument("--simulate-fp4-activations", action=argparse.BooleanOptionalAction, default=None,
-                    help="default: on exactly for NVFP4 W4A4 checkpoints (see serve_clef.load)")
+                    help="NVFP4 W4A4: reproduce FP4 activation rounding (default off, see serve_clef.load)")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--fakequant-rows", default=None,
                     help="a quant job's parity_fakequant_rows.jsonl: also report how closely the export reproduces it")

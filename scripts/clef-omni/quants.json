@@ -48,7 +48,7 @@
       "summary": "NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0. **22.0 GB instead of 70.8 GB.** Only the thinker's MoE experts (about 91% of the loaded weights) are FP4; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.",
       "status": "experimental first pass (`v0.1`, `max` calibration). It agrees with BF16 on 91.1% of held-out decisions; the target is 98%. See the table for higher-fidelity variants.",
       "serving": [
-        "`serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact) and, because this is a W4A4 checkpoint, also rounds every expert input to NVFP4 exactly the way ModelOpt calibrated it, so answers match the quantized model. Memory and speed are BF16-like. Native FP4 execution needs an engine with NVFP4 kernels (vLLM's ModelOpt NVFP4 MoE path on Blackwell) and a way to feed the thinker's hidden states into the Clef head, which no engine provides yet."
+        "`serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact) and runs the experts on transformers' grouped kernels, so speed and memory are BF16-like (about 60 GB of VRAM). By default the activations stay BF16, which behaves like the W4A16 sibling. `--simulate-fp4-activations` additionally rounds every expert input to NVFP4 exactly as ModelOpt calibrated it, reproducing this W4A4 checkpoint's answers bit-for-bit, but it is much slower (several seconds per decision); use it for benchmarking. Native FP4 execution needs an engine with NVFP4 kernels (vLLM's ModelOpt NVFP4 MoE path on Blackwell) plus a way to feed the thinker's hidden states into the Clef head, which no engine provides yet."
       ],
       "quantized": [
         "| Part | Precision |",
@@ -148,7 +148,7 @@
       "summary": "INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
       "status": "first release (`v0.1`). Agrees with BF16 on 95.7% of held-out decisions (mean TV 0.033), the closest of the family so far to the 98% target, and the only variant that actually saves VRAM today (19.4 GiB of weights vs about 60 GiB). Known issue: about 2.7 s per decision in transformers on our test card, likely a slow int4 kernel path; faster kernels are being investigated.",
       "serving": [
-        "transformers loads this checkpoint natively (AutoRound format, int4 kernels), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly with a much smaller VRAM footprint than BF16. Works on non-Blackwell cards."
+        "transformers loads this checkpoint natively (AutoRound format). `serve_clef.py` then re-groups each layer's 128 int4 experts and runs them as one dequantize + grouped matmul per layer (`--no-fast-moe` turns this off), instead of AutoRound's per-expert Python loop. Weights stay int4 in VRAM (about 19.4 GiB) and Cloudflare's head runs unchanged. Works on non-Blackwell cards."
       ],
       "quantized": [
         "| Part | Precision |",

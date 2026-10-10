@@ -18,3 +18,4 @@ build/vllm-dflash2/vllm-pr/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+__pycache__/

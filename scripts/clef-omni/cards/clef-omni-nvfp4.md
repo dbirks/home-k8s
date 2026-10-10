@@ -56,7 +56,7 @@ Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one
 
 ## How this checkpoint runs
 
-`serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact) and, because this is a W4A4 checkpoint, also rounds every expert input to NVFP4 exactly the way ModelOpt calibrated it, so answers match the quantized model. Memory and speed are BF16-like. Native FP4 execution needs an engine with NVFP4 kernels (vLLM's ModelOpt NVFP4 MoE path on Blackwell) and a way to feed the thinker's hidden states into the Clef head, which no engine provides yet.
+`serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact) and runs the experts on transformers' grouped kernels, so speed and memory are BF16-like (about 60 GB of VRAM). By default the activations stay BF16, which behaves like the W4A16 sibling. `--simulate-fp4-activations` additionally rounds every expert input to NVFP4 exactly as ModelOpt calibrated it, reproducing this W4A4 checkpoint's answers bit-for-bit, but it is much slower (several seconds per decision); use it for benchmarking. Native FP4 execution needs an engine with NVFP4 kernels (vLLM's ModelOpt NVFP4 MoE path on Blackwell) plus a way to feed the thinker's hidden states into the Clef head, which no engine provides yet.
 
 ## What was quantized
 

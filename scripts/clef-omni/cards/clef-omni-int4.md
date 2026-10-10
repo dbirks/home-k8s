@@ -61,7 +61,7 @@ Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one
 
 ## How this checkpoint runs
 
-transformers loads this checkpoint natively (AutoRound format, int4 kernels), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly with a much smaller VRAM footprint than BF16. Works on non-Blackwell cards.
+transformers loads this checkpoint natively (AutoRound format). `serve_clef.py` then re-groups each layer's 128 int4 experts and runs them as one dequantize + grouped matmul per layer (`--no-fast-moe` turns this off), instead of AutoRound's per-expert Python loop. Weights stay int4 in VRAM (about 19.4 GiB) and Cloudflare's head runs unchanged. Works on non-Blackwell cards.
 
 ## What was quantized
 

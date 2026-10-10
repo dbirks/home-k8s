@@ -30,10 +30,10 @@ Checkpoint kinds, detected from the repo's config:
   * AutoRound INT4 (quant_method auto-round): transformers loads it with real int4 kernels.
   * ModelOpt NVFP4 / NVFP4A16 (hf_quant_config.json): transformers cannot load packed NVFP4, so the
     FP4 expert weights are DEQUANTIZED to BF16 on load (bit-exact quantized values, BF16 memory and
-    speed). For the W4A4 checkpoint the expert inputs are also rounded to NVFP4 exactly as ModelOpt
-    calibrated them (per-16 block scales in FP8 E4M3 under the exported input_scale), so answers
-    match the quantized model; turn it off with --no-simulate-fp4-activations. Native FP4 execution
-    needs an engine such as vLLM, plus a hidden-state path into the head.
+    speed). For the W4A4 checkpoint, --simulate-fp4-activations also rounds the expert inputs to NVFP4
+    exactly as ModelOpt calibrated them (per-16 block scales in FP8 E4M3 under the exported
+    input_scale), reproducing the quantized model's answers; it is slow, so it is off by default.
+    Native FP4 execution needs an engine such as vLLM, plus a hidden-state path into the head.
 """
 import argparse
 import json
@@ -127,8 +127,9 @@ def load_modelopt(path, device, simulate_activations=False):
     from transformers import AutoConfig, Qwen3OmniMoeForConditionalGeneration
     config = AutoConfig.from_pretrained(path)
     config.enable_audio_output = False
-    for c in (config, config.thinker_config, config.thinker_config.text_config):
-        c._experts_implementation = "eager"        # per-expert F.linear: needed for activation rounding
+    if simulate_activations:   # per-expert F.linear is where the activation rounding hooks in (slow)
+        for c in (config, config.thinker_config, config.thinker_config.text_config):
+            c._experts_implementation = "eager"
     for c in (config, getattr(config, "thinker_config", None)):
         if c is not None and hasattr(c, "quantization_config"):
             delattr(c, "quantization_config")
@@ -190,8 +191,104 @@ def load_modelopt(path, device, simulate_activations=False):
     return model
 
 
-def load(path, device, simulate_fp4_activations=None):
-    """simulate_fp4_activations: None = on exactly when the checkpoint quantized activations (W4A4)."""
+def dequant_int4(qweight, scales, qzeros, g_idx):
+    """AutoRound/GPTQ int4 (qweight [in/8, out], 8 codes per int32 low bits first, along `in`; qzeros
+    [groups, out/8] packed along `out`): W[in, out] = scale * (q - (zp + 1)), in BF16. Triton on CUDA
+    (AutoRound's own tritonv2_zp kernel, fp32 math); pure PyTorch elsewhere (CPU tests, ROCm safety)."""
+    if qweight.is_cuda:
+        try:
+            from auto_round_extension.triton.triton_utils_zp.dequant import dequant248
+            return dequant248(qweight, scales, qzeros, g_idx, 4, input_dtype=torch.bfloat16)
+        except ImportError:
+            pass
+    shifts = torch.arange(0, 32, 4, device=qweight.device, dtype=torch.int32)
+    out = torch.empty(qweight.shape[0] * 8, qweight.shape[1], device=qweight.device, dtype=torch.bfloat16)
+    rows = 8 * 128 * 16                   # bounded transients: 16 groups of 128 input rows at a time
+    for r in range(0, out.shape[0], rows):
+        q = ((qweight[r // 8:(r + rows) // 8].unsqueeze(1) >> shifts[:, None]) & 15).flatten(0, 1)
+        g = g_idx[r:r + rows].long()
+        z = ((qzeros[g].unsqueeze(-1) >> shifts) & 15).flatten(1) + 1
+        out[r:r + rows] = (scales[g].float() * (q - z).float()).to(torch.bfloat16)
+    return out
+
+
+class PackedInt4Experts(torch.nn.Module):
+    """All experts of one MoE layer as two stacked int4 matrices (gate|up, down), experts stacked along
+    the input dim so one dequant yields the [E, in, out] BF16 layout transformers' grouped_mm wants."""
+
+    def __init__(self, experts, act_fn):
+        super().__init__()
+        self.num_experts, self.act_fn = len(experts), act_fn
+        for name, parts in (("gate_up", [(e.gate_proj, e.up_proj) for e in experts]),
+                            ("down", [(e.down_proj,) for e in experts])):
+            qw = torch.cat([torch.cat([p.qweight for p in ps], 1) for ps in parts], 0)
+            qz = torch.cat([torch.cat([p.qzeros for p in ps], 1) for ps in parts], 0)
+            sc = torch.cat([torch.cat([p.scales for p in ps], 1) for ps in parts], 0)
+            self.register_buffer(f"{name}_qweight", qw)
+            self.register_buffer(f"{name}_qzeros", qz)
+            self.register_buffer(f"{name}_scales", sc)
+            self.register_buffer(f"{name}_g_idx", torch.arange(qw.shape[0] * 8, device=qw.device, dtype=torch.int32) // 128)
+            setattr(self, f"{name}_in", parts[0][0].infeatures)
+
+    def weight(self, name):
+        w = dequant_int4(*(getattr(self, f"{name}_{t}") for t in ("qweight", "scales", "qzeros", "g_idx")))
+        return w.view(self.num_experts, getattr(self, f"{name}_in"), -1)
+
+    def _apply_gate(self, gate_up):
+        gate, up = gate_up.chunk(2, dim=-1)
+        return self.act_fn(gate) * up
+
+    def forward(self, hidden_states, top_k_index, top_k_weights):
+        """transformers' grouped_mm experts forward over per-layer BF16 temporaries (freed on return)."""
+        from types import SimpleNamespace
+        from transformers.integrations.moe import grouped_mm_experts_forward
+        view = SimpleNamespace(num_experts=self.num_experts, has_gate=True, has_bias=False, is_transposed=True,
+                               gate_up_proj=self.weight("gate_up"), down_proj=self.weight("down"),
+                               _apply_gate=self._apply_gate)
+        return grouped_mm_experts_forward(view, hidden_states, top_k_index, top_k_weights)
+
+
+def fast_int4_moe(model):
+    """Swap AutoRound's per-expert QuantLinear loop (~2.7 s/forward on Clef) for one dequant + grouped_mm
+    per layer. Weights stay packed int4; only one layer's BF16 experts exist at a time. Anything
+    unexpected: warn and keep the slow path for that layer."""
+    done = 0
+    for name, block in list(model.named_modules()):
+        experts = getattr(block, "experts", None)
+        if not (type(experts).__name__ == "SequentialQwen3OmniThinkerExperts" and callable(getattr(block, "experts_forward", None))):
+            continue
+        try:
+            projs = [getattr(e, p) for e in experts for p in ("gate_proj", "up_proj", "down_proj")]
+            for p in projs:
+                gs, inf, outf = p.group_size, p.infeatures, p.outfeatures
+                ok = (p.bits == 4 and gs == 128 and inf % gs == 0 and p.bias is None
+                      and not getattr(p, "use_generic_bit_packing", False)
+                      and p.qweight.dtype == p.qzeros.dtype == torch.int32
+                      and tuple(p.qweight.shape) == (inf // 8, outf) and tuple(p.qzeros.shape) == (inf // gs, outf // 8)
+                      and tuple(p.scales.shape) == (inf // gs, outf))
+                g_idx = getattr(p, "g_idx", None)
+                ok = ok and (g_idx is None or torch.equal(g_idx.long().cpu(), torch.arange(inf) // gs))
+                if not ok:
+                    raise ValueError(f"unsupported expert projection {type(p).__name__} "
+                                     f"(bits={p.bits}, group_size={gs}, qweight {tuple(p.qweight.shape)})")
+            if len({(e.gate_proj.infeatures, e.gate_proj.outfeatures, e.up_proj.outfeatures, e.down_proj.outfeatures)
+                    for e in experts}) != 1 or experts[0].gate_proj.outfeatures != experts[0].down_proj.infeatures:
+                raise ValueError("experts differ in shape")
+            packed = PackedInt4Experts(experts, experts.act_fn)
+        except Exception as e:
+            log(f"WARNING: fast int4 MoE skipped for {name}: {e}")
+            continue
+        block.experts = packed                    # drops the per-expert QuantLinears
+        block.experts_forward = packed.__call__   # the block calls experts_forward(h, top_k_index, top_k_weights)
+        done += 1
+    log(f"fast grouped int4 MoE: {done} layers")
+    return done
+
+
+def load(path, device, simulate_fp4_activations=None, fast_moe=True):
+    """simulate_fp4_activations: off unless asked. On W4A4 checkpoints it reproduces the quantized model's
+    answers exactly (for benchmarking), at a large speed cost (eager per-expert path).
+    fast_moe: AutoRound INT4 g128 checkpoints run experts as dequant + grouped_mm (see fast_int4_moe)."""
     sys.path.insert(0, str(path))
     import joint_schema_model as jsm
     kind = kind_of(path)
@@ -202,8 +299,7 @@ def load(path, device, simulate_fp4_activations=None):
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoProcessor, Qwen3OmniMoeForConditionalGeneration
     if kind.startswith("modelopt:"):
-        if simulate_fp4_activations is None:
-            simulate_fp4_activations = kind == "modelopt:NVFP4"
+        simulate_fp4_activations = bool(simulate_fp4_activations) and kind == "modelopt:NVFP4"
         backbone = load_modelopt(path, device, simulate_fp4_activations)
         kind += "+fp4-activations" if simulate_fp4_activations else ""
     else:
@@ -211,6 +307,11 @@ def load(path, device, simulate_fp4_activations=None):
         config.enable_audio_output = False
         backbone = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
             path, config=config, dtype=torch.bfloat16, device_map={"": str(device)})
+        qc = config.quantization_config if isinstance(config.quantization_config, dict) else config.quantization_config.to_dict()
+        if fast_moe and kind == "auto-round:4bit" and qc.get("group_size") == 128 \
+                and "gptq" in str(qc.get("packing_format", "auto_round:auto_gptq")):
+            kind += "+grouped-moe" if fast_int4_moe(backbone) else ""
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
     head = jsm.JointSchemaHead(**json.loads((path / "joint_head_config.json").read_text()))
     head.load_state_dict(load_file(path / "joint_head.safetensors"), strict=True)
     head = head.to(device=device, dtype=torch.bfloat16)
@@ -236,14 +337,17 @@ def main():
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--demo", action="store_true", help="answer one built-in request and exit")
     ap.add_argument("--request", help="answer the JSON request in this file and exit")
-    ap.add_argument("--simulate-fp4-activations", action=argparse.BooleanOptionalAction, default=None,
-                    help="NVFP4 W4A4 checkpoints: round expert inputs to FP4 like the quantized model (default: on for W4A4)")
+    ap.add_argument("--simulate-fp4-activations", action=argparse.BooleanOptionalAction, default=False,
+                    help="NVFP4 W4A4 checkpoints: also round expert inputs to FP4, reproducing the quantized "
+                         "model's answers exactly (slow; for benchmarking). Default: FP4 weights, BF16 activations")
+    ap.add_argument("--no-fast-moe", dest="fast_moe", action="store_false",
+                    help="AutoRound INT4: keep AutoRound's per-expert QuantLinear loop instead of dequant + grouped_mm")
     args = ap.parse_args()
 
     path = resolve(args.model, args.revision)
     if args.demo or args.request:
         t0 = time.time()
-        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations)
+        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe)
         log(f"ready in {time.time() - t0:.0f}s")
         req = DEMO if args.demo else json.loads(Path(args.request).read_text())
         print(json.dumps(jsm.systemone(model, processor, req), indent=2))
@@ -257,7 +361,7 @@ def main():
 
     def _load():
         t0 = time.time()
-        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations)
+        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe)
         state.update(model=model, processor=processor, jsm=jsm, kind=kind, ready=True, load_s=round(time.time() - t0, 1))
         log(f"ready in {state['load_s']}s")
 
