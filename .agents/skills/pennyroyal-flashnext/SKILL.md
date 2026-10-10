@@ -61,3 +61,10 @@ Manifests: `apps/pennyroyal-*.yaml(.hold)`, `apps/agentic-prefix-bench.yaml.hold
 3. Unhold `pennyroyal-stage-model` (rsync HDD to NVMe, tokenizer sha check, overlay prep), retire after.
 4. CUDA smoke Job. 5. Scale ninfer + muse to 0, unhold `pennyroyal-flashnext`, watch `memlock=` line,
    `/health`, and `The server is fired up and ready to roll!`. 6. `agentic-prefix-bench` per arm.
+
+## Exposure (post-teardown, 2026-10-10)
+The llm.birks.dev KServe/Envoy/KEDA gateway stack is **gone** (history: issues #95/#135, teardown
+research #144). Consumers connect to the Service directly: the LLM Collective contributor runs
+`url: http://pennyroyal-flashnext.default.svc.cluster.local:8001` (protocols openai+anthropic,
+concurrency 4 = MAX_RUNNING_REQUESTS). Do not write Backend/AIServiceBackend/KEDA manifests — those
+CRDs no longer exist on the cluster.

@@ -131,6 +131,7 @@ spec:
   ports:
     - { name: http, port: 8001, targetPort: 8001 }
 # ---------------------------------------------------------------------------------------------------
-# GATEWAY (deliberately NOT here yet): benchmark directly against the Service first. When promoting,
-# reuse the ninfer/flashnext pattern (Backend -> AIServiceBackend -> one rule on llm-model-router), and
-# decide how to map the public model name onto the hard-coded served name `pennyroyal` (PR notes).
+# EXPOSURE: no in-cluster gateway anymore (the llm.birks.dev KServe/Envoy/KEDA stack was retired
+# 2026-10-10). Consumers talk to the Service directly — the LLM Collective contributor already does
+# (apps/llm-collective-contributor.yaml, backend url http://pennyroyal-flashnext.default.svc:8001).
+# Any future public edge is a fresh design decision, not a rebuild of the old gateway.
