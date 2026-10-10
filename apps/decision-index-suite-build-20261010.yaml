@@ -12,14 +12,14 @@
 # pinned HLE parquet, so it starts as soon as the terms are accepted at huggingface.co/datasets/cais/hle.
 # The suite is NOT redistributable (source licences): it stays on the PVC, never in git or a public repo.
 #
-# Memory: the node has ~12 GiB free beside Pennyroyal, so an 8Gi limit keeps any blow-up inside this pod.
+# Memory: r3 was OOMKilled at 8Gi right after the downloads (a normalize step); 16Gi with Pennyroyal at 0.
 # Output: /work/decision-index/{kit,work,suite-0.2,suite-0.3}; log /work/logs/di-suite-build.log
 # Retire to .yaml.hold once `suite verify` passes for both editions.
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: decision-index-suite-build-20261010-r3
+  name: decision-index-suite-build-20261010-r4
   namespace: default
 spec:
   backoffLimit: 1
@@ -91,7 +91,7 @@ spec:
               valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
           resources:
             requests: { cpu: "2", memory: 3Gi }
-            limits:   { cpu: "6", memory: 8Gi }
+            limits:   { cpu: "6", memory: 16Gi }
           volumeMounts:
             - { name: work, mountPath: /work }
       volumes:
