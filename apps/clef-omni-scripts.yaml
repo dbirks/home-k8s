@@ -280,7 +280,13 @@ data:
         assert not missing, f"missing on the Hub: {missing}"
         info = api.model_info(args.repo)
         if args.tag and args.tag not in {t.name for t in api.list_repo_refs(args.repo).tags}:
-            api.create_tag(args.repo, tag=args.tag, revision=info.sha, tag_message=args.tag_message or args.tag)
+            note = args.tag_message
+            if note is None:   # default: the version note from quants.json, so tags and the card's history agree
+                import json
+                for q in json.loads((HERE / "quants.json").read_text())["quants"]:
+                    if q["repo"] == args.repo:
+                        note = next((v["note"] for v in q.get("versions", []) if v["tag"] == args.tag), None)
+            api.create_tag(args.repo, tag=args.tag, revision=info.sha, tag_message=note or args.tag)
         print(f"PUBLISHED https://huggingface.co/{args.repo} @ {info.sha} private={info.private} "
               f"({len(remote)} files){' tag ' + args.tag if args.tag else ''}", flush=True)
 
@@ -761,6 +767,168 @@ data:
 
     if __name__ == "__main__":
         main()
+  quants.json: |
+    {
+      "table_notes": "*Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.",
+      "eval_method": "Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.",
+      "recommendations": [
+        "**clef-omni-int4**: any recent NVIDIA GPU (Ampere, Ada, Hopper, Blackwell) when you want the smallest VRAM footprint today; loads in plain transformers.",
+        "**clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).",
+        "**clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).",
+        "**clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM."
+      ],
+      "quants": [
+        {
+          "id": "bf16",
+          "repo": "Cloudflare/clef-omni",
+          "public": true,
+          "format": "BF16 (original)",
+          "size_gb": 70.8,
+          "vram_gib": 60,
+          "parity": {},
+          "bench": {
+            "index": null
+          },
+          "best_for": "Reference quality, ~70 GB VRAM"
+        },
+        {
+          "id": "nvfp4",
+          "repo": "dbirks/clef-omni-nvfp4",
+          "public": true,
+          "format": "NVFP4 W4A4 (ModelOpt)",
+          "size_gb": 22.0,
+          "vram_gib": 60,
+          "parity": {
+            "top1": 0.911,
+            "mean_tv": 0.055
+          },
+          "bench": {
+            "index": null
+          },
+          "best_for": "Blackwell, native FP4 engines",
+          "tags": [
+            "nvfp4",
+            "fp4",
+            "modelopt",
+            "qwen3_omni_moe",
+            "clef",
+            "decision-model",
+            "blackwell"
+          ],
+          "summary": "NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0. **22.0 GB instead of 70.8 GB.** Only the thinker's MoE experts (about 91% of the loaded weights) are FP4; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.",
+          "status": "experimental first pass (`v0.1`, `max` calibration). It agrees with BF16 on 91.1% of held-out decisions; the target is 98%. See the table for higher-fidelity variants.",
+          "serving": [
+            "`serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact) and, because this is a W4A4 checkpoint, also rounds every expert input to NVFP4 exactly the way ModelOpt calibrated it, so answers match the quantized model. Memory and speed are BF16-like. Native FP4 execution needs an engine with NVFP4 kernels (vLLM's ModelOpt NVFP4 MoE path on Blackwell) and a way to feed the thinker's hidden states into the Clef head, which no engine provides yet."
+          ],
+          "quantized": [
+            "| Part | Precision |",
+            "|---|---|",
+            "| Thinker MoE experts (48 layers x 128 experts, gate/up/down) | **NVFP4 W4A4**: E2M1 weights in blocks of 16 with FP8 E4M3 block scales + FP32 global scale; FP4 activations |",
+            "| Attention, router (`mlp.gate`), embeddings, `lm_head` | BF16 |",
+            "| Vision and audio towers | BF16 |",
+            "| Clef joint head (`joint_head.safetensors`) | BF16, byte-identical to the original |"
+          ],
+          "recipe": [
+            "ModelOpt `NVFP4_EXPERTS_ONLY_CFG`, `max` calibration, plus exclusions for towers, talker, `lm_head`, router and embeddings; torch 2.11.0+cu130, transformers 5.10.2 (fused MoE experts, quantized per expert by ModelOpt 0.47 and split back on export); 512 Clef-format calibration records (383K tokens), 52 min on one RTX PRO 6000."
+          ],
+          "eval_extra": [],
+          "versions": [
+            {
+              "tag": "v0.1",
+              "date": "2026-10-10",
+              "note": "First release: ModelOpt NVFP4 W4A4, experts-only, `max` calibration on 512 Clef-format records. 91.1% top-answer agreement with BF16 (mean TV 0.055). Also tagged `v0.1-max`."
+            },
+            {
+              "tag": "v0.2",
+              "date": "2026-10-10",
+              "note": "Docs only, weights unchanged: added `serve_clef.py` (PEP 723 `uv run` server that loads this checkpoint with the Clef head), the quant comparison table, and this version history."
+            }
+          ]
+        },
+        {
+          "id": "nvfp4a16",
+          "repo": "dbirks/clef-omni-nvfp4a16",
+          "public": false,
+          "format": "NVFP4 W4A16 (ModelOpt)",
+          "size_gb": null,
+          "vram_gib": 60,
+          "parity": {
+            "top1": null,
+            "mean_tv": null
+          },
+          "bench": {
+            "index": null
+          },
+          "best_for": "Blackwell / vLLM Marlin, higher fidelity than W4A4",
+          "tags": [
+            "nvfp4",
+            "w4a16",
+            "modelopt",
+            "qwen3_omni_moe",
+            "clef",
+            "decision-model"
+          ],
+          "summary": "NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0: FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
+          "status": null,
+          "serving": [
+            "`serve_clef.py` unpacks the FP4 expert weights to BF16 on load (bit-exact), so it runs anywhere transformers runs, with BF16-like memory. vLLM's ModelOpt loader runs `W4A16_NVFP4` MoE checkpoints on its Marlin kernels (memory saving, BF16-class speed), but no engine yet feeds the thinker's hidden states into the Clef head."
+          ],
+          "quantized": [
+            "| Part | Precision |",
+            "|---|---|",
+            "| Thinker MoE experts | **NVFP4 weights** (E2M1, blocks of 16, FP8 E4M3 block scales + FP32 global scale), BF16 activations |",
+            "| Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |",
+            "| Clef joint head | BF16, byte-identical to the original |"
+          ],
+          "recipe": [
+            "ModelOpt `NVFP4_EXPERTS_ONLY_CFG` with the expert input quantizers disabled (weight-only), `max` calibration straight from the weights (no calibration data needed), same exclusions as the W4A4 variant; torch 2.11.0+cu130, transformers 5.10.2, ModelOpt 0.47.0."
+          ],
+          "eval_extra": [],
+          "versions": []
+        },
+        {
+          "id": "int4",
+          "repo": "dbirks/clef-omni-int4",
+          "public": false,
+          "format": "INT4 W4A16 g128 (AutoRound)",
+          "size_gb": null,
+          "vram_gib": null,
+          "parity": {
+            "top1": null,
+            "mean_tv": null
+          },
+          "bench": {
+            "index": null
+          },
+          "best_for": "Any recent NVIDIA GPU, smallest VRAM",
+          "tags": [
+            "int4",
+            "w4a16",
+            "auto-round",
+            "qwen3_omni_moe",
+            "clef",
+            "decision-model"
+          ],
+          "summary": "INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
+          "status": null,
+          "serving": [
+            "transformers loads this checkpoint natively (AutoRound format, int4 kernels), so `serve_clef.py` and Cloudflare's `joint_schema_model.py` run it directly with a much smaller VRAM footprint than BF16. Works on non-Blackwell cards."
+          ],
+          "quantized": [
+            "| Part | Precision |",
+            "|---|---|",
+            "| Thinker MoE experts | **INT4 weights**, group size 128, symmetric (auto_round format, auto_gptq packing), BF16 activations |",
+            "| Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |",
+            "| Clef joint head | BF16, byte-identical to the original |"
+          ],
+          "recipe": [
+            "AutoRound 0.16.0 `scheme=W4A16`, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
+          ],
+          "eval_extra": [],
+          "versions": []
+        }
+      ]
+    }
   card_clef-omni-int4.md: |
     ---
     license: apache-2.0
@@ -862,7 +1030,7 @@ data:
 
     NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0. **22.0 GB instead of 70.8 GB.** Only the thinker's MoE experts (about 91% of the loaded weights) are FP4; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.
 
-    > **Status:** experimental first pass (`v0.1-max`, `max` calibration). It agrees with BF16 on 91.1% of held-out decisions; the target is 98%. See the table for higher-fidelity variants.
+    > **Status:** experimental first pass (`v0.1`, `max` calibration). It agrees with BF16 on 91.1% of held-out decisions; the target is 98%. See the table for higher-fidelity variants.
 
     ## Which Clef-Omni quant should I use?
 
@@ -921,6 +1089,15 @@ data:
 
     Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
+
+    ## Version history
+
+    Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins it). Newest last.
+
+    | Version | Date | Notes |
+    |---|---|---|
+    | `v0.1` | 2026-10-10 | First release: ModelOpt NVFP4 W4A4, experts-only, `max` calibration on 512 Clef-format records. 91.1% top-answer agreement with BF16 (mean TV 0.055). Also tagged `v0.1-max`. |
+    | `v0.2` | 2026-10-10 | Docs only, weights unchanged: added `serve_clef.py` (PEP 723 `uv run` server that loads this checkpoint with the Clef head), the quant comparison table, and this version history. |
 
     ## License
 

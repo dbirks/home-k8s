@@ -65,7 +65,13 @@ def main():
     assert not missing, f"missing on the Hub: {missing}"
     info = api.model_info(args.repo)
     if args.tag and args.tag not in {t.name for t in api.list_repo_refs(args.repo).tags}:
-        api.create_tag(args.repo, tag=args.tag, revision=info.sha, tag_message=args.tag_message or args.tag)
+        note = args.tag_message
+        if note is None:   # default: the version note from quants.json, so tags and the card's history agree
+            import json
+            for q in json.loads((HERE / "quants.json").read_text())["quants"]:
+                if q["repo"] == args.repo:
+                    note = next((v["note"] for v in q.get("versions", []) if v["tag"] == args.tag), None)
+        api.create_tag(args.repo, tag=args.tag, revision=info.sha, tag_message=note or args.tag)
     print(f"PUBLISHED https://huggingface.co/{args.repo} @ {info.sha} private={info.private} "
           f"({len(remote)} files){' tag ' + args.tag if args.tag else ''}", flush=True)
 

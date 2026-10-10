@@ -60,6 +60,10 @@ def card(q, all_q):
     body += ["## What was quantized", ""] + q["quantized"] + [""]
     body += ["## Recipe", ""] + q["recipe"] + [""]
     body += ["## Evaluation", "", DATA["eval_method"], ""] + q.get("eval_extra", []) + [""]
+    if q.get("versions"):
+        body += ["## Version history", "", "Each version is an annotated git tag on this repo (`revision=\"v0.1\"` etc. "
+                 "pins it). Newest last.", "", "| Version | Date | Notes |", "|---|---|---|"]
+        body += [f"| `{v['tag']}` | {v['date']} | {v['note']} |" for v in q["versions"]] + [""]
     body += ["## License", "", "Apache-2.0, as the base model. All credit for the model goes to Cloudflare; "
              "this repo only changes the weight precision.", ""]
     return "\n".join(fm + body)

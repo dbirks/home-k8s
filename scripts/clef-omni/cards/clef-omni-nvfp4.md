@@ -16,7 +16,7 @@ tags:
 
 NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with NVIDIA ModelOpt 0.47.0. **22.0 GB instead of 70.8 GB.** Only the thinker's MoE experts (about 91% of the loaded weights) are FP4; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.
 
-> **Status:** experimental first pass (`v0.1-max`, `max` calibration). It agrees with BF16 on 91.1% of held-out decisions; the target is 98%. See the table for higher-fidelity variants.
+> **Status:** experimental first pass (`v0.1`, `max` calibration). It agrees with BF16 on 91.1% of held-out decisions; the target is 98%. See the table for higher-fidelity variants.
 
 ## Which Clef-Omni quant should I use?
 
@@ -75,6 +75,15 @@ ModelOpt `NVFP4_EXPERTS_ONLY_CFG`, `max` calibration, plus exclusions for towers
 
 Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
+
+## Version history
+
+Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins it). Newest last.
+
+| Version | Date | Notes |
+|---|---|---|
+| `v0.1` | 2026-10-10 | First release: ModelOpt NVFP4 W4A4, experts-only, `max` calibration on 512 Clef-format records. 91.1% top-answer agreement with BF16 (mean TV 0.055). Also tagged `v0.1-max`. |
+| `v0.2` | 2026-10-10 | Docs only, weights unchanged: added `serve_clef.py` (PEP 723 `uv run` server that loads this checkpoint with the Clef head), the quant comparison table, and this version history. |
 
 ## License
 
