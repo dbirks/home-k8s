@@ -1,0 +1,54 @@
+# Decision Index run against the clef-omni-systemone server (issue #145). Parked as .yaml.hold: unhold
+# it in a GPU window, AFTER Pennyroyal is at 0 and clef-omni-systemone is at 1 with the backend you
+# want (RUN_NAME should say which: bf16-... / fakequant-...).
+#
+# Sample: the kit's own stratified sampler (round-robin over benchmarks, complete case groups,
+# deterministic seed), edition 0.2.1, the edition behind Cloudflare's Clef-Omni table. Every backend
+# runs the SAME sample file, so `score --reference` gives a paired BF16-vs-quant comparison.
+# `run` resumes from results.jsonl, so an interrupted window continues where it stopped.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: decision-index-bench-bf16-sample3000
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 43200
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: decision-index-bench }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: bench
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              cd /work/decision-index
+              DI="venv/bin/python -m decision_index"
+              SAMPLE=sample-0.2.1-n${SAMPLE_N}.jsonl.gz
+              [ -f "$SAMPLE" ] || $DI suite sample --edition 0.2.1 --n "$SAMPLE_N" --out "$SAMPLE"
+              until venv/bin/python -c "import httpx,sys; sys.exit(httpx.get('$BASE_URL/healthz').status_code != 200)" 2>/dev/null; do
+                echo "waiting for $BASE_URL/healthz"; sleep 30; done
+              venv/bin/python -c "import httpx; print(httpx.get('$BASE_URL/healthz').json())"
+              mkdir -p runs
+              $DI run --edition 0.2.1 --engine http --option base_url=$BASE_URL --option model=clef-omni \
+                --rows "$SAMPLE" --out "runs/$RUN_NAME"
+              $DI score --edition 0.2.1 --results "runs/$RUN_NAME/results.jsonl" --out "runs/$RUN_NAME"
+              venv/bin/python -c "import json; d=json.load(open('runs/$RUN_NAME/index.json')); print('INDEX', d.get('index'), 'RAW', d.get('raw_index'))"
+          env:
+            - { name: BASE_URL, value: "http://clef-omni-systemone.default.svc.cluster.local:8000" }
+            - { name: RUN_NAME, value: bf16-sample3000 }
+            - { name: SAMPLE_N, value: "3000" }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }

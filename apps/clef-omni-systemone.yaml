@@ -1,0 +1,210 @@
+# Clef-Omni /v1/systemone server (issue #145 Stage 3 baseline + Decision Index benchmarking).
+# Driven by the Decision Index kit's `http` engine (decision-index-bench Job), which POSTs
+# {model, state, questions} one request at a time, the way the board measures entrants.
+#
+# CLEF_BACKEND=bf16      Cloudflare's load_release_model + systemone UNCHANGED, so scores compare to
+#                        the Clef-Omni model card. Note: their encode_record silently truncates state
+#                        to 64K tokens, whereas the board's own rule is "no truncation".
+# CLEF_BACKEND=fakequant BF16 backbone + the Stage 2a NVFP4 quantizer state restored (simulated FP4;
+#                        accuracy only, its latency is meaningless). Needs gcc for ModelOpt's Triton kernel.
+# The same code passed a local CPU test in CLEF_BACKEND=rehearsal against the kit's HttpSystemOne client.
+#
+# replicas: 0 by default. It needs the whole card, so a GPU window = Pennyroyal at replicas: 0 FIRST
+# (46 GB host RAM, no swap: never run both). Load ~10 min off the HDD; /healthz turns 200 when ready.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clef-omni-systemone-src
+  namespace: default
+data:
+  serve_clef.py: |
+    """Clef-Omni /v1/systemone server for the Decision Index http engine (issue #145).
+
+    CLEF_BACKEND:
+      bf16       Cloudflare's load_release_model + systemone, unchanged (matches their published runs).
+      fakequant  BF16 backbone + the Stage 2a ModelOpt quantizer state restored on it (NVFP4 experts,
+                 simulated). Same HTTP path, so BF16 and quant answers are directly comparable.
+      rehearsal  tiny random backbone + head from the real config, for testing this server off-GPU.
+
+    Requests are served one at a time (one GPU, and the board measures single-request latency).
+    Capacity failures return HTTP 422 with a marker the harness counts as `unsupported`.
+    """
+    import json, os, sys, threading, time
+    from pathlib import Path
+
+    import torch
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import JSONResponse
+
+    MODEL = Path(os.environ.get("CLEF_MODEL_DIR", "/work/clef-omni"))
+    BACKEND = os.environ.get("CLEF_BACKEND", "bf16")
+    QSTATE = Path(os.environ.get("CLEF_QUANT_STATE", "/work/nvfp4-experts/results/quantizer_state.pt"))
+    DEV = "cuda" if torch.cuda.is_available() else "cpu"
+    sys.path.insert(0, str(MODEL))
+    import joint_schema_model as jsm  # noqa: E402
+
+    state = {"ready": False, "requests": 0, "unsupported": 0, "errors": 0, "busy_s": 0.0}
+    lock = threading.Lock()
+
+
+    def log(*a):
+        print(f"[{time.strftime('%FT%T')}]", *a, flush=True)
+
+
+    def load_backbone_for_quant():
+        """Mirror load_release_model, keeping the backbone (ModelOpt state was recorded on it)."""
+        from safetensors.torch import load_file
+        from transformers import AutoConfig, AutoProcessor, Qwen3OmniMoeForConditionalGeneration
+        config = AutoConfig.from_pretrained(MODEL)
+        config.enable_audio_output = False
+        if BACKEND == "rehearsal":
+            tc = config.thinker_config
+            t = tc.text_config
+            t.num_hidden_layers, t.hidden_size, t.intermediate_size, t.moe_intermediate_size = 2, 256, 128, 128
+            t.num_experts, t.num_experts_per_tok, t.num_attention_heads, t.num_key_value_heads = 8, 2, 4, 2
+            v = tc.vision_config
+            v.depth, v.hidden_size, v.num_heads, v.intermediate_size, v.out_hidden_size = 3, 64, 2, 128, 256
+            v.deepstack_visual_indexes = [0, 1, 2]
+            a = tc.audio_config
+            a.d_model, a.encoder_layers, a.encoder_attention_heads, a.encoder_ffn_dim, a.output_dim = 64, 1, 2, 128, 256
+            torch.manual_seed(0)
+            backbone = Qwen3OmniMoeForConditionalGeneration._from_config(config, dtype=torch.bfloat16).to(DEV).eval()
+            head = jsm.JointSchemaHead(hidden_size=256, width=64, routing_layers=1, layers=1, heads=2, feedforward=128)
+        else:
+            backbone = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
+                MODEL, config=config, dtype=torch.bfloat16, device_map={"": DEV}, experts_implementation="eager")
+            head = jsm.JointSchemaHead(**json.loads((MODEL / "joint_head_config.json").read_text()))
+            head.load_state_dict(load_file(MODEL / "joint_head.safetensors"), strict=True)
+        head = head.to(device=DEV, dtype=torch.bfloat16)
+        if BACKEND == "fakequant":
+            import modelopt.torch.opt as mto
+            saved = torch.load(QSTATE, map_location="cpu", weights_only=False)
+            mto.restore_from_modelopt_state(backbone, saved["modelopt_state"])
+            missing, unexpected = backbone.load_state_dict(
+                {k: v.to(DEV) for k, v in saved["quantizer_state_dict"].items()}, strict=False)
+            bad = [k for k in unexpected]
+            assert not bad, f"quantizer tensors that matched nothing: {bad[:5]}"
+            restored = sum(1 for k in saved["quantizer_state_dict"] if k not in missing)
+            log(f"restored ModelOpt state from {QSTATE}: {restored} quantizer tensors")
+        return jsm.ClefModel(backbone.thinker, head).eval(), AutoProcessor.from_pretrained(MODEL)
+
+
+    def load():
+        t0 = time.time()
+        log(f"loading backend={BACKEND} from {MODEL} on {DEV}")
+        if BACKEND == "bf16":
+            model, processor = jsm.load_release_model(MODEL, device=DEV)
+        else:
+            model, processor = load_backbone_for_quant()
+        state.update(model=model, processor=processor, ready=True, load_s=round(time.time() - t0, 1))
+        log(f"ready in {state['load_s']}s")
+
+
+    app = FastAPI()
+
+
+    @app.on_event("startup")
+    def _startup():
+        threading.Thread(target=load, daemon=True).start()
+
+
+    @app.get("/healthz")
+    def healthz():
+        body = {k: v for k, v in state.items() if k not in ("model", "processor")}
+        body["backend"] = BACKEND
+        return JSONResponse(body, status_code=200 if state["ready"] else 503)
+
+
+    @app.post("/v1/systemone")
+    async def systemone(request: Request):
+        if not state["ready"]:
+            raise HTTPException(503, "model loading")
+        body = await request.json()
+        return await __import__("anyio").to_thread.run_sync(_answer, body)
+
+
+    def _answer(body):
+        with lock:
+            t0 = time.time()
+            state["requests"] += 1
+            try:
+                return jsm.systemone(state["model"], state["processor"], body)
+            except torch.OutOfMemoryError as e:
+                state["unsupported"] += 1
+                torch.cuda.empty_cache()
+                raise HTTPException(422, f"too many tokens: CUDA out of memory ({e})".splitlines()[0][:300])
+            except ValueError as e:
+                msg = str(e)
+                if "maximum is" in msg:          # encode_record: schema alone exceeds max_length
+                    state["unsupported"] += 1
+                    raise HTTPException(422, f"maximum context length: {msg}")
+                state["errors"] += 1
+                raise HTTPException(422, msg)
+            finally:
+                state["busy_s"] = round(state["busy_s"] + time.time() - t0, 3)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clef-omni-systemone
+  namespace: default
+  labels: { app: clef-omni-systemone }
+spec:
+  replicas: 0
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: clef-omni-systemone }
+  template:
+    metadata:
+      labels: { app: clef-omni-systemone }
+    spec:
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: server
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              VENV=/work/venv
+              export PIP_CACHE_DIR=/work/.pip-cache HF_HUB_OFFLINE=1
+              if [ "$CLEF_BACKEND" = fakequant ]; then
+                command -v gcc >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev >/dev/null; }
+              fi
+              "$VENV/bin/pip" freeze | grep -E '^(torch|torchvision|transformers|accelerate|safetensors)==' > /tmp/constraints.txt
+              "$VENV/bin/python" -c 'import fastapi, uvicorn' 2>/dev/null || \
+                "$VENV/bin/pip" install -q --no-input -c /tmp/constraints.txt fastapi 'uvicorn[standard]'
+              exec "$VENV/bin/uvicorn" --app-dir /src serve_clef:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 120
+          env:
+            - { name: CLEF_BACKEND, value: bf16 }
+            - { name: PYTORCH_CUDA_ALLOC_CONF, value: "expandable_segments:True" }
+          ports:
+            - { name: http, containerPort: 8000 }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            failureThreshold: 120            # 40 min: installs + ~10 min HDD weight load
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "2", memory: 12Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: src, mountPath: /src, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: src, configMap: { name: clef-omni-systemone-src } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clef-omni-systemone
+  namespace: default
+spec:
+  selector: { app: clef-omni-systemone }
+  ports:
+    - { name: http, port: 8000, targetPort: http }
