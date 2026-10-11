@@ -276,6 +276,45 @@
       "recipe": [
         "`scheme={bits: 4, group_size: 16, data_type: nv_fp, act_bits: 16}`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
       ]
+    },
+    {
+      "id": "fp8",
+      "repo": "dbirks/clef-omni-fp8",
+      "public": false,
+      "format": "FP8 block 128x128 (W8A16 / dynamic)",
+      "size_gb": 34.5,
+      "vram_gib": null,
+      "parity": {
+        "top1": null,
+        "mean_tv": null
+      },
+      "bench": {
+        "index": null
+      },
+      "status": null,
+      "versions": [],
+      "eval_extra": [],
+      "best_for": "Highest fidelity at about half of BF16's VRAM",
+      "tags": [
+        "fp8",
+        "qwen3_omni_moe",
+        "clef",
+        "decision-model"
+      ],
+      "summary": "FP8 (E4M3, 128x128 block scales, Qwen/DeepSeek `FineGrainedFP8` layout) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`). Only the thinker's MoE experts are FP8; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.",
+      "serving": [
+        "`serve_clef.py` keeps the FP8 experts packed in VRAM (FP8 weights plus FP32 tile scales) and dequantizes each layer just in time for transformers' grouped matmul, so the head runs unchanged. transformers 5.10.2 also loads the checkpoint itself (`quant_method: fp8`, dequantized or native FP8 experts), and the format is the one vLLM and SGLang load for Qwen FP8 releases."
+      ],
+      "quantized": [
+        "| Part | Precision |",
+        "|---|---|",
+        "| Thinker MoE experts | **FP8 E4M3 weights**, one FP32 scale per 128x128 block; activations BF16 (or dynamic FP8 per 1x128 group in engines) |",
+        "| Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |",
+        "| Clef joint head | BF16, byte-identical to the original |"
+      ],
+      "recipe": [
+        "`scripts/clef-omni/quant_fp8_block.py`: converts the per-expert BF16 tensors straight from the release shards (no model load, no calibration), using transformers 5.10.2's own block-FP8 math (`Fp8Quantize`: scale = 448/amax per 128x128 tile, round-to-nearest cast), and writes `weight` (F8_E4M3) plus `weight_scale_inv` (F32). Everything else is copied bit-for-bit; talker/code2wav are dropped. CPU-only, streaming, under 1.5 GiB of host RAM."
+      ]
     }
   ],
   "cloudflare_published": {

@@ -140,6 +140,8 @@ data:
         ap.add_argument("--simulate-fp4-activations", action=argparse.BooleanOptionalAction, default=None,
                         help="NVFP4 W4A4: reproduce FP4 activation rounding (default off, see serve_clef.load)")
         ap.add_argument("--limit", type=int, default=None)
+        ap.add_argument("--simulate-fp8-activations", action="store_true",
+                        help="FP8 block checkpoints: round expert inputs to FP8 per token group (dynamic scheme)")
         ap.add_argument("--fast-moe", action=argparse.BooleanOptionalAction, default=True,
                         help="AutoRound INT4: grouped int4 MoE fast path (see serve_clef.fast_int4_moe)")
         ap.add_argument("--fakequant-rows", default=None,
@@ -157,7 +159,8 @@ data:
         t0 = time.time()
         model, processor, jsm, kind = serve_clef.load(Path(args.export), "cuda",
                                                       simulate_fp4_activations=args.simulate_fp4_activations,
-                                                      fast_moe=args.fast_moe)
+                                                      fast_moe=args.fast_moe,
+                                                      simulate_fp8_activations=args.simulate_fp8_activations)
         load_s = time.time() - t0
         clef_records.log(f"loaded {args.export} ({kind}) in {load_s:.0f}s; "
                          f"gpu {torch.cuda.memory_allocated() / 2**30:.1f} GiB")
@@ -296,6 +299,324 @@ data:
             api.create_tag(args.repo, tag=args.tag, revision=info.sha, tag_message=note or args.tag)
         print(f"PUBLISHED https://huggingface.co/{args.repo} @ {info.sha} private={info.private} "
               f"({len(remote)} files){' tag ' + args.tag if args.tag else ''}", flush=True)
+
+
+    if __name__ == "__main__":
+        main()
+  quant_fp8_block.py: |
+    """Clef-Omni FP8 block-128 W8A8-dynamic (issue #154): model-free RTN of the thinker's routed experts.
+
+    No model load, no calibration, no GPU: the release stores every expert as its own 2-D tensor
+    (`thinker.model.layers.N.mlp.experts.E.{gate,up,down}_proj.weight`), so each is rounded to
+    float8_e4m3fn with one fp32 `weight_scale_inv` per 128x128 tile, streaming shard by shard. The math is
+    transformers 5.10.2 `integrations/finegrained_fp8.py::Fp8Quantize._quantize_one` op for op (scale =
+    448/amax, clamp, cast; stored inverse = 1/scale), and the layout is Qwen's own `-FP8` releases
+    (`quant_method fp8`, `fmt e4m3`, `activation_scheme dynamic`, `weight_block_size [128, 128]`), which
+    transformers (FineGrainedFP8), vLLM and SGLang load natively.
+
+    Experts-only like the rest of the family: attention, router (mlp.gate), embeddings, lm_head, vision and
+    audio towers and the Clef head stay BF16 byte-for-byte (listed in modules_to_not_convert). talker.* and
+    code2wav.* are dropped.
+
+    Host RAM: about one tensor at a time. Shard layouts are planned from the source headers, so each output
+    shard's header is written first and tensors are streamed into it with plain reads/writes (no mmap, no
+    whole-shard buffer as safetensors.save_file would build). Peak RSS is the interpreter + the largest
+    single tensor (the BF16 embedding / lm_head, ~0.6 GB each) + an expert's fp32 temporaries.
+
+        CLEF_REHEARSAL=1 CLEF_MODEL_DIR=/tmp/tiny-bf16 python quant_fp8_block.py   # same code, tiny checkpoint
+        python quant_fp8_block.py                                                 # real run -> /work/fp8/export
+    """
+    import hashlib
+    import json
+    import math
+    import os
+    import re
+    import shutil
+    import sys
+    import time
+    from pathlib import Path
+
+    import torch
+
+    REHEARSAL = os.environ.get("CLEF_REHEARSAL") == "1"
+    MODEL = Path(os.environ.get("CLEF_MODEL_DIR", "/work/clef-omni"))
+    ROOT = Path(os.environ.get("CLEF_ROOT", "/work/fp8-rehearsal" if REHEARSAL else "/work/fp8"))
+    EXPORT, RES = ROOT / "export", ROOT / "results"
+    SHARD_BYTES = int(float(os.environ.get("CLEF_SHARD_BYTES", 4 << 20 if REHEARSAL else 5e9)))   # tiny: force >1 shard
+    DEVICE = os.environ.get("FP8_DEVICE", "cpu")      # "cuda" only speeds up the rounding
+    BLOCK = (128, 128)
+    FP8 = torch.float8_e4m3fn
+    FP8_MAX = torch.finfo(FP8).max                    # 448
+    EXPERT = re.compile(r"^thinker\.model\.layers\.\d+\.mlp\.experts\.\d+\.(gate|up|down)_proj\.weight$")
+    DROP = ("talker.", "code2wav.")
+    DTYPES = {"BF16": torch.bfloat16, "F16": torch.float16, "F32": torch.float32, "F64": torch.float64, "F8_E4M3": FP8,
+              "I64": torch.int64, "I32": torch.int32, "I16": torch.int16, "I8": torch.int8, "U8": torch.uint8, "BOOL": torch.bool}
+    CODES = {v: k for k, v in DTYPES.items()}
+
+
+    def log(*a):
+        print(f"[{time.strftime('%FT%T')}]", *a, flush=True)
+
+
+    def peak_rss_gib():
+        for line in open("/proc/self/status"):
+            if line.startswith("VmHWM"):
+                return round(int(line.split()[1]) / 2**20, 2)
+
+
+    def read_header(path):
+        """safetensors header -> (data start offset, {key: {dtype, shape, data_offsets}})."""
+        with open(path, "rb") as f:
+            n = int.from_bytes(f.read(8), "little")
+            h = json.loads(f.read(n))
+        h.pop("__metadata__", None)
+        return 8 + n, h
+
+
+    def read_tensor(f, start, meta):
+        a, b = meta["data_offsets"]
+        f.seek(start + a)
+        buf = bytearray(b - a)
+        f.readinto(buf)
+        return torch.frombuffer(buf, dtype=torch.uint8).view(DTYPES[meta["dtype"]]).reshape(meta["shape"])
+
+
+    def write_shard(path, entries, produce):
+        """entries: [(key, dtype code, shape)] in file order; produce() yields the tensors in that order."""
+        header, off = {"__metadata__": {"format": "pt"}}, 0
+        for k, dt, shape in entries:
+            n = math.prod(shape) * torch.empty((), dtype=DTYPES[dt]).element_size()
+            header[k] = {"dtype": dt, "shape": list(shape), "data_offsets": [off, off + n]}
+            off += n
+        hb = json.dumps(header, separators=(",", ":")).encode()
+        hb += b" " * (-len(hb) % 8)
+        with open(path, "wb") as f:
+            f.write(len(hb).to_bytes(8, "little"))
+            f.write(hb)
+            for (k, dt, shape), t in zip(entries, produce(), strict=True):
+                if CODES[t.dtype] != dt or list(t.shape) != list(shape):
+                    raise RuntimeError(f"{k}: produced {t.dtype} {tuple(t.shape)}, planned {dt} {shape}")
+                f.write(memoryview(t.contiguous().reshape(-1).view(torch.uint8).numpy()))
+            if f.tell() != 8 + len(hb) + off:
+                raise RuntimeError(f"{path}: wrote {f.tell()} bytes, planned {8 + len(hb) + off}")
+
+
+    def quantize(w):
+        """Fp8Quantize._quantize_one (transformers 5.10.2), block 128x128, float scales. Returns (fp8, fp32 inv)."""
+        rows, cols = w.shape
+        if rows % BLOCK[0] or cols % BLOCK[1]:
+            raise ValueError(f"expert weight {tuple(w.shape)} is not a multiple of {BLOCK}")
+        t = w.to(DEVICE, torch.float32).reshape(rows // BLOCK[0], BLOCK[0], cols // BLOCK[1], BLOCK[1])
+        amax = t.abs().amax(dim=(-3, -1))
+        scales = torch.where(amax > 0, FP8_MAX / torch.where(amax > 0, amax, torch.ones_like(amax)), torch.ones_like(amax))
+        q = torch.clamp(t * scales.unsqueeze(-1).unsqueeze(-3), min=-FP8_MAX, max=FP8_MAX).to(FP8).reshape(rows, cols)
+        return q.cpu(), (1.0 / scales).to(torch.float32).cpu()
+
+
+    def dequantize(q, inv):
+        """Fp8Dequantize._dequantize_one: fp32 product per tile."""
+        r, c = inv.shape
+        return (q.float().reshape(r, q.shape[0] // r, c, q.shape[1] // c) * inv[:, None, :, None]).reshape(q.shape)
+
+
+    def transformers_crosscheck(samples):
+        """Byte-compare our rounding with transformers' own Fp8Quantize when it is importable (the /work venv)."""
+        try:
+            from types import SimpleNamespace
+            from transformers.integrations.finegrained_fp8 import Fp8Quantize
+        except ImportError:
+            return "skipped (transformers not importable)"
+        op = Fp8Quantize(SimpleNamespace(quantization_config=SimpleNamespace(weight_block_size=list(BLOCK), scale_fmt="float")))
+        for k, w in samples:
+            ref = op.convert({k: w})
+            q, inv = quantize(w)
+            sk = k[:-len("weight")] + "weight_scale_inv"
+            if not (torch.equal(ref[k].view(torch.uint8), q.view(torch.uint8)) and torch.equal(ref[sk], inv)):
+                return f"MISMATCH on {k}"
+        return f"byte-identical on {len(samples)} tensors"
+
+
+    def source_shards():
+        idx = MODEL / "model.safetensors.index.json"
+        return sorted(set(json.loads(idx.read_text())["weight_map"].values())) if idx.exists() else ["model.safetensors"]
+
+
+    def plan(shards):
+        """Source tensors in source order (talker/code2wav dropped), from the headers only: (shard, key, meta,
+        output entries [(key, dtype code, shape)], output bytes)."""
+        items = []
+        for shard in shards:
+            _, h = read_header(MODEL / shard)
+            for k, m in sorted(h.items(), key=lambda kv: kv[1]["data_offsets"][0]):
+                if k.startswith(DROP):
+                    continue
+                if EXPERT.match(k):
+                    r, c = m["shape"]
+                    if r % BLOCK[0] or c % BLOCK[1]:
+                        raise ValueError(f"{k}: {m['shape']} is not a multiple of {BLOCK}")
+                    outs = [(k, "F8_E4M3", [r, c]), (k[:-len("weight")] + "weight_scale_inv", "F32", [r // BLOCK[0], c // BLOCK[1]])]
+                    items.append((shard, k, m, outs, r * c + 4 * (r // BLOCK[0]) * (c // BLOCK[1])))
+                else:
+                    a, b = m["data_offsets"]
+                    items.append((shard, k, m, [(k, m["dtype"], m["shape"])], b - a))
+        return items
+
+
+    def not_converted(items):
+        """Every non-expert module with a >=2-D weight (exact names, Qwen-FP8 style, which vLLM matches exactly)
+        plus whole-subtree prefixes (transformers' should_convert_module: re.match prefix or endswith)."""
+        mods = {k[:-len(".weight")] for _, k, m, _, _ in items
+                if k.endswith(".weight") and not EXPERT.match(k) and len(m["shape"]) >= 2}
+        return ["lm_head", "thinker.lm_head", "thinker.visual", "thinker.audio_tower", "thinker.model.embed_tokens",
+                "talker", "code2wav"] + sorted(mods)
+
+
+    def should_convert(name, patterns):
+        """transformers 5.10.2 quantizers_utils.should_convert_module, verbatim semantics."""
+        return not any(re.match(f"{p}\\.", name) or re.match(f"{p}", name) or name.endswith(p) for p in patterns)
+
+
+    def write_export(items):
+        total = sum(it[4] for it in items)
+        groups, cur, size = [], [], 0
+        for it in items:
+            if cur and size + it[4] > SHARD_BYTES:
+                groups.append(cur); cur, size = [], 0
+            cur.append(it); size += it[4]
+        groups.append(cur)
+        names = [f"model-{i + 1:05d}-of-{len(groups):05d}.safetensors" for i in range(len(groups))]
+        log(f"{len(items)} tensors, {total / 1e9:.2f} GB -> {len(groups)} shards of <= {SHARD_BYTES / 1e9:.3g} GB")
+        weight_map, samples, stats = {}, [], {"worst": 0.0, "n": 0}
+        starts, files = {}, {}
+        t0 = time.time()
+
+        def produce(group):
+            for shard, k, m, _, _ in group:
+                if shard not in files:
+                    for f in files.values():
+                        f.close()
+                    files.clear()
+                    files[shard], starts[shard] = open(MODEL / shard, "rb"), read_header(MODEL / shard)[0]
+                w = read_tensor(files[shard], starts[shard], m)
+                if not EXPERT.match(k):
+                    yield w
+                    continue
+                q, inv = quantize(w)
+                n = stats["n"]
+                if n < 3:
+                    samples.append((k, w.clone()))
+                if n < 8 or n % 997 == 0:   # spot-check the round trip against the E4M3 error bound
+                    err = (dequantize(q, inv) - w.float()).abs()
+                    ulp = inv.repeat_interleave(BLOCK[0], 0).repeat_interleave(BLOCK[1], 1) * 2.0 ** -10   # half subnormal step
+                    stats["worst"] = max(stats["worst"], float((err / torch.maximum(w.float().abs() / 16, ulp)).max()))
+                stats["n"] += 1
+                yield q
+                yield inv
+
+        for name, group in zip(names, groups, strict=True):
+            entries = [e for it in group for e in it[3]]
+            write_shard(EXPORT / name, entries, lambda g=group: produce(g))
+            weight_map.update({k: name for k, _, _ in entries})
+            log(f"wrote {name} ({len(weight_map)} tensors so far, {time.time() - t0:.0f}s, peak rss {peak_rss_gib()} GiB)")
+        for f in files.values():
+            f.close()
+        worst = stats["worst"]
+        (EXPORT / "model.safetensors.index.json").write_text(json.dumps(
+            {"metadata": {"total_size": total}, "weight_map": dict(sorted(weight_map.items()))}, indent=2))
+        return samples, worst
+
+
+    def sha256(p):
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for b in iter(lambda: f.read(1 << 24), b""):
+                h.update(b)
+        return h.hexdigest()
+
+
+    def scan(items, modules_to_not_convert):
+        cfg = json.loads((EXPORT / "config.json").read_text())
+        t = cfg["thinker_config"]["text_config"]
+        want = t["num_hidden_layers"] * t["num_experts"] * 3
+        s = {"fp8_expert_weights": 0, "expected_fp8_expert_weights": want, "scales": 0, "bad_scales": 0,
+             "bad_scale_shapes": 0, "fp8_nan_bytes": 0, "expert_bf16_weights": 0, "talker_tensors": 0,
+             "non_expert_mismatch": 0, "dtypes": {}, "files": {}}
+        src_other = {k: m for _, k, m, _, _ in items if not EXPERT.match(k)}
+        seen_other, index = {}, json.loads((EXPORT / "model.safetensors.index.json").read_text())["weight_map"]
+        for path in sorted(EXPORT.glob("model-*.safetensors")):
+            s["files"][path.name] = path.stat().st_size
+            start, h = read_header(path)
+            with open(path, "rb") as f:
+                for k, m in h.items():
+                    dt = m["dtype"]
+                    s["dtypes"][dt] = s["dtypes"].get(dt, 0) + 1
+                    s["index_mismatch"] = s.get("index_mismatch", 0) + int(index.get(k) != path.name)
+                    if k.startswith(DROP):
+                        s["talker_tensors"] += 1
+                    elif EXPERT.match(k):
+                        if dt != "F8_E4M3":
+                            s["expert_bf16_weights"] += 1
+                            continue
+                        s["fp8_expert_weights"] += 1
+                        q = read_tensor(f, start, m).view(torch.uint8)
+                        s["fp8_nan_bytes"] += int(((q & 0x7F) == 0x7F).sum())
+                    elif k.endswith(".weight_scale_inv"):
+                        s["scales"] += 1
+                        inv = read_tensor(f, start, m)
+                        w = h[k[:-len("_scale_inv")]]["shape"]
+                        s["bad_scales"] += int((~torch.isfinite(inv) | (inv <= 0)).sum())
+                        s["bad_scale_shapes"] += int(dt != "F32" or m["shape"] != [w[0] // BLOCK[0], w[1] // BLOCK[1]])
+                    else:
+                        seen_other[k] = (dt, m["shape"])
+        s["non_expert_mismatch"] = len(set(src_other) ^ set(seen_other)) + sum(
+            seen_other[k] != (m["dtype"], m["shape"]) for k, m in src_other.items() if k in seen_other)
+        s["index_mismatch"] = s.get("index_mismatch", 0) + abs(len(index) - sum(s["dtypes"].values()))
+        s["non_expert_tensors"] = len(seen_other)
+        experts = {k.rsplit(".", 3)[0] for _, k, _, _, _ in items if EXPERT.match(k)}
+        others = set(modules_to_not_convert)   # exact names; re-checked through the pattern semantics
+        s["experts_not_converted"] = sum(not should_convert(m, modules_to_not_convert) for m in experts)
+        s["other_modules_converted"] = sum(should_convert(m, modules_to_not_convert) for m in others)
+        s["head_sha256_match"] = sha256(EXPORT / "joint_head.safetensors") == sha256(MODEL / "joint_head.safetensors")
+        s["export_bytes"] = sum(p.stat().st_size for p in EXPORT.iterdir() if p.is_file())
+        return s
+
+
+    def main():
+        RES.mkdir(parents=True, exist_ok=True)
+        if EXPORT.exists():
+            shutil.rmtree(EXPORT)
+        EXPORT.mkdir(parents=True)
+        torch.set_grad_enabled(False)
+        t0 = time.time()
+        items = plan(source_shards())
+        samples, worst = write_export(items)
+        log(f"quantized in {time.time() - t0:.0f}s; peak rss {peak_rss_gib()} GiB; "
+            f"round-trip error / bound (max over checked tensors) = {worst:.3f}")
+        crosscheck = transformers_crosscheck(samples)
+        log("transformers Fp8Quantize cross-check:", crosscheck)
+
+        for p in MODEL.iterdir():   # Clef head, loader, processor/tokenizer, license; never the BF16 weights
+            if p.is_file() and not p.name.startswith((".", "model")) and p.name != "config.json":
+                shutil.copy2(p, EXPORT / p.name)
+        cfg = json.loads((MODEL / "config.json").read_text())
+        cfg["enable_audio_output"] = False   # talker / code2wav are not in the export
+        modules = not_converted(items)
+        cfg["quantization_config"] = {"quant_method": "fp8", "fmt": "e4m3", "activation_scheme": "dynamic",
+                                      "weight_block_size": list(BLOCK), "modules_to_not_convert": modules}
+        (EXPORT / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
+
+        s = scan(items, modules)
+        s.update(round_trip_ratio=round(worst, 4), transformers_crosscheck=crosscheck, peak_rss_gib=peak_rss_gib(),
+                 seconds=round(time.time() - t0, 1))
+        json.dump(s, open(RES / "artifact_scan.json", "w"), indent=1)
+        log("ARTIFACT SCAN:", json.dumps({k: v for k, v in s.items() if k != "files"}))
+        ok = (s["fp8_expert_weights"] == s["expected_fp8_expert_weights"] == s["scales"] and s["bad_scales"] == 0
+              and s["bad_scale_shapes"] == 0 and s["fp8_nan_bytes"] == 0 and s["expert_bf16_weights"] == 0
+              and s["talker_tensors"] == 0 and s["non_expert_mismatch"] == 0 and s["experts_not_converted"] == 0
+              and s["other_modules_converted"] == 0 and s["index_mismatch"] == 0 and s["head_sha256_match"] and worst <= 1.001
+              and not crosscheck.startswith("MISMATCH"))
+        log("FP8 ARTIFACT", "PASS" if ok else "FAIL")
+        sys.exit(0 if ok else 2)
 
 
     if __name__ == "__main__":
@@ -533,6 +854,10 @@ data:
         them (per-16 block scales in FP8 E4M3 under the exported per-tensor input scale), reproducing the
         quantized model's answers; it is slow, so it is off by default (and it uses the up-front dequant).
         Native FP4 execution needs an engine such as vLLM, plus a hidden-state path into the head.
+      * FP8 block (quant_method fp8, weight_block_size [128, 128], Qwen/DeepSeek layout from
+        quant_fp8_block.py): experts stay FP8 + fp32 per-tile scales in VRAM (~32 GiB for Clef) and are
+        dequantized per layer like NVFP4 (W8A16); --no-packed-fp8 dequantizes on load instead.
+        --simulate-fp8-activations adds the dynamic 1x128 per-token-group FP8 rounding of expert inputs (W8A8).
     """
     import argparse
     import json
@@ -566,6 +891,11 @@ data:
             return f"modelopt:{algo}"
         qc = json.loads((path / "config.json").read_text()).get("quantization_config") or {}
         method = str(qc.get("quant_method", "")).replace("_", "-")
+        if method == "fp8":
+            block = qc.get("weight_block_size")
+            if not block or len(block) != 2 or qc.get("fmt", "e4m3") != "e4m3":
+                raise SystemExit(f"unsupported fp8 checkpoint (want e4m3 with weight_block_size): {qc}")
+            return "fp8-block"
         if method == "auto-round":
             if "nv_fp" in str(qc.get("data_type", "")):
                 if qc.get("bits") != 4 or qc.get("group_size") != 16:
@@ -601,6 +931,35 @@ data:
         vals = unpack_e2m1(packed) * recip(global_scale.float())
         vals = vals.view(*vals.shape[:-1], -1, block) * scale.float().unsqueeze(-1)
         return vals.reshape(*packed.shape[:-1], -1).to(torch.bfloat16)
+
+
+    def dequant_fp8_block(w, scale_inv):
+        """FP8 block checkpoints: e4m3 times the fp32 per-tile weight_scale_inv, tile size from the scale grid.
+        Same math as transformers' Fp8Dequantize._dequantize_one (fp32 product, then BF16). Leading dims allowed."""
+        *lead, rows, cols = w.shape
+        sr, sc = scale_inv.shape[-2:]
+        if rows % sr or cols % sc:
+            raise RuntimeError(f"fp8 weight {tuple(w.shape)} does not tile by scale grid {tuple(scale_inv.shape)}")
+        q = w.float().reshape(*lead, sr, rows // sr, sc, cols // sc)
+        return (q * scale_inv.float()[..., :, None, :, None]).reshape(w.shape).to(torch.bfloat16)
+
+
+    def fp8_act_quant(x, group=128):
+        """Dynamic per-token-group (1 x 128) FP8 E4M3 activation rounding, as the W8A8 block-FP8 kernels do
+        (scale = group amax / 448, vLLM per_token_group_quant_fp8 / DeepSeek act_quant); returns BF16."""
+        shape, dtype = x.shape, x.dtype
+        xf = x.float().reshape(-1, shape[-1] // group, group)
+        scale = xf.abs().amax(-1, keepdim=True).clamp(min=1e-10) / 448.0
+        return ((xf / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).float() * scale).reshape(shape).to(dtype)
+
+
+    def round_fp8_expert_inputs(experts):
+        """Round both expert GEMM inputs (permuted hidden states, gated intermediate) to FP8 per 1x128 token group.
+        Dynamic scales are per row, so rounding before the permutation equals rounding after it; works on the
+        packed modules and on transformers' grouped_mm experts (both call self._apply_gate)."""
+        inner, gate = experts.forward, experts._apply_gate
+        experts._apply_gate = lambda gate_up: fp8_act_quant(gate(gate_up))
+        experts.forward = lambda h, top_k_index, top_k_weights: inner(fp8_act_quant(h), top_k_index, top_k_weights)
 
 
     def round_e2m1(a):
@@ -708,9 +1067,57 @@ data:
             return grouped_mm_experts_forward(view, hidden_states, top_k_index, top_k_weights)
 
 
-    def packed_expert_layers(path, shards):
-        """Expert prefixes whose every gate/up/down weight is packed FP4 (ModelOpt uint8 .weight or AutoRound
-        .weight_packed), read from the safetensors headers only. Layers with any BF16 expert stay unpacked."""
+    class PackedFP8Experts(torch.nn.Module):
+        """All experts of one MoE layer kept as FP8 E4M3 in VRAM: gate|up and down as [E, out, in] float8 plus
+        [E, out/128, in/128] fp32 weight_scale_inv (gate and up tiles concatenated by row). forward dequantizes
+        the layer into transient BF16 weights (bit-identical to the up-front dequant) and runs transformers'
+        grouped_mm experts forward, like PackedNVFP4Experts."""
+
+        def __init__(self, experts, chunk_bytes=256 << 20):
+            super().__init__()
+            self.num_experts, self.act_fn = experts.num_experts, experts.act_fn
+            self.shapes = {"gate_up": (2 * experts.intermediate_dim, experts.hidden_dim),
+                           "down": (experts.hidden_dim, experts.intermediate_dim)}
+            self.chunk_bytes = chunk_bytes   # bounds the dequant transient (fp32 values: 4 B per weight)
+
+        def set_weights(self, name, parts):
+            """parts: per expert, the (fp8 weight, fp32 scale_inv) of each projection, concatenated by row."""
+            rows, cols = self.shapes[name]
+            w = torch.stack([torch.cat([q for q, _ in ps]) for ps in parts])
+            scale = torch.stack([torch.cat([s for _, s in ps]) for ps in parts]).float()
+            if (tuple(w.shape) != (self.num_experts, rows, cols) or w.dtype != torch.float8_e4m3fn
+                    or rows % scale.shape[1] or cols % scale.shape[2]
+                    or any(p[0].shape[0] * scale.shape[1] != rows * p[1].shape[0] for p in parts[0])):
+                raise RuntimeError(f"unexpected FP8 {name}: {tuple(w.shape)} {w.dtype}, scales {tuple(scale.shape)}; "
+                                   f"want E={self.num_experts} [{rows}, {cols}] float8_e4m3fn")
+            self.register_buffer(f"{name}_weight", w)
+            self.register_buffer(f"{name}_scale", scale)
+
+        def weight(self, name):
+            w, scale = getattr(self, f"{name}_weight"), getattr(self, f"{name}_scale")
+            out = torch.empty(w.shape, device=w.device, dtype=torch.bfloat16)
+            step = max(1, self.chunk_bytes // (4 * w[0].numel()))
+            for e in range(0, self.num_experts, step):
+                out[e:e + step] = dequant_fp8_block(w[e:e + step], scale[e:e + step])
+            return out
+
+        def _apply_gate(self, gate_up):
+            gate, up = gate_up.chunk(2, dim=-1)
+            return self.act_fn(gate) * up
+
+        def forward(self, hidden_states, top_k_index, top_k_weights):
+            from types import SimpleNamespace
+            from transformers.integrations.moe import grouped_mm_experts_forward
+            view = SimpleNamespace(num_experts=self.num_experts, has_gate=True, has_bias=False, is_transposed=False,
+                                   gate_up_proj=self.weight("gate_up"), down_proj=self.weight("down"),
+                                   _apply_gate=self._apply_gate)
+            return grouped_mm_experts_forward(view, hidden_states, top_k_index, top_k_weights)
+
+
+    def packed_expert_layers(path, shards, fp8=False):
+        """Expert prefixes whose every gate/up/down weight is quantized (FP4: ModelOpt uint8 .weight or AutoRound
+        .weight_packed; fp8: float8 .weight), read from the safetensors headers only. Layers with any BF16
+        expert stay unpacked."""
         from safetensors import safe_open
         packed, plain = set(), set()
         for shard in shards:
@@ -719,13 +1126,16 @@ data:
                     base, attr = k.rsplit(".", 1)
                     if ".mlp.experts." in k and attr in ("weight", "weight_packed") and base.rsplit(".", 1)[-1] in ("gate_proj", "up_proj", "down_proj"):
                         prefix = base.rsplit(".", 2)[0]
-                        is_fp4 = attr == "weight_packed" or st.get_slice(k).get_dtype() == "U8"
-                        (packed if is_fp4 else plain).add(prefix)
+                        dt = st.get_slice(k).get_dtype()
+                        is_q = dt == "F8_E4M3" if fp8 else (attr == "weight_packed" or dt == "U8")
+                        (packed if is_q else plain).add(prefix)
         return packed - plain
 
 
-    def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
-        """ModelOpt or AutoRound NVFP4: build the BF16 backbone directly on the GPU, then fill it shard by shard
+    def load_nvfp4(path, device, simulate_activations=False, packed_experts=True, fp8=False):
+        """ModelOpt or AutoRound NVFP4, or (fp8=True) FP8 block checkpoints, whose experts follow the same
+        plan with PackedFP8Experts and .weight/.weight_scale_inv (FP8 activations are simulated by the caller).
+        Build the BF16 backbone directly on the GPU, then fill it shard by shard
         (host RAM stays small). The two formats differ only in tensor names and global-scale direction: ModelOpt
         .weight/.weight_scale_2/.input_scale (multipliers), AutoRound .weight_packed/.weight_global_scale/
         .input_global_scale (divisors). packed_experts (default, ignored when simulating activations): the FP4
@@ -748,7 +1158,7 @@ data:
         index = json.loads((path / "model.safetensors.index.json").read_text())["weight_map"] \
             if (path / "model.safetensors.index.json").exists() else None
         shards = sorted(set(index.values())) if index else ["model.safetensors"]
-        packable = packed_expert_layers(path, shards) if packed_experts and not simulate_activations else set()
+        packable = packed_expert_layers(path, shards, fp8) if packed_experts and not simulate_activations else set()
         experts_cls, experts_init = mq.Qwen3OmniMoeThinkerTextExperts, mq.Qwen3OmniMoeThinkerTextExperts.__init__
         if packable:   # experts' 3-D BF16 params go to 'meta': no 60 GB transient; materialized below if not packed
             def meta_init(self, *a, **k):
@@ -765,8 +1175,8 @@ data:
         for name, block in list(model.named_modules()):
             if isinstance(getattr(block, "experts", None), experts_cls) and block.experts.gate_up_proj.is_meta:
                 if f"{name}.experts" in packable:
-                    block.experts = packed_mods[f"{name}.experts"] = PackedNVFP4Experts(
-                        block.experts, divisor=None)   # format (multiplier vs divisor) set from the tensors below
+                    block.experts = packed_mods[f"{name}.experts"] = PackedFP8Experts(block.experts) if fp8 else \
+                        PackedNVFP4Experts(block.experts, divisor=None)   # NVFP4 multiplier vs divisor: from the tensors
                 else:
                     block.experts.to_empty(device=device)
         params = dict(model.state_dict())
@@ -779,6 +1189,9 @@ data:
                     if ".mlp.experts." in k and attr in ("weight", "weight_packed") and base.rsplit(".", 1)[-1] in ("gate_proj", "up_proj", "down_proj"):
                         w = st.get_tensor(k)
                         prefix, e, proj = base.rsplit(".", 2)          # ...mlp.experts, E, gate_proj
+                        if prefix in packed_mods and fp8:    # keep FP8: (e4m3 weight, fp32 tile scale_inv)
+                            experts.setdefault(prefix, {})[(int(e), proj)] = (w, st.get_tensor(base + ".weight_scale_inv"))
+                            continue
                         if prefix in packed_mods:            # keep packed: (codes, e4m3 block scale, global scale)
                             ar = attr == "weight_packed"
                             mod = packed_mods[prefix]
@@ -789,7 +1202,9 @@ data:
                                 w, st.get_tensor(base + ".weight_scale"),
                                 st.get_tensor(base + (".weight_global_scale" if ar else ".weight_scale_2")))
                             continue
-                        if attr == "weight_packed":
+                        if w.dtype == torch.float8_e4m3fn:
+                            w = dequant_fp8_block(w, st.get_tensor(base + ".weight_scale_inv"))
+                        elif attr == "weight_packed":
                             w = dequant_nvfp4_ar(w, st.get_tensor(base + ".weight_scale"), st.get_tensor(base + ".weight_global_scale"))
                         elif w.dtype == torch.uint8:
                             w = dequant_nvfp4(w, st.get_tensor(base + ".weight_scale"), st.get_tensor(base + ".weight_scale_2"))
@@ -801,10 +1216,14 @@ data:
                         got = in_scales.setdefault(prefix, {}).setdefault((int(e), "down" if proj == "down_proj" else "gate_up"), (fq, sc))
                         if not torch.equal(got[1], sc):   # the fused gate_up_proj can take only one
                             raise RuntimeError(f"{base}: gate_proj and up_proj input scales differ")
-                    elif attr in ("weight_scale", "weight_scale_2", "input_scale", "weight_global_scale", "input_global_scale"):
+                    elif attr in ("weight_scale", "weight_scale_2", "input_scale", "weight_global_scale", "input_global_scale",
+                                  "weight_scale_inv"):
                         continue
                     elif k in params:
-                        params[k].copy_(st.get_tensor(k))
+                        w = st.get_tensor(k)
+                        if w.dtype == torch.float8_e4m3fn:   # a non-expert FP8 linear (e.g. Qwen-style attention): to BF16
+                            w = dequant_fp8_block(w, st.get_tensor(base + ".weight_scale_inv"))
+                        params[k].copy_(w)
                         filled.add(k)
                     else:
                         raise RuntimeError(f"checkpoint tensor {k} has no home in the model")
@@ -838,7 +1257,7 @@ data:
                                f"{len(experts)} expert layers incomplete")
         if packed_mods:
             nbytes = sum(b.numel() * b.element_size() for m in packed_mods.values() for b in m.buffers())
-            log(f"packed NVFP4 experts: {len(packed_mods)} layers (weights {nbytes / 2**30:.2f} GiB)")
+            log(f"packed {'FP8' if fp8 else 'NVFP4'} experts: {len(packed_mods)} layers (weights {nbytes / 2**30:.2f} GiB)")
         if simulate_activations:
             if not in_scales:
                 raise RuntimeError("no expert input scale tensors: this checkpoint has no FP4 activations to simulate")
@@ -945,11 +1364,14 @@ data:
         return done
 
 
-    def load(path, device, simulate_fp4_activations=None, fast_moe=True, packed_nvfp4=True):
+    def load(path, device, simulate_fp4_activations=None, fast_moe=True, packed_nvfp4=True, packed_fp8=True,
+             simulate_fp8_activations=False):
         """simulate_fp4_activations: off unless asked. On W4A4 checkpoints it reproduces the quantized model's
         answers exactly (for benchmarking), at a large speed cost (eager per-expert path).
         fast_moe: AutoRound INT4 g128 checkpoints run experts as dequant + grouped_mm (see fast_int4_moe).
-        packed_nvfp4: NVFP4 checkpoints keep experts packed, dequantized per layer in forward (PackedNVFP4Experts)."""
+        packed_nvfp4: NVFP4 checkpoints keep experts packed, dequantized per layer in forward (PackedNVFP4Experts).
+        packed_fp8 / simulate_fp8_activations: the same for FP8 block checkpoints (PackedFP8Experts), plus
+        optional dynamic FP8 rounding of expert inputs (cheap: no eager path needed)."""
         sys.path.insert(0, str(path))
         import joint_schema_model as jsm
         kind = kind_of(path)
@@ -964,6 +1386,16 @@ data:
             backbone = load_nvfp4(path, device, simulate_fp4_activations, packed_nvfp4)
             kind += "+fp4-activations" if simulate_fp4_activations else ""
             kind += "+packed-experts" if any(isinstance(m, PackedNVFP4Experts) for m in backbone.modules()) else ""
+        elif kind == "fp8-block":
+            backbone = load_nvfp4(path, device, False, packed_fp8, fp8=True)
+            if simulate_fp8_activations:
+                from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as mq
+                layers = [m for m in backbone.thinker.modules() if isinstance(m, (PackedFP8Experts, mq.Qwen3OmniMoeThinkerTextExperts))]
+                for m in layers:
+                    round_fp8_expert_inputs(m)
+                log(f"simulating dynamic FP8 activations in {len(layers)} expert layers")
+                kind += "+fp8-activations"
+            kind += "+packed-experts" if any(isinstance(m, PackedFP8Experts) for m in backbone.modules()) else ""
         else:
             config = AutoConfig.from_pretrained(path)
             config.enable_audio_output = False
@@ -1007,12 +1439,19 @@ data:
         ap.add_argument("--no-packed-nvfp4", dest="packed_nvfp4", action="store_false",
                         help="NVFP4: dequantize every expert to BF16 on load (~60 GB on Clef) instead of keeping them "
                              "packed (~22 GB) and dequantizing one layer at a time in forward")
+        ap.add_argument("--no-packed-fp8", dest="packed_fp8", action="store_false",
+                        help="FP8 block: dequantize every expert to BF16 on load (~60 GB on Clef) instead of keeping "
+                             "them FP8 (~32 GB) and dequantizing one layer at a time in forward")
+        ap.add_argument("--simulate-fp8-activations", action=argparse.BooleanOptionalAction, default=False,
+                        help="FP8 block: also round expert inputs to FP8 per 1x128 token group (W8A8-dynamic, as native "
+                             "FP8 kernels run it). Default: FP8 weights, BF16 activations")
         args = ap.parse_args()
 
         path = resolve(args.model, args.revision)
         if args.demo or args.request:
             t0 = time.time()
-            model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe, args.packed_nvfp4)
+            model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe,
+                                               args.packed_nvfp4, args.packed_fp8, args.simulate_fp8_activations)
             log(f"ready in {time.time() - t0:.0f}s")
             req = DEMO if args.demo else json.loads(Path(args.request).read_text())
             print(json.dumps(jsm.systemone(model, processor, req), indent=2))
@@ -1026,7 +1465,8 @@ data:
 
         def _load():
             t0 = time.time()
-            model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe, args.packed_nvfp4)
+            model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe,
+                                               args.packed_nvfp4, args.packed_fp8, args.simulate_fp8_activations)
             state.update(model=model, processor=processor, jsm=jsm, kind=kind, ready=True, load_s=round(time.time() - t0, 1))
             log(f"ready in {state['load_s']}s")
 
@@ -1337,6 +1777,45 @@ data:
           "recipe": [
             "`scheme={bits: 4, group_size: 16, data_type: nv_fp, act_bits: 16}`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
           ]
+        },
+        {
+          "id": "fp8",
+          "repo": "dbirks/clef-omni-fp8",
+          "public": false,
+          "format": "FP8 block 128x128 (W8A16 / dynamic)",
+          "size_gb": 34.5,
+          "vram_gib": null,
+          "parity": {
+            "top1": null,
+            "mean_tv": null
+          },
+          "bench": {
+            "index": null
+          },
+          "status": null,
+          "versions": [],
+          "eval_extra": [],
+          "best_for": "Highest fidelity at about half of BF16's VRAM",
+          "tags": [
+            "fp8",
+            "qwen3_omni_moe",
+            "clef",
+            "decision-model"
+          ],
+          "summary": "FP8 (E4M3, 128x128 block scales, Qwen/DeepSeek `FineGrainedFP8` layout) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`). Only the thinker's MoE experts are FP8; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.",
+          "serving": [
+            "`serve_clef.py` keeps the FP8 experts packed in VRAM (FP8 weights plus FP32 tile scales) and dequantizes each layer just in time for transformers' grouped matmul, so the head runs unchanged. transformers 5.10.2 also loads the checkpoint itself (`quant_method: fp8`, dequantized or native FP8 experts), and the format is the one vLLM and SGLang load for Qwen FP8 releases."
+          ],
+          "quantized": [
+            "| Part | Precision |",
+            "|---|---|",
+            "| Thinker MoE experts | **FP8 E4M3 weights**, one FP32 scale per 128x128 block; activations BF16 (or dynamic FP8 per 1x128 group in engines) |",
+            "| Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |",
+            "| Clef joint head | BF16, byte-identical to the original |"
+          ],
+          "recipe": [
+            "`scripts/clef-omni/quant_fp8_block.py`: converts the per-expert BF16 tensors straight from the release shards (no model load, no calibration), using transformers 5.10.2's own block-FP8 math (`Fp8Quantize`: scale = 448/amax per 128x128 tile, round-to-nearest cast), and writes `weight` (F8_E4M3) plus `weight_scale_inv` (F32). Everything else is copied bit-for-bit; talker/code2wav are dropped. CPU-only, streaming, under 1.5 GiB of host RAM."
+          ]
         }
       ],
       "cloudflare_published": {
@@ -1389,6 +1868,89 @@ data:
       },
       "bench_note": "Decision Index 0.2.1 (the edition behind Cloudflare's published Clef-Omni table), run with the public [decision-index kit](https://github.com/apolinario/decision-index) (suite rebuilt and hash-verified against the lab's manifest) over `/v1/systemone` on one RTX PRO 6000 Blackwell. We score a deterministic stratified sample of 3,000 requests (about 58 per benchmark, `suite sample --n 3000`) rather than all ~150K, so each benchmark carries roughly \u00b15-7 points of sampling noise; the averages and the paired deltas (both models on the identical questions, `score --reference`) are the reliable signals. The kit's headline index is coverage-adjusted over the full suite, so it is not meaningful on a sample and is not reported."
     }
+  card_clef-omni-fp8.md: |
+    ---
+    license: apache-2.0
+    base_model: Cloudflare/clef-omni
+    base_model_relation: quantized
+    tags:
+      - fp8
+      - qwen3_omni_moe
+      - clef
+      - decision-model
+    ---
+
+    # clef-omni-fp8
+
+    FP8 (E4M3, 128x128 block scales, Qwen/DeepSeek `FineGrainedFP8` layout) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`). Only the thinker's MoE experts are FP8; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.
+
+    ## Which Clef-Omni quant should I use?
+
+    | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 vs BF16 | Best for |
+    |---|---|---|---|---|---|---|
+    | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | reference (avg 70.3; Cloudflare's table 70.7) | Reference quality, ~70 GB VRAM |
+    | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 92.3% | pending | Blackwell, native FP4 engines |
+    | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
+    | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
+    | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
+    | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
+    | [dbirks/clef-omni-fp8](https://huggingface.co/dbirks/clef-omni-fp8) | FP8 block 128x128 (W8A16 / dynamic) | 34.5 GB | pending | pending | pending | Highest fidelity at about half of BF16's VRAM |
+
+    **Recommended for:**
+
+    - **clef-omni-int4**: any recent GPU when you want the smallest VRAM footprint today; loads in plain transformers. Also the best bet on AMD (ROCm): AutoRound's PyTorch/Triton kernels run there, though we have not tested it.
+    - **clef-omni-nvfp4a16**: Blackwell, or vLLM's Marlin MoE path on older cards; NVFP4 weights with 16-bit activations (higher fidelity than W4A4).
+    - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
+    - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
+
+    *Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.
+
+    ## Quick start
+
+    Serve it with [`serve_clef.py`](serve_clef.py) (also in [the repo it is maintained in](https://github.com/dbirks/home-k8s/blob/main/scripts/clef-omni/serve_clef.py)), a single-file [PEP 723](https://peps.python.org/pep-0723/) script, so `uv` installs everything it needs:
+
+    ```bash
+    # uv runs a PEP 723 script straight from its URL (or download serve_clef.py and `uv run` it locally)
+    uv run https://huggingface.co/dbirks/clef-omni-fp8/resolve/main/serve_clef.py --model dbirks/clef-omni-fp8 --demo
+    uv run https://huggingface.co/dbirks/clef-omni-fp8/resolve/main/serve_clef.py --model dbirks/clef-omni-fp8 --port 8000
+    ```
+
+    The first command answers one built-in decision and exits; the second starts the SystemOne HTTP server (`GET /healthz` turns 200 once the model is loaded):
+
+    ```bash
+    curl -s localhost:8000/v1/systemone -H 'Content-Type: application/json' -d '{
+      "model": "clef-omni",
+      "state": {"observation": "The player is facing a wall."},
+      "questions": {"action": {"type": "choice", "criteria": {"left": "Turn left", "right": "Turn right", "forward": "Move forward"}}}
+    }'
+    ```
+
+    Answers come from Cloudflare's own `systemone()` in `joint_schema_model.py`: one forward pass, per-option probabilities from the original BF16 joint decision head. Inputs can include images, audio and video (see the [base model card](https://huggingface.co/Cloudflare/clef-omni)).
+
+    ## How this checkpoint runs
+
+    `serve_clef.py` keeps the FP8 experts packed in VRAM (FP8 weights plus FP32 tile scales) and dequantizes each layer just in time for transformers' grouped matmul, so the head runs unchanged. transformers 5.10.2 also loads the checkpoint itself (`quant_method: fp8`, dequantized or native FP8 experts), and the format is the one vLLM and SGLang load for Qwen FP8 releases.
+
+    ## What was quantized
+
+    | Part | Precision |
+    |---|---|
+    | Thinker MoE experts | **FP8 E4M3 weights**, one FP32 scale per 128x128 block; activations BF16 (or dynamic FP8 per 1x128 group in engines) |
+    | Attention, router, embeddings, `lm_head`, vision and audio towers | BF16 |
+    | Clef joint head | BF16, byte-identical to the original |
+
+    ## Recipe
+
+    `scripts/clef-omni/quant_fp8_block.py`: converts the per-expert BF16 tensors straight from the release shards (no model load, no calibration), using transformers 5.10.2's own block-FP8 math (`Fp8Quantize`: scale = 448/amax per 128x128 tile, round-to-nearest cast), and writes `weight` (F8_E4M3) plus `weight_scale_inv` (F32). Everything else is copied bit-for-bit; talker/code2wav are dropped. CPU-only, streaming, under 1.5 GiB of host RAM.
+
+    ## Evaluation
+
+    Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
+
+
+    ## License
+
+    Apache-2.0, as the base model. All credit for the model goes to Cloudflare; this repo only changes the weight precision.
   card_clef-omni-int4.md: |
     ---
     license: apache-2.0
@@ -1561,6 +2123,7 @@ data:
     | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
     | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
     | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
+    | [dbirks/clef-omni-fp8](https://huggingface.co/dbirks/clef-omni-fp8) | FP8 block 128x128 (W8A16 / dynamic) | 34.5 GB | pending | pending | pending | Highest fidelity at about half of BF16's VRAM |
 
     **Recommended for:**
 
@@ -1739,6 +2302,7 @@ data:
     | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
     | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
     | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
+    | [dbirks/clef-omni-fp8](https://huggingface.co/dbirks/clef-omni-fp8) | FP8 block 128x128 (W8A16 / dynamic) | 34.5 GB | pending | pending | pending | Highest fidelity at about half of BF16's VRAM |
 
     **Recommended for:**
 
@@ -1825,6 +2389,7 @@ data:
     | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
     | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
     | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
+    | [dbirks/clef-omni-fp8](https://huggingface.co/dbirks/clef-omni-fp8) | FP8 block 128x128 (W8A16 / dynamic) | 34.5 GB | pending | pending | pending | Highest fidelity at about half of BF16's VRAM |
 
     **Recommended for:**
 

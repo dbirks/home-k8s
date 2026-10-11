@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--simulate-fp4-activations", action=argparse.BooleanOptionalAction, default=None,
                     help="NVFP4 W4A4: reproduce FP4 activation rounding (default off, see serve_clef.load)")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--simulate-fp8-activations", action="store_true",
+                    help="FP8 block checkpoints: round expert inputs to FP8 per token group (dynamic scheme)")
     ap.add_argument("--fast-moe", action=argparse.BooleanOptionalAction, default=True,
                     help="AutoRound INT4: grouped int4 MoE fast path (see serve_clef.fast_int4_moe)")
     ap.add_argument("--fakequant-rows", default=None,
@@ -46,7 +48,8 @@ def main():
     t0 = time.time()
     model, processor, jsm, kind = serve_clef.load(Path(args.export), "cuda",
                                                   simulate_fp4_activations=args.simulate_fp4_activations,
-                                                  fast_moe=args.fast_moe)
+                                                  fast_moe=args.fast_moe,
+                                                  simulate_fp8_activations=args.simulate_fp8_activations)
     load_s = time.time() - t0
     clef_records.log(f"loaded {args.export} ({kind}) in {load_s:.0f}s; "
                      f"gpu {torch.cuda.memory_allocated() / 2**30:.1f} GiB")

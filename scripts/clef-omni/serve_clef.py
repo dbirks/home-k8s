@@ -37,6 +37,10 @@ Checkpoint kinds, detected from the repo's config:
     them (per-16 block scales in FP8 E4M3 under the exported per-tensor input scale), reproducing the
     quantized model's answers; it is slow, so it is off by default (and it uses the up-front dequant).
     Native FP4 execution needs an engine such as vLLM, plus a hidden-state path into the head.
+  * FP8 block (quant_method fp8, weight_block_size [128, 128], Qwen/DeepSeek layout from
+    quant_fp8_block.py): experts stay FP8 + fp32 per-tile scales in VRAM (~32 GiB for Clef) and are
+    dequantized per layer like NVFP4 (W8A16); --no-packed-fp8 dequantizes on load instead.
+    --simulate-fp8-activations adds the dynamic 1x128 per-token-group FP8 rounding of expert inputs (W8A8).
 """
 import argparse
 import json
@@ -70,6 +74,11 @@ def kind_of(path):
         return f"modelopt:{algo}"
     qc = json.loads((path / "config.json").read_text()).get("quantization_config") or {}
     method = str(qc.get("quant_method", "")).replace("_", "-")
+    if method == "fp8":
+        block = qc.get("weight_block_size")
+        if not block or len(block) != 2 or qc.get("fmt", "e4m3") != "e4m3":
+            raise SystemExit(f"unsupported fp8 checkpoint (want e4m3 with weight_block_size): {qc}")
+        return "fp8-block"
     if method == "auto-round":
         if "nv_fp" in str(qc.get("data_type", "")):
             if qc.get("bits") != 4 or qc.get("group_size") != 16:
@@ -105,6 +114,35 @@ def dequant_nvfp4_ar(packed, scale, global_scale, block=16):
     vals = unpack_e2m1(packed) * recip(global_scale.float())
     vals = vals.view(*vals.shape[:-1], -1, block) * scale.float().unsqueeze(-1)
     return vals.reshape(*packed.shape[:-1], -1).to(torch.bfloat16)
+
+
+def dequant_fp8_block(w, scale_inv):
+    """FP8 block checkpoints: e4m3 times the fp32 per-tile weight_scale_inv, tile size from the scale grid.
+    Same math as transformers' Fp8Dequantize._dequantize_one (fp32 product, then BF16). Leading dims allowed."""
+    *lead, rows, cols = w.shape
+    sr, sc = scale_inv.shape[-2:]
+    if rows % sr or cols % sc:
+        raise RuntimeError(f"fp8 weight {tuple(w.shape)} does not tile by scale grid {tuple(scale_inv.shape)}")
+    q = w.float().reshape(*lead, sr, rows // sr, sc, cols // sc)
+    return (q * scale_inv.float()[..., :, None, :, None]).reshape(w.shape).to(torch.bfloat16)
+
+
+def fp8_act_quant(x, group=128):
+    """Dynamic per-token-group (1 x 128) FP8 E4M3 activation rounding, as the W8A8 block-FP8 kernels do
+    (scale = group amax / 448, vLLM per_token_group_quant_fp8 / DeepSeek act_quant); returns BF16."""
+    shape, dtype = x.shape, x.dtype
+    xf = x.float().reshape(-1, shape[-1] // group, group)
+    scale = xf.abs().amax(-1, keepdim=True).clamp(min=1e-10) / 448.0
+    return ((xf / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).float() * scale).reshape(shape).to(dtype)
+
+
+def round_fp8_expert_inputs(experts):
+    """Round both expert GEMM inputs (permuted hidden states, gated intermediate) to FP8 per 1x128 token group.
+    Dynamic scales are per row, so rounding before the permutation equals rounding after it; works on the
+    packed modules and on transformers' grouped_mm experts (both call self._apply_gate)."""
+    inner, gate = experts.forward, experts._apply_gate
+    experts._apply_gate = lambda gate_up: fp8_act_quant(gate(gate_up))
+    experts.forward = lambda h, top_k_index, top_k_weights: inner(fp8_act_quant(h), top_k_index, top_k_weights)
 
 
 def round_e2m1(a):
@@ -212,9 +250,57 @@ class PackedNVFP4Experts(torch.nn.Module):
         return grouped_mm_experts_forward(view, hidden_states, top_k_index, top_k_weights)
 
 
-def packed_expert_layers(path, shards):
-    """Expert prefixes whose every gate/up/down weight is packed FP4 (ModelOpt uint8 .weight or AutoRound
-    .weight_packed), read from the safetensors headers only. Layers with any BF16 expert stay unpacked."""
+class PackedFP8Experts(torch.nn.Module):
+    """All experts of one MoE layer kept as FP8 E4M3 in VRAM: gate|up and down as [E, out, in] float8 plus
+    [E, out/128, in/128] fp32 weight_scale_inv (gate and up tiles concatenated by row). forward dequantizes
+    the layer into transient BF16 weights (bit-identical to the up-front dequant) and runs transformers'
+    grouped_mm experts forward, like PackedNVFP4Experts."""
+
+    def __init__(self, experts, chunk_bytes=256 << 20):
+        super().__init__()
+        self.num_experts, self.act_fn = experts.num_experts, experts.act_fn
+        self.shapes = {"gate_up": (2 * experts.intermediate_dim, experts.hidden_dim),
+                       "down": (experts.hidden_dim, experts.intermediate_dim)}
+        self.chunk_bytes = chunk_bytes   # bounds the dequant transient (fp32 values: 4 B per weight)
+
+    def set_weights(self, name, parts):
+        """parts: per expert, the (fp8 weight, fp32 scale_inv) of each projection, concatenated by row."""
+        rows, cols = self.shapes[name]
+        w = torch.stack([torch.cat([q for q, _ in ps]) for ps in parts])
+        scale = torch.stack([torch.cat([s for _, s in ps]) for ps in parts]).float()
+        if (tuple(w.shape) != (self.num_experts, rows, cols) or w.dtype != torch.float8_e4m3fn
+                or rows % scale.shape[1] or cols % scale.shape[2]
+                or any(p[0].shape[0] * scale.shape[1] != rows * p[1].shape[0] for p in parts[0])):
+            raise RuntimeError(f"unexpected FP8 {name}: {tuple(w.shape)} {w.dtype}, scales {tuple(scale.shape)}; "
+                               f"want E={self.num_experts} [{rows}, {cols}] float8_e4m3fn")
+        self.register_buffer(f"{name}_weight", w)
+        self.register_buffer(f"{name}_scale", scale)
+
+    def weight(self, name):
+        w, scale = getattr(self, f"{name}_weight"), getattr(self, f"{name}_scale")
+        out = torch.empty(w.shape, device=w.device, dtype=torch.bfloat16)
+        step = max(1, self.chunk_bytes // (4 * w[0].numel()))
+        for e in range(0, self.num_experts, step):
+            out[e:e + step] = dequant_fp8_block(w[e:e + step], scale[e:e + step])
+        return out
+
+    def _apply_gate(self, gate_up):
+        gate, up = gate_up.chunk(2, dim=-1)
+        return self.act_fn(gate) * up
+
+    def forward(self, hidden_states, top_k_index, top_k_weights):
+        from types import SimpleNamespace
+        from transformers.integrations.moe import grouped_mm_experts_forward
+        view = SimpleNamespace(num_experts=self.num_experts, has_gate=True, has_bias=False, is_transposed=False,
+                               gate_up_proj=self.weight("gate_up"), down_proj=self.weight("down"),
+                               _apply_gate=self._apply_gate)
+        return grouped_mm_experts_forward(view, hidden_states, top_k_index, top_k_weights)
+
+
+def packed_expert_layers(path, shards, fp8=False):
+    """Expert prefixes whose every gate/up/down weight is quantized (FP4: ModelOpt uint8 .weight or AutoRound
+    .weight_packed; fp8: float8 .weight), read from the safetensors headers only. Layers with any BF16
+    expert stay unpacked."""
     from safetensors import safe_open
     packed, plain = set(), set()
     for shard in shards:
@@ -223,13 +309,16 @@ def packed_expert_layers(path, shards):
                 base, attr = k.rsplit(".", 1)
                 if ".mlp.experts." in k and attr in ("weight", "weight_packed") and base.rsplit(".", 1)[-1] in ("gate_proj", "up_proj", "down_proj"):
                     prefix = base.rsplit(".", 2)[0]
-                    is_fp4 = attr == "weight_packed" or st.get_slice(k).get_dtype() == "U8"
-                    (packed if is_fp4 else plain).add(prefix)
+                    dt = st.get_slice(k).get_dtype()
+                    is_q = dt == "F8_E4M3" if fp8 else (attr == "weight_packed" or dt == "U8")
+                    (packed if is_q else plain).add(prefix)
     return packed - plain
 
 
-def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
-    """ModelOpt or AutoRound NVFP4: build the BF16 backbone directly on the GPU, then fill it shard by shard
+def load_nvfp4(path, device, simulate_activations=False, packed_experts=True, fp8=False):
+    """ModelOpt or AutoRound NVFP4, or (fp8=True) FP8 block checkpoints, whose experts follow the same
+    plan with PackedFP8Experts and .weight/.weight_scale_inv (FP8 activations are simulated by the caller).
+    Build the BF16 backbone directly on the GPU, then fill it shard by shard
     (host RAM stays small). The two formats differ only in tensor names and global-scale direction: ModelOpt
     .weight/.weight_scale_2/.input_scale (multipliers), AutoRound .weight_packed/.weight_global_scale/
     .input_global_scale (divisors). packed_experts (default, ignored when simulating activations): the FP4
@@ -252,7 +341,7 @@ def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
     index = json.loads((path / "model.safetensors.index.json").read_text())["weight_map"] \
         if (path / "model.safetensors.index.json").exists() else None
     shards = sorted(set(index.values())) if index else ["model.safetensors"]
-    packable = packed_expert_layers(path, shards) if packed_experts and not simulate_activations else set()
+    packable = packed_expert_layers(path, shards, fp8) if packed_experts and not simulate_activations else set()
     experts_cls, experts_init = mq.Qwen3OmniMoeThinkerTextExperts, mq.Qwen3OmniMoeThinkerTextExperts.__init__
     if packable:   # experts' 3-D BF16 params go to 'meta': no 60 GB transient; materialized below if not packed
         def meta_init(self, *a, **k):
@@ -269,8 +358,8 @@ def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
     for name, block in list(model.named_modules()):
         if isinstance(getattr(block, "experts", None), experts_cls) and block.experts.gate_up_proj.is_meta:
             if f"{name}.experts" in packable:
-                block.experts = packed_mods[f"{name}.experts"] = PackedNVFP4Experts(
-                    block.experts, divisor=None)   # format (multiplier vs divisor) set from the tensors below
+                block.experts = packed_mods[f"{name}.experts"] = PackedFP8Experts(block.experts) if fp8 else \
+                    PackedNVFP4Experts(block.experts, divisor=None)   # NVFP4 multiplier vs divisor: from the tensors
             else:
                 block.experts.to_empty(device=device)
     params = dict(model.state_dict())
@@ -283,6 +372,9 @@ def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
                 if ".mlp.experts." in k and attr in ("weight", "weight_packed") and base.rsplit(".", 1)[-1] in ("gate_proj", "up_proj", "down_proj"):
                     w = st.get_tensor(k)
                     prefix, e, proj = base.rsplit(".", 2)          # ...mlp.experts, E, gate_proj
+                    if prefix in packed_mods and fp8:    # keep FP8: (e4m3 weight, fp32 tile scale_inv)
+                        experts.setdefault(prefix, {})[(int(e), proj)] = (w, st.get_tensor(base + ".weight_scale_inv"))
+                        continue
                     if prefix in packed_mods:            # keep packed: (codes, e4m3 block scale, global scale)
                         ar = attr == "weight_packed"
                         mod = packed_mods[prefix]
@@ -293,7 +385,9 @@ def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
                             w, st.get_tensor(base + ".weight_scale"),
                             st.get_tensor(base + (".weight_global_scale" if ar else ".weight_scale_2")))
                         continue
-                    if attr == "weight_packed":
+                    if w.dtype == torch.float8_e4m3fn:
+                        w = dequant_fp8_block(w, st.get_tensor(base + ".weight_scale_inv"))
+                    elif attr == "weight_packed":
                         w = dequant_nvfp4_ar(w, st.get_tensor(base + ".weight_scale"), st.get_tensor(base + ".weight_global_scale"))
                     elif w.dtype == torch.uint8:
                         w = dequant_nvfp4(w, st.get_tensor(base + ".weight_scale"), st.get_tensor(base + ".weight_scale_2"))
@@ -305,10 +399,14 @@ def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
                     got = in_scales.setdefault(prefix, {}).setdefault((int(e), "down" if proj == "down_proj" else "gate_up"), (fq, sc))
                     if not torch.equal(got[1], sc):   # the fused gate_up_proj can take only one
                         raise RuntimeError(f"{base}: gate_proj and up_proj input scales differ")
-                elif attr in ("weight_scale", "weight_scale_2", "input_scale", "weight_global_scale", "input_global_scale"):
+                elif attr in ("weight_scale", "weight_scale_2", "input_scale", "weight_global_scale", "input_global_scale",
+                              "weight_scale_inv"):
                     continue
                 elif k in params:
-                    params[k].copy_(st.get_tensor(k))
+                    w = st.get_tensor(k)
+                    if w.dtype == torch.float8_e4m3fn:   # a non-expert FP8 linear (e.g. Qwen-style attention): to BF16
+                        w = dequant_fp8_block(w, st.get_tensor(base + ".weight_scale_inv"))
+                    params[k].copy_(w)
                     filled.add(k)
                 else:
                     raise RuntimeError(f"checkpoint tensor {k} has no home in the model")
@@ -342,7 +440,7 @@ def load_nvfp4(path, device, simulate_activations=False, packed_experts=True):
                            f"{len(experts)} expert layers incomplete")
     if packed_mods:
         nbytes = sum(b.numel() * b.element_size() for m in packed_mods.values() for b in m.buffers())
-        log(f"packed NVFP4 experts: {len(packed_mods)} layers (weights {nbytes / 2**30:.2f} GiB)")
+        log(f"packed {'FP8' if fp8 else 'NVFP4'} experts: {len(packed_mods)} layers (weights {nbytes / 2**30:.2f} GiB)")
     if simulate_activations:
         if not in_scales:
             raise RuntimeError("no expert input scale tensors: this checkpoint has no FP4 activations to simulate")
@@ -449,11 +547,14 @@ def fast_int4_moe(model):
     return done
 
 
-def load(path, device, simulate_fp4_activations=None, fast_moe=True, packed_nvfp4=True):
+def load(path, device, simulate_fp4_activations=None, fast_moe=True, packed_nvfp4=True, packed_fp8=True,
+         simulate_fp8_activations=False):
     """simulate_fp4_activations: off unless asked. On W4A4 checkpoints it reproduces the quantized model's
     answers exactly (for benchmarking), at a large speed cost (eager per-expert path).
     fast_moe: AutoRound INT4 g128 checkpoints run experts as dequant + grouped_mm (see fast_int4_moe).
-    packed_nvfp4: NVFP4 checkpoints keep experts packed, dequantized per layer in forward (PackedNVFP4Experts)."""
+    packed_nvfp4: NVFP4 checkpoints keep experts packed, dequantized per layer in forward (PackedNVFP4Experts).
+    packed_fp8 / simulate_fp8_activations: the same for FP8 block checkpoints (PackedFP8Experts), plus
+    optional dynamic FP8 rounding of expert inputs (cheap: no eager path needed)."""
     sys.path.insert(0, str(path))
     import joint_schema_model as jsm
     kind = kind_of(path)
@@ -468,6 +569,16 @@ def load(path, device, simulate_fp4_activations=None, fast_moe=True, packed_nvfp
         backbone = load_nvfp4(path, device, simulate_fp4_activations, packed_nvfp4)
         kind += "+fp4-activations" if simulate_fp4_activations else ""
         kind += "+packed-experts" if any(isinstance(m, PackedNVFP4Experts) for m in backbone.modules()) else ""
+    elif kind == "fp8-block":
+        backbone = load_nvfp4(path, device, False, packed_fp8, fp8=True)
+        if simulate_fp8_activations:
+            from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as mq
+            layers = [m for m in backbone.thinker.modules() if isinstance(m, (PackedFP8Experts, mq.Qwen3OmniMoeThinkerTextExperts))]
+            for m in layers:
+                round_fp8_expert_inputs(m)
+            log(f"simulating dynamic FP8 activations in {len(layers)} expert layers")
+            kind += "+fp8-activations"
+        kind += "+packed-experts" if any(isinstance(m, PackedFP8Experts) for m in backbone.modules()) else ""
     else:
         config = AutoConfig.from_pretrained(path)
         config.enable_audio_output = False
@@ -511,12 +622,19 @@ def main():
     ap.add_argument("--no-packed-nvfp4", dest="packed_nvfp4", action="store_false",
                     help="NVFP4: dequantize every expert to BF16 on load (~60 GB on Clef) instead of keeping them "
                          "packed (~22 GB) and dequantizing one layer at a time in forward")
+    ap.add_argument("--no-packed-fp8", dest="packed_fp8", action="store_false",
+                    help="FP8 block: dequantize every expert to BF16 on load (~60 GB on Clef) instead of keeping "
+                         "them FP8 (~32 GB) and dequantizing one layer at a time in forward")
+    ap.add_argument("--simulate-fp8-activations", action=argparse.BooleanOptionalAction, default=False,
+                    help="FP8 block: also round expert inputs to FP8 per 1x128 token group (W8A8-dynamic, as native "
+                         "FP8 kernels run it). Default: FP8 weights, BF16 activations")
     args = ap.parse_args()
 
     path = resolve(args.model, args.revision)
     if args.demo or args.request:
         t0 = time.time()
-        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe, args.packed_nvfp4)
+        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe,
+                                           args.packed_nvfp4, args.packed_fp8, args.simulate_fp8_activations)
         log(f"ready in {time.time() - t0:.0f}s")
         req = DEMO if args.demo else json.loads(Path(args.request).read_text())
         print(json.dumps(jsm.systemone(model, processor, req), indent=2))
@@ -530,7 +648,8 @@ def main():
 
     def _load():
         t0 = time.time()
-        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe, args.packed_nvfp4)
+        model, processor, jsm, kind = load(path, args.device, args.simulate_fp4_activations, args.fast_moe,
+                                           args.packed_nvfp4, args.packed_fp8, args.simulate_fp8_activations)
         state.update(model=model, processor=processor, jsm=jsm, kind=kind, ready=True, load_s=round(time.time() - t0, 1))
         log(f"ready in {state['load_s']}s")
 
