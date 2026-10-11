@@ -15,6 +15,8 @@ tags:
 
 NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0: SignRound-tuned FP4 expert weights, 16-bit activations. Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
 
+> **Status:** first release (`v0.1`). The exported checkpoint agrees with BF16 on 94.6% of held-out decisions (mean TV 0.032), the best FP4 variant of the family (ModelOpt NVFP4A16: 91.1%), with packed FP4 experts in VRAM (20.6 GiB weights, about 0.59 s per decision with `serve_clef.py`). Decision Index results are in progress.
+
 ## Which Clef-Omni quant should I use?
 
 | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 vs BF16 | Best for |
@@ -24,7 +26,7 @@ NVFP4 weight-only (W4A16) quantization of [Cloudflare/clef-omni](https://hugging
 | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
 | [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
 | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
-| [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
+| [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | 22.0 GB | 21 GiB | 94.6% | pending | Highest-fidelity FP4 weights |
 | [dbirks/clef-omni-fp8](https://huggingface.co/dbirks/clef-omni-fp8) | FP8 block 128x128 (W8A16 / dynamic) | 34.5 GB | pending | pending | pending | Highest fidelity at about half of BF16's VRAM |
 
 **Recommended for:**
@@ -78,6 +80,14 @@ AutoRound 0.16 cannot load its own weight-only NVFP4 export (no inference backen
 
 Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
+
+## Version history
+
+Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins it). Newest last.
+
+| Version | Date | Notes |
+|---|---|---|
+| `v0.1` | 2026-10-11 | First release: AutoRound 0.16.0 NVFP4 weight-only (W4A16), experts-only, 200 SignRound steps per block on 512 Clef-format records (141 min, low_gpu_mem_usage). Export graded through serve_clef.py: 94.6% top-answer agreement with BF16 (mean TV 0.032), 20.6 GiB packed weights, 0.59 s per decision. |
 
 ## License
 

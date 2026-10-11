@@ -238,17 +238,23 @@
     },
     {
       "public": false,
-      "vram_gib": null,
-      "size_gb": null,
+      "vram_gib": 20.6,
+      "size_gb": 22.0,
       "parity": {
-        "top1": null,
-        "mean_tv": null
+        "top1": 0.946,
+        "mean_tv": 0.032
       },
       "bench": {
         "index": null
       },
-      "status": null,
-      "versions": [],
+      "status": "first release (`v0.1`). The exported checkpoint agrees with BF16 on 94.6% of held-out decisions (mean TV 0.032), the best FP4 variant of the family (ModelOpt NVFP4A16: 91.1%), with packed FP4 experts in VRAM (20.6 GiB weights, about 0.59 s per decision with `serve_clef.py`). Decision Index results are in progress.",
+      "versions": [
+        {
+          "tag": "v0.1",
+          "date": "2026-10-11",
+          "note": "First release: AutoRound 0.16.0 NVFP4 weight-only (W4A16), experts-only, 200 SignRound steps per block on 512 Clef-format records (141 min, low_gpu_mem_usage). Export graded through serve_clef.py: 94.6% top-answer agreement with BF16 (mean TV 0.032), 20.6 GiB packed weights, 0.59 s per decision."
+        }
+      ],
       "eval_extra": [],
       "id": "nvfp4a16-ar",
       "repo": "dbirks/clef-omni-nvfp4a16-autoround",
