@@ -291,8 +291,14 @@
       "bench": {
         "index": null
       },
-      "status": null,
-      "versions": [],
+      "status": "first release (`v0.1`). Export verified (18,432 FP8 expert tensors, valid block scales, byte-identical to transformers' FP8 quantizer). Parity and Decision Index results are in progress.",
+      "versions": [
+        {
+          "tag": "v0.1",
+          "date": "2026-10-11",
+          "note": "First release: FP8 E4M3 experts with 128x128 block scales (Qwen FineGrainedFP8 layout), converted shard-by-shard from the BF16 release with transformers' own Fp8Quantize math (no calibration). 34.5 GB. Parity and benchmarks pending."
+        }
+      ],
       "eval_extra": [],
       "best_for": "Highest fidelity at about half of BF16's VRAM",
       "tags": [

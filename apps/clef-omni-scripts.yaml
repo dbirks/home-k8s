@@ -1792,8 +1792,14 @@ data:
           "bench": {
             "index": null
           },
-          "status": null,
-          "versions": [],
+          "status": "first release (`v0.1`). Export verified (18,432 FP8 expert tensors, valid block scales, byte-identical to transformers' FP8 quantizer). Parity and Decision Index results are in progress.",
+          "versions": [
+            {
+              "tag": "v0.1",
+              "date": "2026-10-11",
+              "note": "First release: FP8 E4M3 experts with 128x128 block scales (Qwen FineGrainedFP8 layout), converted shard-by-shard from the BF16 release with transformers' own Fp8Quantize math (no calibration). 34.5 GB. Parity and benchmarks pending."
+            }
+          ],
           "eval_extra": [],
           "best_for": "Highest fidelity at about half of BF16's VRAM",
           "tags": [
@@ -1884,6 +1890,8 @@ data:
 
     FP8 (E4M3, 128x128 block scales, Qwen/DeepSeek `FineGrainedFP8` layout) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`). Only the thinker's MoE experts are FP8; attention, router, embeddings, `lm_head`, the vision and audio towers and the Clef joint decision head stay BF16.
 
+    > **Status:** first release (`v0.1`). Export verified (18,432 FP8 expert tensors, valid block scales, byte-identical to transformers' FP8 quantizer). Parity and Decision Index results are in progress.
+
     ## Which Clef-Omni quant should I use?
 
     | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 vs BF16 | Best for |
@@ -1947,6 +1955,14 @@ data:
 
     Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
+
+    ## Version history
+
+    Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins it). Newest last.
+
+    | Version | Date | Notes |
+    |---|---|---|
+    | `v0.1` | 2026-10-11 | First release: FP8 E4M3 experts with 128x128 block scales (Qwen FineGrainedFP8 layout), converted shard-by-shard from the BF16 release with transformers' own Fp8Quantize math (no calibration). 34.5 GB. Parity and benchmarks pending. |
 
     ## License
 
