@@ -22,7 +22,9 @@ metadata:
   namespace: default
   labels: { app: pennyroyal-flashnext }
 spec:
-  replicas: 1
+  # 2026-10-11: scaled to 0 for the full Decision Index run of clef-omni-int4 (issue #153, ~12-14 h).
+  # RESTORE TO replicas: 1 when apps/decision-index-full-int4-*.yaml finishes; boot ~7 min.
+  replicas: 0
   strategy: { type: Recreate }        # never two whole-card pods
   selector:
     matchLabels: { app: pennyroyal-flashnext }

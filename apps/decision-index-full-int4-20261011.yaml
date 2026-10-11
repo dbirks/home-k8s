@@ -1,0 +1,61 @@
+# FULL Decision Index run of dbirks/clef-omni-int4 (issue #153): every scoreable request, not a sample.
+# Edition 0.2.1 first (119,898 + 30,419 requests; the edition behind Cloudflare's Clef-Omni table), then
+# the same run directory resumed under 0.3 (adds only the 2,638 rebuilt GSM8K requests) so it scores
+# against the live board too. serve_clef.py (fast grouped int4 path) on localhost; resumable via results.jsonl.
+# Note: serve_clef uses Cloudflare's encode_record, which truncates state beyond 64K tokens, whereas the
+# board's rule is "no truncation" (rows that cannot fit are counted unsupported). Same behavior as
+# Cloudflare's own release code.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: decision-index-full-int4
+  namespace: default
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 172800
+  ttlSecondsAfterFinished: 1209600
+  template:
+    metadata:
+      labels: { app: decision-index-full }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: bench
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              export HF_HOME=/work/.hf-home HF_HUB_OFFLINE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+              command -v gcc >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev curl >/dev/null; }
+              /work/venv/bin/pip freeze | grep -E '^(torch|torchvision|transformers|accelerate|safetensors)==' > /tmp/constraints.txt
+              /work/venv/bin/python -c 'import fastapi, uvicorn' 2>/dev/null || \
+                /work/venv/bin/pip install -q --no-input -c /tmp/constraints.txt fastapi 'uvicorn[standard]' || exit 1
+              cd /work/decision-index; DI="venv/bin/python -m decision_index"; OUT=runs/int4-full; mkdir -p runs
+              /work/venv/bin/python /scripts/serve_clef.py --model /work/int4/export --host 127.0.0.1 --port 8000 \
+                > /work/logs/full-int4-server.log 2>&1 &
+              srv=$!
+              until curl -sf localhost:8000/healthz >/dev/null; do
+                kill -0 $srv 2>/dev/null || { tail -30 /work/logs/full-int4-server.log; echo "SERVER DIED"; exit 1; }; sleep 15; done
+              curl -s localhost:8000/healthz; echo
+              for ed in 0.2.1 0.3; do
+                echo "[$(date -u +%FT%TZ)] ===== run edition $ed ====="
+                $DI run --edition $ed --engine http --option base_url=http://127.0.0.1:8000 --option model=clef-omni \
+                  --out "$OUT" --compact 2>&1 | tail -5
+                kill -0 $srv 2>/dev/null || { echo "SERVER DIED during $ed"; exit 1; }
+                $DI score --edition $ed --results "$OUT/results.jsonl" --out "$OUT/score-$ed" 2>&1 | tail -3
+                venv/bin/python -c "import json; d=json.load(open('$OUT/score-$ed/index.json')); print('INDEX $ed', d.get('index'), 'raw', d.get('raw_index'), 'areas', {k: round(v.get('skill', 0)*100, 2) if isinstance(v, dict) else v for k, v in (d.get('areas') or {}).items()})"
+              done
+              kill $srv; echo "[$(date -u +%FT%TZ)] FULL RUN DONE"
+          resources:
+            requests: { cpu: "2", memory: 12Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: scripts, configMap: { name: clef-omni-scripts } }
