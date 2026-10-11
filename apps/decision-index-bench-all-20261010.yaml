@@ -9,7 +9,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: decision-index-bench-all-r2
+  name: decision-index-bench-all-r3
   namespace: default
 spec:
   backoffLimit: 1
@@ -42,6 +42,8 @@ spec:
                 name=${entry%%=*}; rest=${entry#*=}; path=${rest%%:*}; flags=""; [ "$rest" != "$path" ] && flags=${rest#*:}
                 out=runs/$name-n$SAMPLE_N
                 [ -e "$path/config.json" ] || { echo "[$(date -u +%FT%TZ)] skip $name: $path not built yet"; continue; }
+                if [ -f "$out/index.json" ] && [ "$(wc -l < "$out/results.jsonl")" -ge "$(zcat "$SAMPLE" | wc -l)" ]; then
+                  echo "[$(date -u +%FT%TZ)] skip $name: already complete"; continue; fi
                 echo "[$(date -u +%FT%TZ)] ===== $name ($path $flags) ====="
                 /work/venv/bin/python /scripts/serve_clef.py --model "$path" --host 127.0.0.1 --port 8000 $flags \
                   > /work/logs/bench-server-$name.log 2>&1 &
@@ -69,8 +71,8 @@ spec:
                 nvfp4a16=/work/nvfp4a16/export
                 fp8=/work/fp8/export
                 nvfp4a16-ar=/work/nvfp4a16-ar/export
-                nvfp4-ar=/work/nvfp4-ar/export:--simulate-fp4-activations
                 nvfp4=/work/nvfp4-experts/export:--simulate-fp4-activations
+                nvfp4-ar=/work/nvfp4-ar/export:--simulate-fp4-activations
           resources:
             requests: { cpu: "2", memory: 12Gi }
             limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }

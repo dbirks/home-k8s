@@ -2,12 +2,13 @@
 # Same proven Job as the AutoRound INT4 one (apps/clef-omni-quant-int4-20261010.yaml): rehearsal on a tiny
 # random Clef-Omni, host-RAM guard, swallowed-calibration check, real run (512 Clef-format records,
 # iters 200, experts-only), then the EXPORT graded against the BF16 reference through serve_clef.py.
+# r2 (512 records) fit at 90.9 GB but ran ~12 min/block (~9.5 h), so r3 uses AutoRound's default 128 records.
 # AR_SCHEME=NVFP4; output /work/nvfp4-ar/{export,results}. Released from .hold when the GPU queue reaches it.
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: clef-omni-quant-nvfp4-ar-20261010-r2
+  name: clef-omni-quant-nvfp4-ar-20261010-r3
   namespace: default
 spec:
   backoffLimit: 0
@@ -29,7 +30,7 @@ spec:
               set -uo pipefail
               VENV=/work/venv
               export PIP_CACHE_DIR=/work/.pip-cache TMPDIR=/work/.tmp HF_HOME=/work/.hf-home AR_WORK_SPACE=/work/.tmp/ar
-              export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True AR_DISABLE_COPY_MTP_WEIGHTS=1 AR_SCHEME=NVFP4
+              export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True AR_DISABLE_COPY_MTP_WEIGHTS=1 AR_SCHEME=NVFP4 N_CALIB=128
               mkdir -p /work/.tmp/ar /work/logs
               echo "[$(date -u +%FT%TZ)] === Clef-Omni NVFP4 (AutoRound) ==="
               command -v gcc >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc libc6-dev >/dev/null; } || exit 1
