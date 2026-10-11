@@ -1782,7 +1782,7 @@ data:
             "| Clef joint head | BF16, byte-identical to the original |"
           ],
           "recipe": [
-            "`scheme=NVFP4`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
+            "`scheme=NVFP4`, AutoRound 0.16.0, `iters=50`, `nsamples=128` (AutoRound's light recipe; the full 200-step W4A4 tuning ran ~10 min per block on our card) Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
           ]
         },
         {
@@ -2298,7 +2298,7 @@ data:
 
     ## Recipe
 
-    `scheme=NVFP4`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell.
+    `scheme=NVFP4`, AutoRound 0.16.0, `iters=50`, `nsamples=128` (AutoRound's light recipe; the full 200-step W4A4 tuning ran ~10 min per block on our card) Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell.
 
     ## Evaluation
 
