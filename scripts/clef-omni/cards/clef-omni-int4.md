@@ -15,15 +15,15 @@ tags:
 
 INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
 
-> **Status:** recommended. Agrees with BF16 on 96.1% of held-out decisions (mean TV 0.033), the best of the family so far (target 98%). It is also the only variant that actually saves VRAM today: 19.4 GiB of weights (20.8 GiB peak) vs about 60 GiB, at BF16-like speed (about 0.21 s per decision on an RTX PRO 6000 with `serve_clef.py`). On the Decision Index (3,000-request sample) it scores within 0.13 points of BF16 on average.
+> **Status:** recommended. Agrees with BF16 on 96.5% of held-out decisions (TV 0.034), at the measurement's noise floor (BF16 vs itself under a different kernel: 95.7%), and scores within 0.13 points of BF16 on the Decision Index. It is the only variant that actually saves VRAM today (19.4 GiB of weights) at BF16-like speed (about 0.21 s per decision).
 
 ## Which Clef-Omni quant should I use?
 
 | Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 vs BF16 | Best for |
 |---|---|---|---|---|---|---|
 | [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | reference (avg 70.3; Cloudflare's table 70.7) | Reference quality, ~70 GB VRAM |
-| [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 92.3% | pending | Blackwell, native FP4 engines |
-| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
+| [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 28 GiB | 92.6% | -0.76 pts avg (31/42 within 2 pts) | Blackwell, native FP4 engines |
+| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.5% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
 
 **Recommended for:**
 
@@ -31,7 +31,7 @@ INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/
 - **clef-omni-nvfp4**: Blackwell engines with native FP4 tensor cores (W4A4 is the only variant that can run faster than BF16 there).
 - **clef-omni** (Cloudflare BF16): the reference, if you have ~70 GB of VRAM.
 
-*Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.
+*Size on disk* is the download. *VRAM (weights)* is what `serve_clef.py` holds on the GPU: the NVFP4 checkpoints are unpacked to BF16 there (transformers has no packed-NVFP4 kernels), so today only INT4 actually saves VRAM, and the NVFP4 files are for engines with native FP4. *Agrees with BF16* is the share of 258 held-out decision questions where the quant picks the same top answer as Cloudflare's BF16 model run through the same code. BF16 against itself under a different expert kernel scores 95.7%, so about 96% is the ceiling. *Decision Index* is the chance-corrected public index from the [Decision Index kit](https://github.com/apolinario/decision-index), edition 0.2.1 (the edition behind Cloudflare's published Clef-Omni results), on our hardware.
 
 ## Quick start
 
@@ -73,7 +73,7 @@ AutoRound 0.16.0 `scheme=W4A16`, `iters=200`, `nsamples=512` Clef-format records
 
 ## Evaluation
 
-Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
+Parity: 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration). Each exported quant is loaded through `serve_clef.py` and compared with Cloudflare's BF16 model run through the same code path (grouped experts). We report top-answer agreement and total variation (TV) between the per-option distributions. **Noise floor:** the same BF16 weights run through a different but equally valid expert kernel (eager vs grouped) agree on only 95.7% of these questions (TV 0.028), because many are near-ties. Agreement around 96% and TV near 0.03 therefore means indistinguishable from BF16 at this precision. Benchmarks: the Decision Index reproduction kit, edition 0.2.1, over `/v1/systemone` on one RTX PRO 6000 Blackwell.
 
 
 ## Benchmarks
@@ -136,6 +136,7 @@ Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins i
 | `v0.2` | 2026-10-10 | Docs and script only, weights unchanged: serve_clef.py now regroups the 128 int4 experts per layer and runs them as dequant + grouped matmul, so a decision takes 212 ms instead of 2,689 ms (median, RTX PRO 6000) with the same answers (96.1% top-answer agreement with BF16 on the exported checkpoint) and 19.4 GiB of weights in VRAM. |
 | `v0.3` | 2026-10-10 | Made public. README only: quant comparison table now links the public NVFP4 sibling, with parity measured on the exported files; weights and serve_clef.py unchanged from v0.2. |
 | `v0.4` | 2026-10-10 | README only: Decision Index 0.2.1 results on a 3,000-request stratified sample. INT4 is within -0.13 points of BF16 on average (paired, 42 benchmarks; 33 within 2 points), and our BF16 run reproduces Cloudflare's published table within 0.4 points (70.3 vs 70.7 over 38 benchmarks). |
+| `v0.5` | 2026-10-11 | README only: parity re-measured against a same-path BF16 reference (96.5% top-1, TV 0.034; BF16 noise floor 95.7%), comparison table updated with the public NVFP4 benchmarks; serve_clef.py now also loads FP8 and AutoRound NVFP4 checkpoints and keeps NVFP4 experts packed (about 28 GB instead of about 60 GB). |
 
 ## License
 

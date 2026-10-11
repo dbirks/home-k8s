@@ -1,0 +1,49 @@
+# Refresh every Clef-Omni repo with the final cards (same-path parity, Decision Index, comparison table,
+# version history) and the current serve_clef.py (issues #150-#154). Docs + script only; weights unchanged.
+# Visibility unchanged: nvfp4 + int4 public, the rest private. CPU-only.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-publish-refresh-20261011
+  namespace: default
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-publish }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: publish
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              export HF_HOME=/work/.hf-home HF_HUB_DISABLE_TELEMETRY=1
+              fail=0
+              for spec in clef-omni-nvfp4:/work/nvfp4-experts/export:v0.3 clef-omni-int4:/work/int4/export:v0.5 \
+                          clef-omni-nvfp4a16:/work/nvfp4a16/export:v0.2 clef-omni-nvfp4a16-autoround:/work/nvfp4a16-ar/export:v0.2 \
+                          clef-omni-fp8:/work/fp8/export:v0.2; do
+                IFS=: read -r repo export tag <<< "$spec"
+                echo "[$(date -u +%FT%TZ)] === $repo $tag ==="
+                /work/venv/bin/python /scripts/hf_publish.py --repo "dbirks/$repo" --export "$export" \
+                  --card "/scripts/card_$repo.md" --tag "$tag" --only README.md serve_clef.py SHA256SUMS || fail=1
+              done
+              exit $fail
+          env:
+            - name: HF_TOKEN
+              valueFrom: { secretKeyRef: { name: hf-write-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { cpu: "4", memory: 6Gi }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: scripts, configMap: { name: clef-omni-scripts } }
