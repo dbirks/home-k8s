@@ -18,12 +18,12 @@ NVFP4 (W4A4) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloud
 
 ## Which Clef-Omni quant should I use?
 
-| Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
+| Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 vs BF16 | Best for |
 |---|---|---|---|---|---|---|
-| [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
+| [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | reference (avg 70.3; Cloudflare's table 70.7) | Reference quality, ~70 GB VRAM |
 | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 92.3% | pending | Blackwell, native FP4 engines |
 | [dbirks/clef-omni-nvfp4a16](https://huggingface.co/dbirks/clef-omni-nvfp4a16) | NVFP4 W4A16 (ModelOpt) | 22.0 GB | 60 GiB | 91.1% | pending | Blackwell / vLLM Marlin, higher fidelity than W4A4 |
-| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | pending | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
+| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
 | [dbirks/clef-omni-nvfp4-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4-autoround) | NVFP4 W4A4 (AutoRound, tuned) | pending | pending | pending | pending | Blackwell, native FP4, tuned rounding |
 | [dbirks/clef-omni-nvfp4a16-autoround](https://huggingface.co/dbirks/clef-omni-nvfp4a16-autoround) | NVFP4 W4A16 (AutoRound, tuned) | pending | pending | pending | pending | Highest-fidelity FP4 weights |
 

@@ -15,15 +15,15 @@ tags:
 
 INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
 
-> **Status:** recommended. Agrees with BF16 on 96.1% of held-out decisions (mean TV 0.033), the best of the family so far (target 98%). It is also the only variant that actually saves VRAM today: 19.4 GiB of weights (20.8 GiB peak) vs about 60 GiB, at BF16-like speed (about 0.21 s per decision on an RTX PRO 6000 with `serve_clef.py`). Decision Index benchmarks are in progress.
+> **Status:** recommended. Agrees with BF16 on 96.1% of held-out decisions (mean TV 0.033), the best of the family so far (target 98%). It is also the only variant that actually saves VRAM today: 19.4 GiB of weights (20.8 GiB peak) vs about 60 GiB, at BF16-like speed (about 0.21 s per decision on an RTX PRO 6000 with `serve_clef.py`). On the Decision Index (3,000-request sample) it scores within 0.13 points of BF16 on average.
 
 ## Which Clef-Omni quant should I use?
 
-| Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 | Best for |
+| Model | Format | Size on disk | VRAM (weights) | Agrees with BF16 (top answer) | Decision Index 0.2.1 vs BF16 | Best for |
 |---|---|---|---|---|---|---|
-| [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | pending | Reference quality, ~70 GB VRAM |
+| [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) | BF16 (original) | 70.8 GB | 60 GiB | reference | reference (avg 70.3; Cloudflare's table 70.7) | Reference quality, ~70 GB VRAM |
 | [dbirks/clef-omni-nvfp4](https://huggingface.co/dbirks/clef-omni-nvfp4) | NVFP4 W4A4 (ModelOpt) | 22.0 GB | 60 GiB | 92.3% | pending | Blackwell, native FP4 engines |
-| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | pending | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
+| [dbirks/clef-omni-int4](https://huggingface.co/dbirks/clef-omni-int4) | INT4 W4A16 g128 (AutoRound) | 20.8 GB | 19 GiB | 96.1% | -0.13 pts avg (33/42 within 2 pts) | ⭐ Recommended: best accuracy, smallest VRAM, any recent GPU |
 
 **Recommended for:**
 
@@ -76,6 +76,56 @@ AutoRound 0.16.0 `scheme=W4A16`, `iters=200`, `nsamples=512` Clef-format records
 Parity: the 128 held-out records (258 questions; text from ultrachat_200k test_sft in Clef's state/questions schema, about 20% with synthetic image/video/audio, never used for calibration) are scored by the BF16 original and by the exported quant loaded through `serve_clef.py`. We report top-answer agreement and total variation between the per-option distributions. Benchmarks: the Decision Index reproduction kit (apolinario/decision-index), edition 0.2.1, driven over `/v1/systemone`, on one RTX PRO 6000 Blackwell.
 
 
+## Benchmarks
+
+Decision Index 0.2.1 (the edition behind Cloudflare's published Clef-Omni table), run with the public [decision-index kit](https://github.com/apolinario/decision-index) (suite rebuilt and hash-verified against the lab's manifest) over `/v1/systemone` on one RTX PRO 6000 Blackwell. We score a deterministic stratified sample of 3,000 requests (about 58 per benchmark, `suite sample --n 3000`) rather than all ~150K, so each benchmark carries roughly ±5-7 points of sampling noise; the averages and the paired deltas (both models on the identical questions, `score --reference`) are the reliable signals. The kit's headline index is coverage-adjusted over the full suite, so it is not meaningful on a sample and is not reported.
+
+| Benchmark (metric) | n | Cloudflare BF16 (published) | BF16 (ours) | This quant | Δ vs BF16 (same questions) |
+|---|---|---|---|---|---|
+| BFCL (case exact accuracy) | 59 | 98.2 | 100.0 | 100.0 | +0.0 |
+| ToolRet (nDCG@10) | 59 | 66.6 | 66.5 | 67.5 | +1.0 |
+| API-Bank (accuracy) | 59 | 92.7 | 79.7 | 81.4 | +1.7 |
+| BANKING77 (macro-F1) | 59 | 94.8 | 96.5 | 96.5 | +0.0 |
+| CLINC150+OOS (macro-F1) | 59 | 97.7 | 94.8 | 94.8 | +0.0 |
+| RouterBench (selected quality (quality objective)) | 118 | 79.9 | 78.8 | 78.8 | +0.0 |
+| Home appliance simulator (case exact accuracy) | 59 | 69.3 | 67.8 | 74.6 | +6.8 |
+| SGD/SGD-X (macro-F1) | 59 | 39.2 | 34.2 | 31.8 | -2.3 |
+| ContractNLI (macro-F1) | 59 | 80.3 | 79.4 | 78.5 | -1.0 |
+| ANLI (macro-F1) | 59 | 65.5 | 71.4 | 71.4 | +0.0 |
+| BPoMP (accuracy) | 246 | 96.8 | 98.4 | 98.0 | -0.4 |
+| Humicroedit (accuracy) | 59 | 70.1 | 64.4 | 62.7 | -1.7 |
+| POP909-CL (accuracy) | 59 | 2.6 | 1.7 | 1.7 | +0.0 |
+| cfcolor (accuracy) | 59 | 62.9 | 61.0 | 62.7 | +1.7 |
+| MMLU (accuracy) | 59 | 92.7 | 91.5 | 91.5 | +0.0 |
+| GPQA Diamond (accuracy) | 59 | 47.4 | 52.5 | 47.5 | -5.1 |
+| ARC-Easy (accuracy) | 59 | 99.8 | 96.6 | 96.6 | +0.0 |
+| ARC-Challenge (accuracy) | 59 | 97.8 | 96.6 | 96.6 | +0.0 |
+| WinoGrande (accuracy) | 59 | 96.7 | 100.0 | 100.0 | +0.0 |
+| HellaSwag (accuracy) | 59 | 99.1 | 94.9 | 94.9 | +0.0 |
+| GSM8K (accuracy) | 118 | 79.0 | 78.0 | 77.1 | -0.8 |
+| ChessBench (accuracy) | 58 | 22.1 | 17.2 | 17.2 | +0.0 |
+| MuSR (accuracy) | 58 | 83.8 | 82.8 | 89.7 | +6.9 |
+| SATA-Bench (case exact accuracy) | 58 | 31.9 | 31.0 | 31.0 | +0.0 |
+| SimpleBench (accuracy) | 10 | n/a | 40.0 | 40.0 | +0.0 |
+| BRIGHT (nDCG@10) | 58 | 42.0 | 38.0 | 37.3 | -0.6 |
+| Amazon ESCI (macro-F1) | 58 | 57.8 | 53.2 | 53.2 | +0.0 |
+| ACOS (per-review F1) | 228 | 28.4 | 26.1 | 26.2 | +0.0 |
+| FinEntity (macro-F1) | 58 | 96.3 | 97.5 | 96.7 | -0.8 |
+| VAST (macro-F1) | 58 | 50.9 | 59.3 | 59.2 | -0.1 |
+| NLI4CT (macro-F1) | 58 | 76.8 | 80.2 | 84.2 | +4.1 |
+| CRUXEval (accuracy) | 58 | 88.8 | 82.8 | 84.5 | +1.7 |
+| CLadder (accuracy) | 58 | 97.2 | 98.3 | 98.3 | +0.0 |
+| HLE (accuracy) | 58 | n/a | 13.8 | 13.8 | +0.0 |
+| ForecastBench (Brier (lower is better)) | 58 | 11.7 | 14.3 | 14.3 | -0.1 |
+| Habermas Machine (accuracy) | 58 | 67.8 | 67.2 | 67.2 | +0.0 |
+| PhishNChips phishing decisions (accuracy) | 58 | 73.2 | 79.3 | 72.4 | -6.9 |
+| MMLU-Pro (accuracy) | 58 | 70.6 | 74.1 | 75.9 | +1.7 |
+| BBH fixed-option tasks (accuracy) | 58 | 69.0 | 69.0 | 67.2 | -1.7 |
+| RAGTruth response-level hallucination (F1 on hallucinated class) | 58 | 42.0 | 56.2 | 51.6 | -4.6 |
+| HoVer claim verification (accuracy) | 58 | 64.2 | 67.2 | 63.8 | -3.4 |
+| When2Call MCQ (accuracy) | 58 | 63.3 | 56.9 | 53.4 | -3.4 |
+| New Yorker caption matching (accuracy) | 58 | 64.2 | 67.2 | 69.0 | +1.7 |
+
 ## Version history
 
 Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins it). Newest last.
@@ -85,6 +135,7 @@ Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins i
 | `v0.1` | 2026-10-10 | First release: AutoRound 0.16.0 INT4 W4A16 g128, experts-only, 200 SignRound steps per block on 512 Clef-format records (113 min on one RTX PRO 6000). Export graded through serve_clef.py: 95.7% top-answer agreement with BF16 (mean TV 0.033), 19.4 GiB weights in VRAM. |
 | `v0.2` | 2026-10-10 | Docs and script only, weights unchanged: serve_clef.py now regroups the 128 int4 experts per layer and runs them as dequant + grouped matmul, so a decision takes 212 ms instead of 2,689 ms (median, RTX PRO 6000) with the same answers (96.1% top-answer agreement with BF16 on the exported checkpoint) and 19.4 GiB of weights in VRAM. |
 | `v0.3` | 2026-10-10 | Made public. README only: quant comparison table now links the public NVFP4 sibling, with parity measured on the exported files; weights and serve_clef.py unchanged from v0.2. |
+| `v0.4` | 2026-10-10 | README only: Decision Index 0.2.1 results on a 3,000-request stratified sample. INT4 is within -0.13 points of BF16 on average (paired, 42 benchmarks; 33 within 2 points), and our BF16 run reproduces Cloudflare's published table within 0.4 points (70.3 vs 70.7 over 38 benchmarks). |
 
 ## License
 

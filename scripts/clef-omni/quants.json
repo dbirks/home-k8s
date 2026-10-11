@@ -17,7 +17,11 @@
       "vram_gib": 60,
       "parity": {},
       "bench": {
-        "index": null
+        "index": null,
+        "summary_file": "bench/bf16-n3000.benchmark-summary.json",
+        "mean": 70.32,
+        "mean_cf": 70.69,
+        "n_bench": 38
       },
       "best_for": "Reference quality, ~70 GB VRAM"
     },
@@ -136,7 +140,11 @@
         "mean_tv": 0.033
       },
       "bench": {
-        "index": null
+        "index": null,
+        "summary_file": "bench/int4-n3000.benchmark-summary.json",
+        "paired_file": "bench/int4-n3000.paired-vs-bf16.benchmark-summary.json",
+        "mean_delta": -0.13,
+        "within2": "33/42"
       },
       "best_for": "\u2b50 Recommended: best accuracy, smallest VRAM, any recent GPU",
       "tags": [
@@ -148,7 +156,7 @@
         "decision-model"
       ],
       "summary": "INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.",
-      "status": "recommended. Agrees with BF16 on 96.1% of held-out decisions (mean TV 0.033), the best of the family so far (target 98%). It is also the only variant that actually saves VRAM today: 19.4 GiB of weights (20.8 GiB peak) vs about 60 GiB, at BF16-like speed (about 0.21 s per decision on an RTX PRO 6000 with `serve_clef.py`). Decision Index benchmarks are in progress.",
+      "status": "recommended. Agrees with BF16 on 96.1% of held-out decisions (mean TV 0.033), the best of the family so far (target 98%). It is also the only variant that actually saves VRAM today: 19.4 GiB of weights (20.8 GiB peak) vs about 60 GiB, at BF16-like speed (about 0.21 s per decision on an RTX PRO 6000 with `serve_clef.py`). On the Decision Index (3,000-request sample) it scores within 0.13 points of BF16 on average.",
       "serving": [
         "transformers loads this checkpoint natively (AutoRound format). `serve_clef.py` then re-groups each layer's 128 int4 experts and runs them as one dequantize + grouped matmul per layer (`--no-fast-moe` turns this off), instead of AutoRound's per-expert Python loop. Weights stay int4 in VRAM (about 19.4 GiB) and Cloudflare's head runs unchanged. Works on non-Blackwell cards."
       ],
@@ -178,6 +186,11 @@
           "tag": "v0.3",
           "date": "2026-10-10",
           "note": "Made public. README only: quant comparison table now links the public NVFP4 sibling, with parity measured on the exported files; weights and serve_clef.py unchanged from v0.2."
+        },
+        {
+          "tag": "v0.4",
+          "date": "2026-10-10",
+          "note": "README only: Decision Index 0.2.1 results on a 3,000-request stratified sample. INT4 is within -0.13 points of BF16 on average (paired, 42 benchmarks; 33 within 2 points), and our BF16 run reproduces Cloudflare's published table within 0.4 points (70.3 vs 70.7 over 38 benchmarks)."
         }
       ]
     },
@@ -264,5 +277,54 @@
         "`scheme={bits: 4, group_size: 16, data_type: nv_fp, act_bits: 16}`, AutoRound 0.16.0, `iters=200`, `nsamples=512` Clef-format records fed through Clef's real multimodal forward path, `batch_size=1`, `gradient_accumulate_steps=8`, `ignore_layers=mlp.gate,lm_head,self_attn`; AutoRound's Qwen3-Omni handler unfuses the transformers-5 fused experts into per-expert linears; torch 2.11.0+cu130, transformers 5.10.2; one RTX PRO 6000 Blackwell."
       ]
     }
-  ]
+  ],
+  "cloudflare_published": {
+    "BFCL (case exact accuracy)": 98.2,
+    "ToolRet (nDCG@10)": 66.6,
+    "API-Bank (accuracy)": 92.7,
+    "BANKING77 (macro-F1)": 94.8,
+    "CLINC150+OOS (macro-F1)": 97.7,
+    "RouterBench (selected quality)": 79.9,
+    "Home appliance simulator (case exact accuracy)": 69.3,
+    "SGD/SGD-X (macro-F1)": 39.2,
+    "ContractNLI (macro-F1)": 80.3,
+    "ANLI (macro-F1)": 65.5,
+    "BPoMP (accuracy)": 96.8,
+    "Humicroedit (accuracy)": 70.1,
+    "POP909-CL (accuracy)": 2.6,
+    "cfcolor (accuracy)": 62.9,
+    "MMLU (accuracy)": 92.7,
+    "GPQA Diamond (accuracy)": 47.4,
+    "ARC-Easy (accuracy)": 99.8,
+    "ARC-Challenge (accuracy)": 97.8,
+    "WinoGrande (accuracy)": 96.7,
+    "HellaSwag (accuracy)": 99.1,
+    "GSM8K (accuracy)": 79.0,
+    "ChessBench (accuracy)": 22.1,
+    "MuSR (accuracy)": 83.8,
+    "SATA-Bench (case exact accuracy)": 31.9,
+    "BRIGHT (nDCG@10)": 42.0,
+    "Amazon ESCI (macro-F1)": 57.8,
+    "ACOS (per-review F1)": 28.4,
+    "FinEntity (macro-F1)": 96.3,
+    "VAST (macro-F1)": 50.9,
+    "NLI4CT (macro-F1)": 76.8,
+    "CRUXEval (accuracy)": 88.8,
+    "CLadder (accuracy)": 97.2,
+    "ForecastBench (Brier, lower is better)": 11.7,
+    "Habermas Machine (accuracy)": 67.8,
+    "PhishNChips (accuracy)": 73.2,
+    "MMLU-Pro (accuracy)": 70.6,
+    "BBH (accuracy)": 69.0,
+    "RAGTruth (hallucination F1)": 42.0,
+    "HoVer (accuracy)": 64.2,
+    "When2Call MCQ (accuracy)": 63.3,
+    "New Yorker (accuracy)": 64.2,
+    "Invoice processing | Exact actions": 60.2,
+    "Invoice processing | Primary action": 82.0,
+    "Customer service | Exact actions": 71.6,
+    "Security incidents | Exact actions": 61.7,
+    "Agent trace observability | Primary action": 65.8
+  },
+  "bench_note": "Decision Index 0.2.1 (the edition behind Cloudflare's published Clef-Omni table), run with the public [decision-index kit](https://github.com/apolinario/decision-index) (suite rebuilt and hash-verified against the lab's manifest) over `/v1/systemone` on one RTX PRO 6000 Blackwell. We score a deterministic stratified sample of 3,000 requests (about 58 per benchmark, `suite sample --n 3000`) rather than all ~150K, so each benchmark carries roughly \u00b15-7 points of sampling noise; the averages and the paired deltas (both models on the identical questions, `score --reference`) are the reliable signals. The kit's headline index is coverage-adjusted over the full suite, so it is not meaningful on a sample and is not reported."
 }
