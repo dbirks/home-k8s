@@ -1,0 +1,44 @@
+# FP8 export parity through serve_clef.py (issue #154): same 128 held-out records vs the BF16 reference,
+# packed FP8 experts (default) and with --simulate-fp8-activations (dynamic per-1x128 activation rounding).
+# Also copies the finished NVFP4 W4A4 benchmark summaries next to the others. GPU; Pennyroyal at 0.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-grade-fp8
+  namespace: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels: { app: clef-omni-grade-fp8 }
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      runtimeClassName: nvidia
+      containers:
+        - name: grade
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -uo pipefail
+              export HF_HOME=/work/.hf-home HF_HUB_OFFLINE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+              PY=/work/venv/bin/python; E=/scripts/eval_export.py; fail=0
+              run() { local name=$1; shift; echo "[$(date -u +%FT%TZ)] === $name ==="
+                      "$PY" "$E" "$@" 2>&1 | tee "/work/logs/grade-$name.log" | grep -E 'EXPORT PARITY|packed|Traceback|Error' | grep -v Warning
+                      [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "FAILED: $name"; fail=1; }; }
+              run fp8        --export /work/fp8/export --out /work/fp8/results/export
+              run fp8-actsim --export /work/fp8/export --out /work/fp8/results/export-actsim --simulate-fp8-activations
+              echo "grading done, fail=$fail"; exit $fail
+          resources:
+            requests: { cpu: "2", memory: 12Gi }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }
+        - { name: scripts, configMap: { name: clef-omni-scripts } }
