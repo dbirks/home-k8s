@@ -1,6 +1,6 @@
 ---
 name: clef-omni-nvfp4
-description: Quantize Cloudflare Clef-Omni (Qwen3-Omni-30B-A3B thinker plus a BF16 joint decision head) to NVFP4 W4A4 with NVIDIA ModelOpt on the single RTX PRO 6000 (SM120), and run any ModelOpt PTQ against a transformers-5 MoE model here. Use when re-running or extending the issue 145 quant Jobs, when a ModelOpt PTQ Job dies after a long weight load, or when grading a quantized Clef against its BF16 goldens.
+description: Quantize, serve, grade and benchmark Cloudflare Clef-Omni (NVFP4, NVFP4A16, INT4, FP8). Quantize Cloudflare Clef-Omni (Qwen3-Omni-30B-A3B thinker plus a BF16 joint decision head) to NVFP4 W4A4 with NVIDIA ModelOpt on the single RTX PRO 6000 (SM120), and run any ModelOpt PTQ against a transformers-5 MoE model here. Use when re-running or extending the issue 145 quant Jobs, when a ModelOpt PTQ Job dies after a long weight load, or when grading a quantized Clef against its BF16 goldens.
 ---
 
 # Clef-Omni NVFP4 (ModelOpt) on home-k8s
@@ -101,3 +101,40 @@ expert layers, down_proj) in FP8/BF16.
 `results/quantizer_state.pt` holds `mto.modelopt_state(backbone)` plus every `*quantizer*` tensor.
 Load BF16 the same way, `mto.restore_from_modelopt_state(backbone, state["modelopt_state"])`,
 `backbone.load_state_dict(state["quantizer_state_dict"], strict=False)`, then export.
+
+## The family pipeline (2026-10-11, issues #150-#154)
+
+Everything lives in `scripts/clef-omni/` (source of truth). `render_configmap.py` renders it into the
+`clef-omni-scripts` ConfigMap, which Jobs mount at `/scripts`.
+
+| Script | Job pattern | Notes |
+|---|---|---|
+| `quant_int4_autoround.py` (`AR_SCHEME=W4A16\|NVFP4\|NVFP4A16`) | `apps/clef-omni-quant-{int4,nvfp4a16-ar,nvfp4-ar}-*.yaml.hold` | rehearsal first; host-RAM guard (keeps AutoRound from moving the whole model to CPU); fails on swallowed calibration errors |
+| `quant_fp8_block.py` | `apps/clef-omni-quant-fp8-*.yaml.hold` (CPU) | per-expert BF16 to FP8 128x128 straight from the shards, transformers' Fp8Quantize math, 15 min, 1.2 GiB RSS |
+| `serve_clef.py` (PEP 723) | published in every HF repo | BF16 / AutoRound INT4 (grouped int4 fast path) / ModelOpt + AutoRound NVFP4 (packed) / FP8 block (packed) |
+| `eval_export.py` + `reparity.py` | `apps/clef-omni-grade-*.yaml.hold` | parity of the EXPORT through serve_clef.py; reparity rescores saved rows against a new reference |
+| `model_cards.py` + `quants.json` + `hf_publish.py` | `apps/clef-omni-publish-*.yaml.hold` | card table, recommended-for list, per-benchmark section, version history; tags carry the version note |
+
+Decision Index: `apps/decision-index-bench-all-*.yaml.hold`. It runs serve_clef.py per model on
+localhost, then the kit's http engine over a 3,000-request 0.2.1 sample, score, and `score --reference` vs BF16.
+
+## Lessons (each cost a run)
+- **Parity noise floor: BF16 vs BF16 under eager vs grouped experts agrees only 95.7% (TV 0.028).**
+  Always grade against a reference produced by the SAME code path (`eval_export.py --export /work/clef-omni`).
+  A 98% top-1 target is unreachable. Judge by TV vs the floor.
+- **ModelOpt NVFP4 exports differ from ModelOpt's in-memory fake-quant** (93.4% fake vs 91.1% file for W4A16),
+  because export recomputes scales (shared gate/up global scale). Grade the file.
+- **AutoRound 0.16 cannot load its own weight-only NVFP4 export** (no inference backend for act_bits 16).
+  serve_clef.py dequantizes it (reciprocal `weight_global_scale`, low nibble first).
+- **AutoRound INT4 inference was 2.7 s per decision:** its Qwen3-Omni unfuse plus QuantLinear falls back to a
+  per-expert Python loop with a GPU sync per expert. serve_clef.py re-stacks the experts and does dequant +
+  grouped_mm: 0.21 s.
+- **AutoRound NVFP4 W4A4:** OOM at the defaults; `low_gpu_mem_usage` + seqlen 4096 fits at 90.9 GB but runs
+  ~10 min per block (~9.5 h). With 128 records some experts get no tokens, so there is no `act_max` and the
+  export asserts. Shelved.
+- **The Decision Index headline index is coverage-adjusted over the full ~150K suite,** so it reads about 2 on a
+  sample. Report per-benchmark scores and paired deltas instead.
+- **Bench Job r1 exited 0 after every server died** (no fastapi/uvicorn in the venv). Check for results, not for Job
+  completion.
+- **Workstation /home is btrfs and nearly full.** uv caches from local tests filled the metadata space, which
+  makes git fail with "unable to write new index file". Run `uv cache prune` / `uv cache clean`.
