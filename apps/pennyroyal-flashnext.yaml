@@ -81,7 +81,7 @@ spec:
             - { name: SGLANG_SM120_ONLINE_MXFP8, value: "false" }     # A0 baseline; A1 flips to true
             - { name: SGLANG_MM_PREPROCESS_DEVICE, value: cpu }
             - { name: SGLANG_FORWARD_UNKNOWN_TOOLS, value: "true" }
-            - { name: MAX_RUNNING_REQUESTS, value: "4" }
+            - { name: MAX_RUNNING_REQUESTS, value: "6" }               # 2026-10-12: 4 -> 6 (Collective concurrency 6)
             - { name: MAX_MAMBA_CACHE_SIZE, value: "24" }
             # MAX_TOTAL_TOKENS unset -> qualified 824,384 shared KV. 1,000,000 is a later, separate test.
             - { name: PENNY_REASONING_EFFORT, value: medium }

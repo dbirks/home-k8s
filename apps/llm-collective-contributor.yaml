@@ -40,11 +40,11 @@ data:
     backends:
       # Qwen3.8-Flash-Next on Pennyroyal v2.5.3 (SGLang fork), whole card (#135). The engine's
       # served name is hard-coded to `pennyroyal`; the Collective exposes it as the alias.
-      # concurrency 4 = the recipe's MAX_RUNNING_REQUESTS (824K shared KV, 524K ctx per request).
+      # concurrency 6 = Pennyroyal's MAX_RUNNING_REQUESTS (raised from 4 on 2026-10-12; 824K shared KV, 524K ctx per request).
       - name: pennyroyal
         url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
         protocols: [openai, anthropic]   # SGLang serves /v1/chat/completions and /v1/messages natively
-        concurrency: 4
+        concurrency: 6
         models:
           - alias: qwen3-8-flash-next
             model: pennyroyal
