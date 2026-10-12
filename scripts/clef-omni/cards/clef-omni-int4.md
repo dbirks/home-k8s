@@ -15,7 +15,7 @@ tags:
 
 INT4 weight-only (W4A16, group size 128, symmetric) quantization of [Cloudflare/clef-omni](https://huggingface.co/Cloudflare/clef-omni) (revision `0db1cd2`) made with Intel AutoRound 0.16.0 (SignRound, 200 tuning steps per block on Clef-format records). Only the thinker's MoE experts are quantized; everything else, including the Clef joint decision head, stays BF16.
 
-> **Status:** recommended. Agrees with BF16 on 96.5% of held-out decisions (TV 0.034), at the measurement's noise floor (BF16 vs itself under a different kernel: 95.7%), and scores within 0.13 points of BF16 on the Decision Index. It is the only variant that actually saves VRAM today (19.4 GiB of weights) at BF16-like speed (about 0.21 s per decision).
+> **Status:** recommended. Agrees with BF16 on 96.5% of held-out decisions (TV 0.034), at the measurement's noise floor (BF16 vs itself under a different kernel: 95.7%), scores within 0.13 points of BF16 on the Decision Index sample, and scores **56.93** on the full Decision Index 0.2.1 (56.42 on 0.3). It is the only variant that actually saves VRAM today (19.4 GiB of weights) at BF16-like speed (about 0.21 s per decision).
 
 ## Which Clef-Omni quant should I use?
 
@@ -78,6 +78,12 @@ Parity: 128 held-out records (258 questions; text from ultrachat_200k test_sft i
 
 ## Benchmarks
 
+### Full Decision Index
+
+Full-suite Decision Index for clef-omni-int4 (every scoreable request, coverage 100%, 0 errors): **56.93** on edition 0.2.1 (raw 66.87; areas: knowledge 49.96, language 54.48, retrieval 58.92, tools 73.38, arts 47.27) and **56.42** on the live 0.3 board (raw 66.84). For orientation on the public board: Cloudflare Clef (Qwen3.8-27B base) 61.21 / 61.71, Jev 57.91 / 57.89, Clef-flash 57.07 (0.2.1). Cloudflare publishes per-benchmark Clef-Omni scores but no Clef-Omni index, so there is no BF16 index to compare directly; the paired 3,000-request sample puts INT4 within 0.13 points of BF16. Run with `serve_clef.py`, which uses Cloudflare's encode_record (it truncates state beyond 64K tokens, where the board's rule counts such rows unsupported).
+
+### Paired sample vs BF16
+
 Decision Index 0.2.1 (the edition behind Cloudflare's published Clef-Omni table), run with the public [decision-index kit](https://github.com/apolinario/decision-index) (suite rebuilt and hash-verified against the lab's manifest) over `/v1/systemone` on one RTX PRO 6000 Blackwell. We score a deterministic stratified sample of 3,000 requests (about 58 per benchmark, `suite sample --n 3000`) rather than all ~150K, so each benchmark carries roughly ±5-7 points of sampling noise; the averages and the paired deltas (both models on the identical questions, `score --reference`) are the reliable signals. The kit's headline index is coverage-adjusted over the full suite, so it is not meaningful on a sample and is not reported.
 
 | Benchmark (metric) | n | Cloudflare BF16 (published) | BF16 (ours) | This quant | Δ vs BF16 (same questions) |
@@ -137,6 +143,7 @@ Each version is an annotated git tag on this repo (`revision="v0.1"` etc. pins i
 | `v0.3` | 2026-10-10 | Made public. README only: quant comparison table now links the public NVFP4 sibling, with parity measured on the exported files; weights and serve_clef.py unchanged from v0.2. |
 | `v0.4` | 2026-10-10 | README only: Decision Index 0.2.1 results on a 3,000-request stratified sample. INT4 is within -0.13 points of BF16 on average (paired, 42 benchmarks; 33 within 2 points), and our BF16 run reproduces Cloudflare's published table within 0.4 points (70.3 vs 70.7 over 38 benchmarks). |
 | `v0.5` | 2026-10-11 | README only: parity re-measured against a same-path BF16 reference (96.5% top-1, TV 0.034; BF16 noise floor 95.7%), comparison table updated with the public NVFP4 benchmarks; serve_clef.py now also loads FP8 and AutoRound NVFP4 checkpoints and keeps NVFP4 experts packed (about 28 GB instead of about 60 GB). |
+| `v0.6` | 2026-10-12 | README only: full-suite Decision Index (every request, 0 errors): 56.93 on edition 0.2.1 (raw 66.87) and 56.42 on 0.3, with per-area scores and board context. |
 
 ## License
 

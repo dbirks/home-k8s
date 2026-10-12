@@ -50,7 +50,10 @@ def bench_section(q, all_q):
     def cf_for(name):
         w = name.split()[0].lower().rstrip(":")
         return next((v for k, v in cf.items() if k.split()[0].lower() == w), None)
-    out = ["## Benchmarks", "", DATA["bench_note"], "",
+    full = []
+    if b.get("index") is not None and DATA.get("board_note"):
+        full = ["### Full Decision Index", "", DATA["board_note"], "", "### Paired sample vs BF16", ""]
+    out = ["## Benchmarks", ""] + full + [DATA["bench_note"], "",
            "| Benchmark (metric) | n | Cloudflare BF16 (published) | BF16 (ours) | This quant | Δ vs BF16 (same questions) |",
            "|---|---|---|---|---|---|"]
     for name in sorted(B, key=lambda n: B[n]["catalog_id"]):
