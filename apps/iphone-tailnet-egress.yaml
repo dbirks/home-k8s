@@ -1,0 +1,32 @@
+# Cluster -> tailnet egress to David's iPhone model server (issue-less, added 2026-10-13).
+#
+# Pods have no route to 100.64.0.0/10, so the Collective contributor reaches the
+# phone through a tailscale-operator Egress Service: the operator (default/
+# operator, OAuth via secret operator-oauth) provisions a tailnet proxy that
+# dials the MagicDNS FQDN, and the cluster-local Service name fronts it.
+# No per-pod sidecar, no authkey needed.
+#
+# Phone: tailnet node `iphone185` (dbirks@) = iphone185.beluga-wyvern.ts.net =
+# 100.102.205.4. The iPhone app serves an OpenAI-compatible HTTP API on port
+# 8889 — every port used must be listed in `ports:` below or the proxy won't
+# forward it.
+#
+# iOS reality: the server only lives while the app is in the foreground; the
+# phone drops off the tailnet the moment it sleeps. Consumers must treat this
+# backend as intermittently unreachable (contributor retries per request).
+#
+# Verify: kubectl wait --for=condition=TailscaleEgressSvcReady=true \
+#           svc/iphone-llm -n default --timeout=5m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iphone-llm
+  namespace: default
+  annotations:
+    tailscale.com/tailnet-fqdn: iphone185.beluga-wyvern.ts.net
+spec:
+  type: ExternalName
+  externalName: placeholder   # overwritten by the tailscale operator with the proxy endpoint
+  ports:
+    - { name: http, port: 8889, protocol: TCP }
