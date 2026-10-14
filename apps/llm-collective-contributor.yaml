@@ -66,7 +66,7 @@ data:
             inputs: [text, image]
       # David's iPhone (tailnet iphone185.beluga-wyvern.ts.net:8889) via the
       # tailscale egress Service `iphone-llm` (apps/iphone-tailnet-egress.yaml).
-      # Apple's on-device Foundation Models bridge. iOS suspends the server the
+      # Gemma 3n-E4B Instruct Q2_K served on-device. iOS suspends the server the
       # moment the app leaves the foreground, so this backend is intermittently
       # unreachable by design; the contributor retries per request. The phone's
       # server reports usage tokens as 0, so Collective token stats for it are empty.
@@ -75,8 +75,8 @@ data:
         protocols: [openai]
         concurrency: 1
         models:
-          - alias: apple-foundation
-            model: apple-foundation
+          - alias: gemma-3n-e4b
+            model: Gemma 3n-E4B Instruct (Q2_K)
       # PARKED 2026-09-28: ninfer is scaled to 0 while Pennyroyal owns the card.
       # - name: ninfer
       #   url: http://ninfer.default.svc.cluster.local:8000
