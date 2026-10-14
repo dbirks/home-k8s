@@ -60,9 +60,9 @@ spec:
       enableServiceLinks: false
       containers:
         - name: relay
-          # Pinned stable-channel digest (verified 2026-10-08). Non-root
+          # Pinned stable-channel digest (verified 2026-10-13). Non-root
           # `happier` user + light/SQLite defaults are baked into the image.
-          image: ghcr.io/happier-dev/relay-server:stable@sha256:61d88f9b75961098b0d03a151a545f4436360a12cc3ba7c7a33f58b267ebda90
+          image: ghcr.io/happier-dev/relay-server:stable@sha256:0bacc8e947e579f329be15fe473dfe8d7b560fc44d1899ec073d7f3f4dda7739
           env:
             # Canonical URL clients/iOS use — advertised via GET /v1/features
             # and embedded in QR/deep links. Must match what the browser opens.
