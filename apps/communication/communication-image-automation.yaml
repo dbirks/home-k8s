@@ -1,0 +1,88 @@
+# Communication — Flux image automation (tracks the latest green main build).
+#
+# dbirks/communication CI publishes a moving :main tag (and :sha-<short>, which
+# is not orderable) on every push to main. So the policy elects the single tag
+# `main` and reflects its DIGEST (digestReflectionPolicy: Always); the Setters
+# marker in communication.yaml is rewritten to `:main@sha256:<new>` whenever
+# :main moves, which is a real git commit and therefore a real rollout.
+#
+# The package is PRIVATE, so the ImageRepository scans with
+# communication-ghcr-pull (same read:packages PAT as market-agent-ghcr-pull;
+# rotate both together).
+#
+# Git push: the cluster's flux-system deploy key is READ-ONLY (that's why the
+# shepherd ImageUpdateAutomation has never landed a commit). This automation
+# pushes through its own GitRepository using the `flux-image-automation`
+# read-write deploy key (GitHub repo settings -> Deploy keys; private half in
+# flux-image-automation-git.enc.yaml). Scope is ./apps/communication only, so
+# it can't pick up the other (stale) Setters markers elsewhere in ./apps.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: flux-image-automation
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  ref:
+    branch: main
+  secretRef:
+    name: flux-image-automation-git
+  url: ssh://git@github.com/dbirks/home-k8s
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: communication
+  namespace: flux-system
+spec:
+  image: ghcr.io/dbirks/communication
+  interval: 5m0s
+  secretRef:
+    name: communication-ghcr-pull
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: communication
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: communication
+  filterTags:
+    pattern: '^main$'
+  policy:
+    alphabetical:
+      order: asc
+  digestReflectionPolicy: Always
+  interval: 5m0s
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: communication
+  namespace: flux-system
+spec:
+  interval: 5m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-image-automation
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: fluxcdbot
+        email: fluxcdbot@users.noreply.github.com
+      messageTemplate: |
+        chore(images): bump communication to latest main
+
+        {{ range .Changed.Changes -}}
+        - {{ .OldValue }} -> {{ .NewValue }}
+        {{ end -}}
+    push:
+      branch: main
+  update:
+    path: ./apps/communication
+    strategy: Setters

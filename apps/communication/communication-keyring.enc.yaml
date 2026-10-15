@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    master-key-v1: ENC[AES256_GCM,data:nxnV/Isc4ddFbPh6lrQI/11gmCyOyDcM3A5c/fqkqwOssT+IKWSmcEBDfOIC0/dT+z5e21aq2vTDqVBxYfZDjH86ZOLBThX3OIAsE80DYHsgWsdrwBiFPQ==,iv:lI2Doe+5/m4I9fZpRfWsfdnOkQUwn0ylrdS4ldcsYSI=,tag:9nQW7M2M4sZ0qiYO2Mu5oQ==,type:str]
+kind: Secret
+metadata:
+    name: communication-keyring
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBmeTRqeEhTWlZRZTFwRzl0
+            MkxoK1JvSEliN3RRTlBEQ2VhR1BXSjYvM2s0CjFaZDk0d2FhRVFHMG1jMjZOa040
+            NnVoVG92b2Via0NXaWxNWEIvSmxlWmMKLS0tIElRcitEYU9GWWxIS3FSV2RpTGs5
+            d09KUzVJbFRwS0VQZ2dVWWE0TS96RlkKl0NGHQ4J0fLeZwSaoTcE51J6axHFyGEg
+            a9X+addE5Ge2kS9BuagsLqSWMlWY1Za2GfQL1GCXrHiue8+w+4Utlg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-15T18:11:22Z"
+    mac: ENC[AES256_GCM,data:9W44OrHFuYmTW+aOQBd1djXTlNAUhZalw9T6WcPpXZGeZy7rGRs51kd+UOq+1NbDPVduw2SqhtBPQ+fH4wejP7OlBnYDGsGi/pxwKc19ZpjWq0HPJxfQdofFzcBxaHotXWLXTF5Wbn2kDmjc/9+UDZF6uNN1+UkFZIFjYj9aOXY=,iv:tYYZJl206hAnlok4bE+UfdU87F5xOk5aAIYWyLgIDP4=,tag:Peh0XqQLwGJ/Q6IuRORaxg==,type:str]
+    version: 3.13.3

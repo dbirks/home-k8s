@@ -1,0 +1,279 @@
+# Communication — control plane (`communication serve`) + Postgres.
+#
+# Source: github.com/dbirks/communication (PRIVATE). Its CI `image (main)` job
+# pushes ghcr.io/dbirks/communication:main (+ :sha-<short>) on every green push
+# to main; communication-image-automation.yaml pins the :main digest below and
+# bumps it via Flux image automation.
+#
+# Endpoint: https://communication.beluga-wyvern.ts.net (Tailscale Ingress,
+# tailnet-only). Artifact previews get their own origin,
+# https://communication-preview.beluga-wyvern.ts.net (ADR-0020 D6: previews
+# must be a different HOSTNAME so the host-only session cookie never reaches
+# them).
+#
+# Login: OIDC via tsidp (infra/tsidp.yaml). Client "communication" was
+# registered in the tsidp admin UI (https://idp.beluga-wyvern.ts.net, from a
+# tailnet-admin workstation); its id is below, its secret is in
+# communication-secrets.enc.yaml. If tsidp's PVC is ever lost, recreate the
+# client (redirect URI https://communication.beluga-wyvern.ts.net/auth/callback)
+# and re-capture the secret into SOPS. tsidp's `sub` is the tailnet user id as
+# `userid:<hex>` — derive yours with
+#   printf 'userid:%x\n' "$(tailscale status --json | jq .Self.UserID)"
+# and list it in COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS to get org admin.
+#
+# NOT YET DEPLOYED: the execution worker. The published image is the plain
+# runtime (binary + git); the worker needs worker/Dockerfile's image (Node, ACP
+# adapters, nono, APM), which CI does not publish yet. Until it does, the UI
+# and API work but no agent turn can run.
+#
+# Single replica: the app is stateless (all state in Postgres) so more replicas
+# are fine later; one is plenty on this node.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: communication-postgres-data
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: communication-postgres
+  namespace: default
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: communication-postgres }
+  template:
+    metadata:
+      labels: { app: communication-postgres }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          # Same major as the repo's compose.yml/CI (postgres:18.6).
+          image: postgres:18.6
+          ports:
+            - { containerPort: 5432, name: postgres }
+          env:
+            - { name: POSTGRES_USER, value: communication }
+            - { name: POSTGRES_DB, value: communication }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: communication-secrets, key: POSTGRES_PASSWORD }
+          volumeMounts:
+            # Postgres 18 images keep data under /var/lib/postgresql/18/docker,
+            # so mount the parent (see the repo's compose.yml).
+            - { name: data, mountPath: /var/lib/postgresql }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 1000m, memory: 1Gi }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "communication", "-d", "communication"] }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "communication", "-d", "communication"] }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: communication-postgres-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: communication-postgres
+  namespace: default
+spec:
+  selector: { app: communication-postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: postgres }
+---
+# Artifact bytes (ADR-0020 D2). serve only ever READS them (the worker writes);
+# created now so the worker can share it once it exists (RWO is fine on one node).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: communication-artifacts
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: communication
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: communication }
+  template:
+    metadata:
+      labels: { app: communication }
+    spec:
+      enableServiceLinks: false
+      # Same read:packages PAT secret market-agent uses (apps/market-agent-ghcr-pull.enc.yaml);
+      # the older shared ghcr-pull secret can't read this package.
+      imagePullSecrets:
+        - name: market-agent-ghcr-pull
+      # tsidp is tailnet-only; map its FQDN to the idp-egress ClusterIP
+      # (infra/tailscale-egress-idp.yaml), same as affine/videogen/openwebui.
+      # Update the IP if that egress Service is ever recreated.
+      hostAliases:
+        - ip: "10.109.232.240"
+          hostnames: [idp.beluga-wyvern.ts.net]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # One-shot schema migration (ADR-0013): serve never migrates itself, it
+        # only refuses readiness until the schema is current.
+        - name: migrate
+          # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841
+          args: ["migrate", "up"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - secretRef: { name: communication-secrets }
+        # LoadKeyring refuses symlinks, stray files and any group/other mode
+        # bit, so a Secret volume (..data symlinks, 0644) can't be pointed at
+        # directly. Copy the key into a 0700 emptyDir as a 0600 regular file.
+        - name: keyring
+          # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841
+          command: ["sh", "-ec"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          args:
+            - |
+              umask 077
+              chmod 700 /keyring
+              cp /keyring-src/master-key-v1 /keyring/master-key-v1
+              chmod 600 /keyring/master-key-v1
+          volumeMounts:
+            - { name: keyring-src, mountPath: /keyring-src, readOnly: true }
+            - { name: keyring, mountPath: /keyring }
+      containers:
+        - name: serve
+          # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841
+          args: ["serve"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          ports:
+            - { containerPort: 8080, name: http }
+          envFrom:
+            # COMMUNICATION_DATABASE_URL, COMMUNICATION_OIDC_CLIENT_SECRET,
+            # COMMUNICATION_PREVIEW_TOKEN_SECRET (+ POSTGRES_PASSWORD, unused here)
+            - secretRef: { name: communication-secrets }
+          env:
+            - { name: COMMUNICATION_LISTEN_ADDR, value: ":8080" }
+            - { name: COMMUNICATION_PUBLIC_URL, value: "https://communication.beluga-wyvern.ts.net" }
+            - { name: COMMUNICATION_REPLICA_NAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+            - { name: COMMUNICATION_OIDC_ISSUER, value: "https://idp.beluga-wyvern.ts.net" }
+            - { name: COMMUNICATION_OIDC_CLIENT_ID, value: "556debffc484b7820c30093a21e1e199" }
+            - { name: COMMUNICATION_COOKIE_SECURE, value: "true" }
+            # dbirks@github (see header for how to derive a subject).
+            - { name: COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS, value: "userid:3b462b6d21faef" }
+            - { name: COMMUNICATION_ARTIFACT_BACKEND, value: local }
+            - { name: COMMUNICATION_ARTIFACT_ROOT, value: /artifacts }
+            - { name: COMMUNICATION_SECRET_KEYRING, value: /keyring }
+            - { name: COMMUNICATION_PREVIEW_HOST, value: "communication-preview.beluga-wyvern.ts.net" }
+            - { name: COMMUNICATION_PREVIEW_BASE_URL, value: "https://communication-preview.beluga-wyvern.ts.net" }
+          volumeMounts:
+            - { name: artifacts, mountPath: /artifacts, readOnly: true }
+            - { name: keyring, mountPath: /keyring, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /api/v1/system/readiness, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /api/v1/system/health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 1000m, memory: 512Mi }
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim: { claimName: communication-artifacts }
+        - name: keyring-src
+          secret:
+            secretName: communication-keyring
+            defaultMode: 0400
+        - name: keyring
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: communication
+  namespace: default
+spec:
+  selector: { app: communication }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: communication-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [communication]
+  rules:
+    - host: communication
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: communication
+                port: { number: 80 }
+---
+# Preview origin (ADR-0020 D6): same Service, separate tailnet hostname. serve
+# answers only /preview/* on this host and refuses everything else.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: communication-preview-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [communication-preview]
+  rules:
+    - host: communication-preview
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: communication
+                port: { number: 80 }

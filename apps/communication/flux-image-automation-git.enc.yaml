@@ -1,0 +1,24 @@
+apiVersion: v1
+data:
+    identity: ENC[AES256_GCM,data:cdIzEgQuko2hZV/tNTn3pyxIsQkYyqGg4fYw+dkZnAn2wYqsHCc6N9v2U1BzcpP3yQxKTR6gv5BauJgcbA7UPEyWUn8h3yMtrV+lf1yydteNZqzhg9hd9ETk2qhETNI2CUhXaWSbmPL87rOyuBIuUkbjwZgaPq/3A6rlPQuQTiNoZyNNf9wrJ6NLN9zcfbInsJe2aKZCUeVAPe6L1FOMb+AC25HqjWiFPE17f/cKYPk2BEieO61hPt5IJpLa0ayb0EAgKfGU6GyklNXp11tn2LirE/a0zL1o6lcmkt3j6dpYCFmzrFA4bsKGJIg36FMCnTyskG4pKrBF3gqBoT3GVjlEy8Kjym0ZYN/zOkH0w+Q2DBCgPx/o17sIAfOA1sktFUO+pCZZe6rkRAe4cwf8bjCXaCW+gA+VnnRrN4UoDJH5dEGZdUPxpPMtkFnCPmvHsJCVW81M/WPrifi4Q8H6YB8UmriKbF8LAasdzLYl89kRTSCPi6YItemDnIxoeXYYgi55aSD1xL7sx3nA9X/Kvm1ERunVs4Temk3mu2SDuTxvEDX5EW8hAVvHG2wfKxXRl6/zJ8x0hsmIKYSHkQ9gtCKA5MEXbtEvj8TtAp/0og48/Kcnw+0awaZkhvjRgsjrbiVmLIAywuBG8xRKIetw6LJ8a4HOCpfaZX8xoADWaCnMK8GO/N/Xokk78DK1wo2p6fWhn/iGoaxmMdlz3cDUR6ViTvDhnaaVC+aQ9W/FX+46JkDzv75VFdH0bvsX6TY9,iv:0X/k+8pkuzV4/N5v6GqElmPcTSX0Qe9Z3D/dxw6Jk2s=,tag:tT0LVBPe1zIUkrVXyf59IQ==,type:str]
+    identity.pub: ENC[AES256_GCM,data:5CaEZZ3KCpIQrstebw1zNgXdd/j1CLvYY++fdYzIEoh2/u/zRApgePxPCmEyaDJyXt3V/vsdsHwBqnVwi5fObu+AAzGWBNsr6KqSv33Fq6Ytgzl7E/UigCT3TSQ7jTXgswqWPX7liyl4vUI7XjoqDNm9anRyKztqaIKHKuhLPgfFybRVy5AWXjkj1sx4p7T/Z/cgLzs/ArY=,iv:Gnre2CgOJnWjzipL8jHoTs6QauY9prxELpi4rttQFlc=,tag:UmLHSQySrfb3GkesfLWirA==,type:str]
+    known_hosts: ENC[AES256_GCM,data:48PMKFOxUd+yid9YR6tIaY1hJleZMT8Vn8uD5XUTMJ25jgb23k7T26XzugnjN6T9Y6uHVbrAczfWfB7JgagRoN+YsaWLQRKboAbx1bU/DHk2RgT9PSJSGi5iXQCjdSR+/tUWyIH2jOTlSJuNsnzX4Yy0AxZpb48Uvj4voTD8Vch7yky5ydvfecNfV0rmWDLkDEBOnG/tT/MWYKGDmKQrFyUein5iGDiBY7ZoF2BTo6PSpuU7I1Zyf7JzhUY7bLyCIObuCt6vcyrvZyjUq5qd8MM/vMhwKXTTZ7f0vmcPcFazr9Hi4zMGkyH9UGhMm+l7+f54CSTgf4+vQ8dy7izz3CmjSCS0Cu0b+5ua24DgucUJlJdllYrsZvKFvYcX3nv3LSDpDAMAop3kIWIHy2JmB2nVIui6/RFLgGu0XpoKrHABmFhu5GpSi52rmawFVDL5dGFvlCEJgB/m9CA/EsiBWzBmWqi0fCD3QMG+eUPM/oBj521JQdLZtUPtOUgzslfued83gPumRxpUgVRSkYmS3hqkYhgW3cVvG1DPsLKkVZwLy80g/zxRevnu4RoNX0AHgj2ii/7SbnbLyYgoK2WY2l0uXunHNFvNGSsjreA+c+N2CjA32qbb7yhIxsvZanLmjrbKlW1JBT6L0Lc11LpK4dh+geo21vRe/JUExl61FB3TYK3vsYbJOgLYdPJnioLsM1YpmjXfqR9Ylji0oGEXuZ5yy3PdrQcUFh+VWZEi/UvMmYxmQ1W7mA8B6YRNZjjqDVeyq8czYSarnLRGm9FvU/uyGiAGrcv2ATRjH+4jxGv5WD9/xMl/crs3LuUDUl3joOstvqLON6GedP7YgNhO8hb8PCX/cZ7bgu6YCTuJ+oOfIgueGZ49xRapFVTTMoBXUtoOkBSnFrslwmiOdQeAd8skDLkCEujF9aa37TNUrIFzzqu01lalv7npU49bGUvtDCSta5QIrSmfyuc+ZhW63keKrDipPztg1VFgSAyUiJ4XsaFr+55GTWrWqy3O4DUvm8I9jVf2+0mtFnvEOZ2vO9t8KE+dWvU/U62Uw/48mcL7RljCt5hvaBzxFWLA2zK4zTQ/o6mICZUN//Uh6l1qDK1AR29M+DnNg2Kqq7v35q4k+cew6n32up+ULr5tMHkg72nWQ+Wt1KtZDibo7lzWB92sMvgQyyCTAlQk4q05j+AA2bk4kU02HKD/f7Bt8BzT57nZFjrhwE2BiXVH1QiYcr3Nrd54SkEUNcW7kyCUJLxu6Q1klji+k+rvZ1eLj/42QclIfuqZLchxgqFzYwrkkdeisVwBCs5TYnKl4VWvRqhVukWjyhSlSV5KmI+S1SUVSm66IYhy3pkEYZ6cdWD1GJ/G0asMePBSvS0Q+rLaZADsovftG8qVYgRuv5mCqWVTBFS3smgEYAd9fscWb8T2h+/jh2k6bqLIWlKNnFW1KJYKn/QT4eEj949F2GcWVXXwoyBP3ZOMzkwbKuDCfm9h2TnKXF96Pd9/ET6WC0bmeoUxpaVpZSTuoqsG3n+7OQT/Z3FEss4KqWJlBMBOuZDvYpwQc0PkxYjdqL6C5h7KlfuAaqPg3/5RAou8gn/f16rl9OQ8ltytB9hT+y5fValA6VDN26SIKidQXlt7XApiOeTfxQgE,iv:EGdx1NHoMbACK4N4vZNJpGGphpwsBm3vkyrDmYdyVBg=,tag:TKmJpATun0gaYzYQupT1sQ==,type:str]
+kind: Secret
+metadata:
+    name: flux-image-automation-git
+    namespace: flux-system
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBRSFhUVC9rTCszdWQzOWg1
+            c1hYNDNzWEk5Q3VjQUNmbEFUaGhlWVR3V2hRCnVzMHp5YjF4R21IalZIQ3M2RzlD
+            UGFBelJEL2pIYTZmQ1FwMmU3Ty9YSlUKLS0tIFB6TU1BcXNQZGdIR05IdTJnZm5v
+            U0RvK1UrWDJyY3RKeVdKQWtiTTViYmcKV/5iaa+540bnCfkLvw5QRyM2JHJHdX8n
+            nxV5qEobsD1iOa5AvVBxgwYNf5PkfB0MW37qgmNXor3OoZ2BhE1XUg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-15T18:11:23Z"
+    mac: ENC[AES256_GCM,data:dxs0SP9wWDAJZ7NDrjxTyolSsmm6jJi+4MsidzA2nqLplw6hy/Q3/i0iKZI4zoY2IyDZ79TEF8MUscVOwMZEvO8InBpIBIejNO71j2KSRgWp5tg6EqmB5M+p15Dg9k1oHAlR77B/B/HzPTTA/uHj596flEbaECAM3NQ+/SFmkVk=,iv:REBgaSL/ySaAUxveNFbN6O6lUgK5xDPuHOe4n0p0OFs=,tag:1Su50NIHgiCuVQULKGxJcA==,type:str]
+    version: 3.13.3
