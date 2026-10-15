@@ -145,8 +145,7 @@ spec:
         # One-shot schema migration (ADR-0013): serve never migrates itself, it
         # only refuses readiness until the schema is current.
         - name: migrate
-          # {"$imagepolicy": "flux-system:communication"}
-          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841
+          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841 # {"$imagepolicy": "flux-system:communication"}
           args: ["migrate", "up"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -157,8 +156,7 @@ spec:
         # bit, so a Secret volume (..data symlinks, 0644) can't be pointed at
         # directly. Copy the key into a 0700 emptyDir as a 0600 regular file.
         - name: keyring
-          # {"$imagepolicy": "flux-system:communication"}
-          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841
+          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841 # {"$imagepolicy": "flux-system:communication"}
           command: ["sh", "-ec"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -177,8 +175,7 @@ spec:
             - { name: keyring, mountPath: /keyring }
       containers:
         - name: serve
-          # {"$imagepolicy": "flux-system:communication"}
-          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841
+          image: ghcr.io/dbirks/communication:main@sha256:bff46217776847269d12075b6c1c8d34e0fb42f58a44674474d2401213496841 # {"$imagepolicy": "flux-system:communication"}
           args: ["serve"]
           securityContext:
             allowPrivilegeEscalation: false

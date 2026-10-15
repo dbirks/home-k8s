@@ -73,8 +73,8 @@ first resource with **no `---` between them**.
 
 ## Marker
 
-Put `# {"$imagepolicy": "flux-system:NAME"}` on the line above every `image:` that
-should move, init containers included.
+Put `# {"$imagepolicy": "flux-system:NAME"}` as a TRAILING comment on every `image:` line that
+should move, init containers included. A marker on the line ABOVE `image:` is silently ignored: the automation reports "repository up-to-date" and never bumps it.
 
 ## Verify
 
