@@ -65,10 +65,18 @@ spec:
               R=/tmp/penny-recipe/serve-flash-next-frspec.sh
               sed -i -e 's/ --hicache-storage-backend nixl//' \
                      -e '/--hicache-storage-prefetch-policy timeout/d' \
-                     -e '/--hicache-storage-backend-extra-config/d' "$R"
+                     -e '/--hicache-storage-backend-extra-config/d' \
+                     -e 's/--enable-metrics /--enable-metrics --enable-cache-report /' "$R"
               if grep -nE -- '--hicache-storage' "$R"; then
                 echo "[pennyroyal] FATAL: storage-backend flags still present; refusing to persist to disk" >&2; exit 1
               fi
+              # SGLang hides usage.prompt_tokens_details unless asked, and LLM Collective meters
+              # cached tokens per request: without this the gateway records a 0 that is
+              # indistinguishable from a cold cache. Warn rather than fail: this is telemetry,
+              # and losing it must never cost an entire model server. Coverage shows up as
+              # collective_usage_cache_stats_total{cache="silent"} on the gateway.
+              grep -qF -- '--enable-cache-report' "$R" \
+                || echo "[pennyroyal] WARN: --enable-cache-report not applied; cache stats stay invisible" >&2
               bash -n "$R"
               echo "[pennyroyal] NIXL disk tier disabled (GPU + host-RAM HiCache only)"
               exec /usr/local/bin/pennyroyal exec bash "$R"
