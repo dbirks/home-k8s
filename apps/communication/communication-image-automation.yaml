@@ -14,8 +14,9 @@
 # shepherd ImageUpdateAutomation has never landed a commit). This automation
 # pushes through its own GitRepository using the `flux-image-automation`
 # read-write deploy key (GitHub repo settings -> Deploy keys; private half in
-# flux-image-automation-git.enc.yaml). Scope is ./apps/communication only, so
-# it can't pick up the other (stale) Setters markers elsewhere in ./apps.
+# flux-image-automation-git.enc.yaml). The shared `shepherd` automation (scope
+# ./apps: shepherd + llm-collective markers) uses the same GitRepository; this
+# one is scoped to ./apps/communication so its commits stay separate.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository

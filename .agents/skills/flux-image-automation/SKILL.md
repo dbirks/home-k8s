@@ -30,9 +30,11 @@ To rotate it: `ssh-keygen -t ed25519`, `gh repo deploy-key add KEY.pub --allow-w
 re-create the secret with `kubectl create secret generic ... --dry-run=client -o yaml | sops encrypt ...`,
 then delete the old key in GitHub.
 
-**Scope `update.path` tightly** (e.g. `./apps/communication`). Several stale
-`$imagepolicy` markers in `./apps` (shepherd, llm-collective) have never been applied.
-An automation over all of `./apps` with a working key would roll ALL of them at once.
+Both automations now use it: `shepherd` (scope `./apps`, which covers the shepherd and
+llm-collective markers) and `communication` (scope `./apps/communication`). Before
+switching an automation over, compare each marker's current tag with
+`kubectl get imagepolicy -n flux-system -o custom-columns=N:.metadata.name,T:.status.latestRef.tag`.
+Any drift rolls out immediately once the key can push.
 
 ## Gotcha 2: CI only publishes a moving tag (`:main`, `:sha-abc1234`)
 

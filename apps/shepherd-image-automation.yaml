@@ -73,9 +73,12 @@ metadata:
   namespace: flux-system
 spec:
   interval: 5m0s
+  # Pushes with the read-write `flux-image-automation` deploy key
+  # (apps/communication/communication-image-automation.yaml). The flux-system
+  # key is read-only, so before 2026-10-15 this automation never landed a commit.
   sourceRef:
     kind: GitRepository
-    name: flux-system
+    name: flux-image-automation
   git:
     checkout:
       ref:
