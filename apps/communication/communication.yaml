@@ -18,7 +18,7 @@
 # client (redirect URI https://communication.beluga-wyvern.ts.net/auth/callback)
 # and re-capture the secret into SOPS. tsidp's `sub` is the tailnet user id as
 # `userid:<hex>` — derive yours with
-#   printf 'userid:%x\n' "$(tailscale status --json | jq .Self.UserID)"
+#   echo "userid:$(tailscale status --json | jq .Self.UserID)"   (decimal, NOT hex)
 # and list it in COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS to get org admin.
 #
 # NOT YET DEPLOYED: the execution worker. The published image is the plain
@@ -198,7 +198,7 @@ spec:
             - { name: COMMUNICATION_OIDC_CLIENT_ID, value: "556debffc484b7820c30093a21e1e199" }
             - { name: COMMUNICATION_COOKIE_SECURE, value: "true" }
             # dbirks@github (see header for how to derive a subject).
-            - { name: COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS, value: "userid:3b462b6d21faef" }
+            - { name: COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS, value: "userid:16684175954410223" }
             - { name: COMMUNICATION_ARTIFACT_BACKEND, value: local }
             - { name: COMMUNICATION_ARTIFACT_ROOT, value: /artifacts }
             - { name: COMMUNICATION_SECRET_KEYRING, value: /keyring/ring }
