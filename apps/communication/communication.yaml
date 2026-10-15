@@ -17,7 +17,7 @@
 # communication-secrets.enc.yaml. If tsidp's PVC is ever lost, recreate the
 # client (redirect URI https://communication.beluga-wyvern.ts.net/auth/callback)
 # and re-capture the secret into SOPS. tsidp's `sub` is the tailnet user id as
-# `userid:<hex>` — derive yours with
+# `userid:<decimal id>` — derive yours with
 #   echo "userid:$(tailscale status --json | jq .Self.UserID)"   (decimal, NOT hex)
 # and list it in COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS to get org admin.
 #
