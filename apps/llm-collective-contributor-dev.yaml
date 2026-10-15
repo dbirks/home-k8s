@@ -1,3 +1,25 @@
+# LLM Collective contributor — DEV gateway.
+#
+# Same machine and same models as apps/llm-collective-contributor.yaml (which
+# serves the prod collective), but pointed at the dev gateway
+# https://llm-collective.dev.e-gineering.com so main-branch builds can be
+# exercised end to end (tiles, stats, graphs, leaderboard) against real home
+# hardware before a release is tagged.
+#
+# Identity: reuses the prod contributor's key pair
+# (secret llm-collective-contributor-identity), so the gateway sees the same
+# machine. The public key must be registered once in the DEV gateway's UI
+# (Contribute page) under your dev login — auto-enroll is not a thing. Read
+# the key value from the contributor pod's startup log (it prints it) or the
+# prod gateway's Nodes page. Until it's registered the pod starts and retries
+# with "waiting for key registration".
+#
+# Image channel differs from the prod contributor: dev tracks the newest
+# <short-sha>-<epoch> tag that CI publishes on every push to llm-collective
+# main ("merging is deploying"), ordered by the numeric epoch — the same
+# convention the shepherd policies above use. The repo-wide
+# ImageUpdateAutomation (apps/shepherd-image-automation.yaml) bumps the
+# marker-tagged image line below.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -53,7 +75,7 @@ metadata:
     app.kubernetes.io/name: llm-collective-contributor-dev
     llm-collective.e-gineering.com/env: dev
   annotations:
-    reloader.stakater.com/auto: "true" # roll when the dev contributor ConfigMap changes
+    reloader.stakater.com/auto: "true"   # roll when the dev contributor ConfigMap changes
 spec:
   replicas: 1
   selector:
@@ -68,14 +90,14 @@ spec:
         - name: contributor
           image: ghcr.io/e-gineering/llm-collective/contributor:d5a7379-1792077982 # {"$imagepolicy": "flux-system:llm-collective-contributor-dev"}
           env:
-            - {name: KEY_FILE, value: /etc/collective-key/identity.key}
-            - {name: PUBKEY_OUT, value: ""}
+            - { name: KEY_FILE, value: /etc/collective-key/identity.key }
+            - { name: PUBKEY_OUT, value: "" }
           resources:
-            requests: {cpu: 10m, memory: 32Mi}
-            limits: {cpu: 200m, memory: 128Mi}
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
           volumeMounts:
-            - {name: config, mountPath: /etc/collective}
-            - {name: identity, mountPath: /etc/collective-key, readOnly: true}
+            - { name: config, mountPath: /etc/collective }
+            - { name: identity, mountPath: /etc/collective-key, readOnly: true }
       volumes:
         - name: config
           configMap:

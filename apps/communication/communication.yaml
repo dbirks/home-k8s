@@ -28,7 +28,6 @@
 #
 # Single replica: the app is stateless (all state in Postgres) so more replicas
 # are fine later; one is plenty on this node.
----
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

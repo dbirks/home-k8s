@@ -25,7 +25,6 @@
 #
 # Endpoints: shepherd.hoam.lan (private LAN ingress), shepherd (Tailscale
 # MagicDNS, i.e. shepherd.<tailnet>.ts.net)
----
 apiVersion: v1
 kind: ConfigMap
 metadata:

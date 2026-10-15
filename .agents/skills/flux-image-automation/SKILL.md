@@ -63,6 +63,14 @@ pattern) also work.
   file, then run `skopeo inspect --authfile FILE docker://ghcr.io/OWNER/IMG:TAG`.
 - `gh` CLI tokens here lack `read:packages`, so `gh api .../packages` 403s. Use skopeo.
 
+## Gotcha 4: the Setters rewrite DELETES a header comment that sits above a leading `---`
+
+kyaml parses `# header ... \n---\n apiVersion: ...` as an empty, comment-only first
+document and drops it. The first fluxcdbot commit (19df6c7) wiped the headers of both
+llm-collective files this way. It also reflows `{ a: b }` to `{a: b}`, which is
+cosmetic. In any file with a `$imagepolicy` marker, attach the header directly to the
+first resource with **no `---` between them**.
+
 ## Marker
 
 Put `# {"$imagepolicy": "flux-system:NAME"}` on the line above every `image:` that
