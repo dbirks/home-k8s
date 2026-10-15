@@ -166,10 +166,13 @@ spec:
             capabilities: { drop: [ALL] }
           args:
             - |
+              # The emptyDir root is root-owned (uid 10001 can't chmod it), so
+              # the keyring is a subdirectory this uid creates and owns.
               umask 077
-              chmod 700 /keyring
-              cp /keyring-src/master-key-v1 /keyring/master-key-v1
-              chmod 600 /keyring/master-key-v1
+              mkdir -p /keyring/ring
+              chmod 700 /keyring/ring
+              cp /keyring-src/master-key-v1 /keyring/ring/master-key-v1
+              chmod 600 /keyring/ring/master-key-v1
           volumeMounts:
             - { name: keyring-src, mountPath: /keyring-src, readOnly: true }
             - { name: keyring, mountPath: /keyring }
@@ -198,7 +201,7 @@ spec:
             - { name: COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS, value: "userid:3b462b6d21faef" }
             - { name: COMMUNICATION_ARTIFACT_BACKEND, value: local }
             - { name: COMMUNICATION_ARTIFACT_ROOT, value: /artifacts }
-            - { name: COMMUNICATION_SECRET_KEYRING, value: /keyring }
+            - { name: COMMUNICATION_SECRET_KEYRING, value: /keyring/ring }
             - { name: COMMUNICATION_PREVIEW_HOST, value: "communication-preview.beluga-wyvern.ts.net" }
             - { name: COMMUNICATION_PREVIEW_BASE_URL, value: "https://communication-preview.beluga-wyvern.ts.net" }
           volumeMounts:
