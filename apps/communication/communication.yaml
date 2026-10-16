@@ -146,7 +146,7 @@ spec:
         # One-shot schema migration (ADR-0013): serve never migrates itself, it
         # only refuses readiness until the schema is current.
         - name: migrate
-          image: ghcr.io/dbirks/communication:main@sha256:293b9e94c6c3af18ddeaf3bce3257121f2f4bb8acd6e738d330a5a0e14d787c5 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:af9e0ad0c8173e93f4ca74654bf4e15e68ad574c54d36ee2ac4024bd1d19d68d # {"$imagepolicy": "flux-system:communication"}
           args: ["migrate", "up"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -157,7 +157,7 @@ spec:
         # bit, so a Secret volume (..data symlinks, 0644) can't be pointed at
         # directly. Copy the key into a 0700 emptyDir as a 0600 regular file.
         - name: keyring
-          image: ghcr.io/dbirks/communication:main@sha256:293b9e94c6c3af18ddeaf3bce3257121f2f4bb8acd6e738d330a5a0e14d787c5 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:af9e0ad0c8173e93f4ca74654bf4e15e68ad574c54d36ee2ac4024bd1d19d68d # {"$imagepolicy": "flux-system:communication"}
           command: ["sh", "-ec"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -176,7 +176,7 @@ spec:
             - {name: keyring, mountPath: /keyring}
       containers:
         - name: serve
-          image: ghcr.io/dbirks/communication:main@sha256:293b9e94c6c3af18ddeaf3bce3257121f2f4bb8acd6e738d330a5a0e14d787c5 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:af9e0ad0c8173e93f4ca74654bf4e15e68ad574c54d36ee2ac4024bd1d19d68d # {"$imagepolicy": "flux-system:communication"}
           args: ["serve"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -353,7 +353,7 @@ spec:
         # bit, so a Secret volume (..data symlinks, 0644) can't be pointed at
         # directly. Copy the key into a 0700 emptyDir as a 0600 regular file.
         - name: keyring
-          image: ghcr.io/dbirks/communication:main@sha256:293b9e94c6c3af18ddeaf3bce3257121f2f4bb8acd6e738d330a5a0e14d787c5 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:af9e0ad0c8173e93f4ca74654bf4e15e68ad574c54d36ee2ac4024bd1d19d68d # {"$imagepolicy": "flux-system:communication"}
           command: ["sh", "-ec"]
           securityContext:
             allowPrivilegeEscalation: false
