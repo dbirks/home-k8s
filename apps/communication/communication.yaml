@@ -21,10 +21,11 @@
 #   echo "userid:$(tailscale status --json | jq .Self.UserID)"   (decimal, NOT hex)
 # and list it in COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS to get org admin.
 #
-# NOT YET DEPLOYED: the execution worker. The published image is the plain
-# runtime (binary + git); the worker needs worker/Dockerfile's image (Node, ACP
-# adapters, nono, APM), which CI does not publish yet. Until it does, the UI
-# and API work but no agent turn can run.
+# The execution worker lives at the bottom of this file (Deployment
+# communication-worker, image ghcr.io/dbirks/communication-worker —
+# worker/Dockerfile's build, Node + ACP adapters + nono + APM). serve's plain
+# runtime image cannot run agent turns, so runs only execute once that worker is
+# up; see its header for which node kinds are actually runnable today.
 #
 # Single replica: the app is stateless (all state in Postgres) so more replicas
 # are fine later; one is plenty on this node.
@@ -276,3 +277,166 @@ spec:
               service:
                 name: communication
                 port: {number: 80}
+---
+# ── execution worker (`communication worker`) ───────────────────────────────
+# What runs here: the worker image from worker/Dockerfile (the binary + Node
+# ACP adapters + nono + APM — the plain :main image above has none of that).
+# It claims run attempts from Postgres, mirrors repos under /repos, prepares
+# per-run worktrees under /workspaces, executes nodes inside the nono
+# (Landlock) sandbox and writes artifact bytes to /artifacts.
+# strategy Recreate: two pods sharing these roots would fight over the same
+# workspace/mirror state, and the PVCs are RWO anyway.
+#
+# Deliberately NOT mounted: the agent.acp harness credentials. compose.m4.yml's
+# worker-a gives live ~/.claude / ~/.codex logins via CLAUDE_CONFIG_DIR and
+# CODEX_HOME; nothing equivalent exists in this manifest, so ACP nodes fail with
+# the worker's honest refusal and only process.exec and model.chat nodes run.
+# model.chat gets its bearer token from communication-worker-secrets (created
+# out of band — never commit a value); base URL + allowlist are plain env below.
+#
+# communication-artifacts is ReadWriteOnce, mounted READ-WRITE here while serve
+# mounts it read-only. That is safe only because this cluster is a single node
+# (one kubelet, one local-path volume). Multi-node needs pod affinity to serve,
+# serve co-scheduled, or the S3 artifact backend.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: communication-workspaces
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: communication-repos
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: communication-worker
+  namespace: default
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: communication-worker}
+  template:
+    metadata:
+      labels: {app: communication-worker}
+    spec:
+      enableServiceLinks: false
+      # Same read:packages PAT secret as serve (apps/market-agent-ghcr-pull.enc.yaml).
+      imagePullSecrets:
+        - name: market-agent-ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      # `communication worker` keeps attempts running; 25s compose grace + margin.
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        # LoadKeyring refuses symlinks, stray files and any group/other mode
+        # bit, so a Secret volume (..data symlinks, 0644) can't be pointed at
+        # directly. Copy the key into a 0700 emptyDir as a 0600 regular file.
+        - name: keyring
+          image: ghcr.io/dbirks/communication:main@sha256:7cee927b1b164586780b8c7e681b6e28906854e29bafbb43899579e6023f5f8d # {"$imagepolicy": "flux-system:communication"}
+          command: ["sh", "-ec"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          args:
+            - |
+              # The emptyDir root is root-owned (uid 10001 can't chmod it), so
+              # the keyring is a subdirectory this uid creates and owns.
+              umask 077
+              mkdir -p /keyring/ring
+              chmod 700 /keyring/ring
+              cp /keyring-src/master-key-v1 /keyring/ring/master-key-v1
+              chmod 600 /keyring/ring/master-key-v1
+          volumeMounts:
+            - {name: keyring-src, mountPath: /keyring-src, readOnly: true}
+            - {name: keyring, mountPath: /keyring}
+      containers:
+        - name: worker
+          # No args: the image's ENTRYPOINT is /usr/local/bin/communication and
+          # its CMD is already ["worker"].
+          image: ghcr.io/dbirks/communication-worker:main # {"$imagepolicy": "flux-system:communication-worker"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          envFrom:
+            # COMMUNICATION_DATABASE_URL
+            - secretRef: {name: communication-secrets}
+            # COMMUNICATION_MODEL_CHAT_API_KEY (created out of band; sops file
+            # is NOT part of this manifest)
+            - secretRef: {name: communication-worker-secrets}
+          env:
+            - {name: COMMUNICATION_WORKER_NAME, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+            - {name: COMMUNICATION_WORKER_HEARTBEAT, value: "10s"}
+            - {name: COMMUNICATION_WORKER_CAPACITY, value: "2"}
+            - {name: COMMUNICATION_WORKSPACE_ROOT, value: /workspaces}
+            - {name: COMMUNICATION_REPOS_ROOT, value: /repos}
+            - {name: COMMUNICATION_ARTIFACT_ROOT, value: /artifacts}
+            - {name: COMMUNICATION_ARTIFACT_BACKEND, value: local}
+            - {name: COMMUNICATION_SECRET_KEYRING, value: /keyring/ring}
+            # required => the worker refuses to start unless nono is on PATH and
+            # the Landlock self-test passes; it never launches an unisolated agent.
+            - {name: COMMUNICATION_SANDBOX_ENFORCEMENT, value: required}
+            - {name: COMMUNICATION_SANDBOX_HOME, value: /sandbox-home}
+            - {name: COMMUNICATION_SANDBOX_POLICY_DIR, value: /sandbox-policy}
+            - {name: COMMUNICATION_SANDBOX_SELFTEST_DIR, value: /sandbox-selftest}
+            # The image's own HOME is not writable by uid 10001 at runtime; give
+            # it a tmpfs HOME, and keep it out of the roots above.
+            - {name: HOME, value: /home/worker}
+            - {name: COMMUNICATION_AGENT_GIT_NAME, value: "Communication Worker"}
+            - {name: COMMUNICATION_AGENT_GIT_EMAIL, value: worker@communication.invalid}
+            - {name: COMMUNICATION_MODEL_CHAT_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
+            - {name: COMMUNICATION_MODEL_CHAT_MODELS, value: qwen3-8-flash-next}
+          volumeMounts:
+            - {name: workspaces, mountPath: /workspaces}
+            - {name: repos, mountPath: /repos}
+            - {name: artifacts, mountPath: /artifacts}
+            - {name: sandbox-home, mountPath: /sandbox-home}
+            - {name: sandbox-policy, mountPath: /sandbox-policy}
+            - {name: sandbox-selftest, mountPath: /sandbox-selftest}
+            - {name: home, mountPath: /home/worker}
+            - {name: keyring, mountPath: /keyring, readOnly: true}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {memory: 4Gi}
+      volumes:
+        - name: workspaces
+          persistentVolumeClaim: {claimName: communication-workspaces}
+        - name: repos
+          persistentVolumeClaim: {claimName: communication-repos}
+        # READ-WRITE here (the worker writes artifacts); serve mounts the same claim read-only.
+        - name: artifacts
+          persistentVolumeClaim: {claimName: communication-artifacts}
+        - name: sandbox-home
+          emptyDir: {}
+        - name: sandbox-policy
+          emptyDir: {}
+        - name: sandbox-selftest
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+        - name: keyring-src
+          secret:
+            secretName: communication-keyring
+            defaultMode: 0400
+        - name: keyring
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}

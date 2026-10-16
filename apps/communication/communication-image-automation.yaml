@@ -58,6 +58,38 @@ spec:
   digestReflectionPolicy: Always
   interval: 5m0s
 ---
+# The worker image (worker/Dockerfile: binary + Node ACP adapters + nono + APM),
+# published by CI with the same moving :main tag. Same secret, same digest
+# election, so a green main build rolls the worker too. The communication
+# ImageUpdateAutomation above is scoped to ./apps/communication, so it commits
+# this marker as well.
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: communication-worker
+  namespace: flux-system
+spec:
+  image: ghcr.io/dbirks/communication-worker
+  interval: 5m0s
+  secretRef:
+    name: communication-ghcr-pull
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: communication-worker
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: communication-worker
+  filterTags:
+    pattern: '^main$'
+  policy:
+    alphabetical:
+      order: asc
+  digestReflectionPolicy: Always
+  interval: 5m0s
+---
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageUpdateAutomation
 metadata:
