@@ -84,7 +84,7 @@ metadata:
   labels:
     app.kubernetes.io/name: llm-collective-contributor
   annotations:
-    reloader.stakater.com/auto: "true"   # roll when the contributor ConfigMap changes (backends/models)
+    reloader.stakater.com/auto: "true" # roll when the contributor ConfigMap changes (backends/models)
 spec:
   replicas: 1
   selector:
@@ -97,16 +97,16 @@ spec:
     spec:
       containers:
         - name: contributor
-          image: ghcr.io/e-gineering/llm-collective/contributor:v0.8.1 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
+          image: ghcr.io/e-gineering/llm-collective/contributor:v0.9.0 # {"$imagepolicy": "flux-system:llm-collective-contributor"}
           env:
-            - { name: KEY_FILE, value: /etc/collective-key/identity.key }
-            - { name: PUBKEY_OUT, value: "" }
+            - {name: KEY_FILE, value: /etc/collective-key/identity.key}
+            - {name: PUBKEY_OUT, value: ""}
           resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { cpu: 200m, memory: 128Mi }
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
           volumeMounts:
-            - { name: config, mountPath: /etc/collective }
-            - { name: identity, mountPath: /etc/collective-key, readOnly: true }
+            - {name: config, mountPath: /etc/collective}
+            - {name: identity, mountPath: /etc/collective-key, readOnly: true}
       volumes:
         - name: config
           configMap:
