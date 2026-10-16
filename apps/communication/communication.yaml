@@ -391,7 +391,7 @@ spec:
         # 0600-files emptyDir. Never print contents. Absent Secret => the
         # optional volume is an empty dir; seed nothing and exit 0.
         - name: claude-config
-          image: ghcr.io/dbirks/communication:main@sha256:7cee927b1b164586780b8c7e681b6e28906854e29bafbb43899579e6023f5f8d # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:40aaae9344da244e3fb8e818b74d38113ac43e41f44fcfd6a93aea43f980b81e # {"$imagepolicy": "flux-system:communication"}
           command: ["sh", "-ec"]
           securityContext:
             allowPrivilegeEscalation: false
