@@ -287,10 +287,25 @@ spec:
 # strategy Recreate: two pods sharing these roots would fight over the same
 # workspace/mirror state, and the PVCs are RWO anyway.
 #
-# Deliberately NOT mounted: the agent.acp harness credentials. compose.m4.yml's
-# worker-a gives live ~/.claude / ~/.codex logins via CLAUDE_CONFIG_DIR and
-# CODEX_HOME; nothing equivalent exists in this manifest, so ACP nodes fail with
-# the worker's honest refusal and only process.exec and model.chat nodes run.
+# agent.acp harness credentials are OPTIONAL here. The worker mounts
+# CLAUDE_CONFIG_DIR=/harness/claude read-write (the ADR-0019 D4
+# harness_credentials grant — Claude writes state into its config dir
+# mid-turn), seeded from the optional Secret communication-worker-claude by
+# the claude-config init container below. compose.m4.yml's worker-a does the
+# same with a live ~/.claude bind mount.
+#
+# agent.acp steps run ONLY if the owner creates that Secret (keys = the files
+# of a Claude Code config dir, at least .credentials.json). Create it as a
+# SOPS-encrypted file and commit that — never the plaintext:
+#   kubectl create secret generic communication-worker-claude -n default \
+#     --from-file=.credentials.json=$HOME/.claude/.credentials.json --dry-run=client -o yaml \
+#     > apps/communication/communication-worker-claude.enc.yaml && sops -e -i apps/communication/communication-worker-claude.enc.yaml
+# Honest caveat: that file IS the owner's Claude login. Every agent.acp run on
+# this worker executes as that account, and /harness/claude is shared mutable
+# state across all of them — this is not credential isolation (ADR-0019 D4).
+# If the Secret is absent the dir stays empty, agent.acp fails closed with the
+# worker's honest refusal, and only process.exec and model.chat nodes run.
+# CODEX_HOME is still not mounted, so the codex launcher remains unavailable.
 # model.chat gets its bearer token from communication-worker-secrets (created
 # out of band — never commit a value); base URL + allowlist are plain env below.
 #
@@ -370,6 +385,41 @@ spec:
           volumeMounts:
             - {name: keyring-src, mountPath: /keyring-src, readOnly: true}
             - {name: keyring, mountPath: /keyring}
+        # Seed CLAUDE_CONFIG_DIR from the (optional) claude login Secret. A
+        # Secret volume is read-only with ..data symlinks and Claude writes
+        # state back mid-turn, so copy the keys into a uid-10001-owned,
+        # 0600-files emptyDir. Never print contents. Absent Secret => the
+        # optional volume is an empty dir; seed nothing and exit 0.
+        - name: claude-config
+          image: ghcr.io/dbirks/communication:main@sha256:7cee927b1b164586780b8c7e681b6e28906854e29bafbb43899579e6023f5f8d # {"$imagepolicy": "flux-system:communication"}
+          command: ["sh", "-ec"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          args:
+            - |
+              # The emptyDir root is root-owned (uid 10001 can't chmod it, same
+              # caveat as the keyring init above); chmod 700 is best-effort and
+              # files inside are still 0600 under umask 077.
+              umask 077
+              mkdir -p /claude-config
+              chmod 700 /claude-config 2>/dev/null || true
+              if [ -f /claude-src/.credentials.json ]; then
+                for p in /claude-src/* /claude-src/.[!.]*;
+                do
+                  [ -f "$p" ] || continue
+                  n=${p##*/}
+                  if [ "$n" = "..data" ]; then continue; fi
+                  cp -L "$p" "/claude-config/$n"
+                  chmod 600 "/claude-config/$n"
+                done
+                echo "claude-config: seeded harness credentials from secret communication-worker-claude" >&2
+              else
+                echo "claude-config: secret communication-worker-claude absent; agent.acp stays disabled" >&2
+              fi
+          volumeMounts:
+            - {name: claude-credentials-src, mountPath: /claude-src, readOnly: true}
+            - {name: claude-config, mountPath: /claude-config}
       containers:
         - name: worker
           # No args: the image's ENTRYPOINT is /usr/local/bin/communication and
@@ -406,6 +456,9 @@ spec:
             - {name: COMMUNICATION_AGENT_GIT_EMAIL, value: worker@communication.invalid}
             - {name: COMMUNICATION_MODEL_CHAT_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
             - {name: COMMUNICATION_MODEL_CHAT_MODELS, value: qwen3-8-flash-next}
+            # Where the claude launcher finds its login (launchers.go AuthEnvVars);
+            # the worker grants this dir rw into the nono sandbox per ADR-0019 D4.
+            - {name: CLAUDE_CONFIG_DIR, value: /harness/claude}
           volumeMounts:
             - {name: workspaces, mountPath: /workspaces}
             - {name: repos, mountPath: /repos}
@@ -415,6 +468,9 @@ spec:
             - {name: sandbox-selftest, mountPath: /sandbox-selftest}
             - {name: home, mountPath: /home/worker}
             - {name: keyring, mountPath: /keyring, readOnly: true}
+            # READ-WRITE on purpose: Claude Code writes session/state files
+            # back into CLAUDE_CONFIG_DIR while a turn is running.
+            - {name: claude-config, mountPath: /harness/claude}
           resources:
             requests: {cpu: 250m, memory: 512Mi}
             limits: {memory: 4Gi}
@@ -440,3 +496,10 @@ spec:
             defaultMode: 0400
         - name: keyring
           emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        - name: claude-credentials-src
+          secret:
+            secretName: communication-worker-claude
+            optional: true
+            defaultMode: 0400
+        - name: claude-config
+          emptyDir: {}
