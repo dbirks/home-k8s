@@ -201,6 +201,15 @@ spec:
             - {name: COMMUNICATION_SECRET_KEYRING, value: /keyring/ring}
             - {name: COMMUNICATION_PREVIEW_HOST, value: "communication-preview.beluga-wyvern.ts.net"}
             - {name: COMMUNICATION_PREVIEW_BASE_URL, value: "https://communication-preview.beluga-wyvern.ts.net"}
+            # Read-only assistant (ADR-0034): answers with the caller's own
+            # permissions through the LLM collective; it stores nothing. Reuses
+            # the worker's chat key from communication-worker-secrets — no new
+            # secret, never a literal.
+            - {name: COMMUNICATION_ASSISTANT_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
+            - {name: COMMUNICATION_ASSISTANT_MODEL, value: qwen3-8-flash-next}
+            - name: COMMUNICATION_ASSISTANT_API_KEY
+              valueFrom:
+                secretKeyRef: {name: communication-worker-secrets, key: COMMUNICATION_MODEL_CHAT_API_KEY, optional: false}
           volumeMounts:
             - {name: artifacts, mountPath: /artifacts, readOnly: true}
             - {name: keyring, mountPath: /keyring, readOnly: true}
