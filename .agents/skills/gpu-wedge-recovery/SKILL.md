@@ -22,6 +22,16 @@ pods with `kubectl delete pods --field-selector=status.phase=Failed -A`.
 Before reaching for it, check the power cap is right (see the gpu-power-management skill) —
 a fixed-interval crash storm (~every 18 min) has meant the cap was being overridden.
 
+## Field log: co-residence (#156, 2026-10-17)
+Four GPU processes on the card (NInfer + CLEF INT4 + 2x Qwen3-TTS vLLM-Omni) at 400W wedged twice in
+17 min (04:29 Xid 79 from `python`; 04:46 Xid 79 + 154 from `vllm`, 11.5 min after the driver
+reloaded). Pennyroyal alone had run 39 h clean at 400W. After dropping to 350W (b5fb315): 30 min
+clean with all four resident, mostly idle. If it recurs at 350W: 300W, or fewer co-resident procs.
+Diagnose from any box with the talosconfig: `talosctl ... dmesg | grep -E 'Xid|fallen off'` and
+`grep -c GPU_IN_FULLCHIP_RESET`; NVML failing shows in pods as `error getting device handle for
+index '0': Unknown Error` / `cannot allocate unregistered device nvidia.com/gpu`. A watcher waiting
+on one service can miss a SECOND wedge: after recovery, re-check `nvidia-smi` itself.
+
 ## The watchdog (lives on David's workstation, NOT in-cluster)
 ```bash
 ~/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh          # the live copy, fired every 2 min

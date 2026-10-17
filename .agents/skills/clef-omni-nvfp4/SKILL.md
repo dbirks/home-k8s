@@ -119,6 +119,12 @@ Decision Index: `apps/decision-index-bench-all-*.yaml.hold`. It runs serve_clef.
 localhost, then the kit's http engine over a 3,000-request 0.2.1 sample, score, and `score --reference` vs BF16.
 
 ## Lessons (each cost a run)
+- **Serving beside other models (#156): INT4 fits a 25000 MiB HAMi slice** only since b94f5cb:
+  `fast_int4_moe` used to iterate `list(model.named_modules())`, pinning every old QuantLinear, so peak =
+  old + packed and it OOMed after 15/48 layers (rest silently on the ~2.7 s slow path). Check the log
+  says `fast grouped int4 MoE: 48 layers`. Warm decision ~0.21 s; first call ~13 s.
+- **serve_clef must answer `GET /health`** (45815d9): the LLM Collective contributor probes /health then
+  /v1/models, and treats 404 on both as "unknown, keep state", so once marked down it never recovered.
 - **Parity noise floor: BF16 vs BF16 under eager vs grouped experts agrees only 95.7% (TV 0.028).**
   Always grade against a reference produced by the SAME code path (`eval_export.py --export /work/clef-omni`).
   A 98% top-1 target is unreachable. Judge by TV vs the floor.
