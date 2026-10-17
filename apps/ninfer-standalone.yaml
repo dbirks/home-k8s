@@ -1,7 +1,7 @@
 # qwen3.8-27b-ninfer — NInfer engine (raw Deployment + Service, default ns).
 # ============================================================================================
-# PARKED (replicas: 0) since 2026-09-28: the whole GPU card was handed to the Pennyroyal
-# Flash-Next canary (#135), which is now the primary serving path behind the LLM Collective.
+# REVIVED 2026-10-16 (#156): v3 image + artifact, NVFP4 KV, 55000 MB slice, Pennyroyal at 0.
+# (PARKED 2026-09-28 .. 2026-10-16 while the whole card went to the Pennyroyal Flash-Next canary, #135.)
 #
 # HISTORY: this engine used to be exposed on llm.birks.dev through the Envoy AI Gateway
 # (Backend + AIServiceBackend + a KEDA scale-from-zero ScaledObject). That whole gateway
@@ -26,7 +26,7 @@ metadata:
   labels:
     app.kubernetes.io/name: ninfer
 spec:
-  replicas: 0                     # DOWN 2026-09-28: whole card handed to the Pennyroyal Flash-Next canary (#135). Was 1 (always-on, LLM Collective).
+  replicas: 1                     # UP 2026-10-16 (#156): v3 image+artifact, NVFP4 KV, solo test then co-resident. Rollback pair: ninfer:20260908 + qwen38-ninfer-model (v2), --kv-dtype int8, --host-kv-mib 0 --host-state-slots 0.
   # NO SURGE: a surge pod would ask HAMi for a 2nd 50GB slice that can't fit beside Muse, so the
   # rollout would hang Pending. maxSurge 0 = stop old first (~15s gap: weights reload 4s + graphs).
   # (Not `type: Recreate`: Flux SSA keeps the live rollingUpdate block and the API rejects the combo.)
@@ -52,7 +52,9 @@ spec:
             runAsNonRoot: false
             runAsUser: 0
             allowPrivilegeEscalation: true
-          image: ghcr.io/dbirks/ninfer:20260908   # rebased onto upstream master incl. dflash2 integration (385b30c et al.); dated pin forces re-pull past cached :latest.
+          # dbirks/ninfer rebased onto Neroued/ninfer master 64d10fbf + liburing Dockerfile fix (505ee46a). Reads ONLY v3 artifacts:
+          # always switch together with the qwen38-ninfer-model-v3 PVC below.
+          image: ghcr.io/dbirks/ninfer:20261017@sha256:3529117087d0b697353b5c383cf2e4259176b5dd809105dae371db0c6cd9c442
           # ninfer-serve uses SPACE-separated args (--flag value), NOT --flag=value.
           command: ["ninfer-serve"]
           args:
@@ -75,9 +77,9 @@ spec:
             # instead buy more on-card room: bigger HAMi slice -> bigger `auto` KV pool, and 16 extra
             # Device checkpoint slots (~187MB VRAM each) so retained prefixes keep their DeltaNet state
             # on-card. Evicted-from-VRAM continuations now recompute instead of restoring from host.
-            - "--host-kv-mib"
-            - "0"
-            - "--host-state-slots"
+            # 2026-10 upstream folded --host-kv-mib/--host-state-slots into one --host-context-mib budget
+            # (StateImages + KV + pause snapshots); 0 disables Host backing, so preempted requests replay.
+            - "--host-context-mib"
             - "0"
             - "--device-state-slots"
             - "16"
@@ -90,7 +92,7 @@ spec:
             - "--prefill-chunk"
             - "1024"
             - "--kv-dtype"
-            - "int8"
+            - "nvfp4"                       # #156: 18,432 B/token vs int8 33,792. Quality gate vs fp8/k8v4 before co-residence.
             - "--spec"
             - "dflash2"                     # dflash2 companion weights in the artifact (issue #121: old 20260829 image couldn't consume dflash2/feature_projection)
             - "--draft-tokens"
@@ -107,9 +109,10 @@ spec:
           ports:
             - containerPort: 8000
           resources:
-            # HAMi hard VRAM cap 50000 MB (card 97887; + Muse 44000 = 94000, ~3.9GB slack) (webhook auto-injects schedulerName hami-scheduler). host
-            # memory request kept low so it fits the 46GB host-RAM co-residence budget when awake.
-            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "50000", cpu: "8", memory: 24Gi }
+            # HAMi hard VRAM cap 55000 MB (#156 plan: + CLEF 25000 + 2x TTS 7000 = 94000 of 97887, ~3.9GB slack)
+            # (webhook auto-injects schedulerName hami-scheduler). host memory request kept low so it fits the
+            # 46GB host-RAM co-residence budget when awake.
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "55000", cpu: "8", memory: 24Gi }
             requests: { cpu: "4", memory: 8Gi }
           volumeMounts:
             - { name: model, mountPath: /mnt/models }
@@ -117,7 +120,7 @@ spec:
       volumes:
         - name: model
           persistentVolumeClaim:
-            claimName: qwen38-ninfer-model        # existing, SHA-verified (apps/qwen38-ninfer-weights.yaml)
+            claimName: qwen38-ninfer-model-v3     # v3, SHA-verified (apps/qwen38-ninfer-weights-v3.yaml); v2 rollback: qwen38-ninfer-model
         - name: dshm
           emptyDir:
             medium: Memory

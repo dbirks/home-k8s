@@ -22,7 +22,7 @@ metadata:
   namespace: default
   labels: { app: pennyroyal-flashnext }
 spec:
-  replicas: 1
+  replicas: 0                         # DOWN 2026-10-16 for #156: card goes to NInfer v3 + CLEF INT4 + 2x Qwen3-TTS. Rollback = 1 (scale those to 0 first).
   strategy: { type: Recreate }        # never two whole-card pods
   selector:
     matchLabels: { app: pennyroyal-flashnext }
