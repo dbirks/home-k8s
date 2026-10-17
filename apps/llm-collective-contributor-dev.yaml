@@ -36,7 +36,7 @@ data:
       listen: 127.0.0.1:9091
     backends:
       # Qwen3.8-27B on NInfer v3 (ghcr.io/dbirks/ninfer:20261017), NVFP4 weights + NVFP4 KV, #156.
-      # 1.52M-token shared KV pool, 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
+      # 1.46M-token shared KV pool (with --vision), 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
       # Dev shares the same 8 lanes as prod; kept small so it can't starve prod.
       # /v1/chat/completions and /v1/messages both verified 2026-10-16 (thinking blocks on /v1/messages).
       - name: ninfer
@@ -48,7 +48,17 @@ data:
             model: qwen3.8-27b-ninfer
             limits:
               context: 262144
-            inputs: [text]                 # started without --vision; declare image only once budgeted + tested
+            # Probed live 2026-10-17: the artifact template accepts xhigh (its default), medium and low;
+            # `none` is the engine's thinking-off switch. minimal/high/max are rejected with a 400.
+            reasoning:
+              levels:
+                - none
+                - low
+                - medium
+                - xhigh
+            # --vision on since 2026-10-17 (data-URI image verified). Video parts also work engine-side;
+            # the Collective has no video input type, so they ride under image.
+            inputs: [text, image]
       # PARKED 2026-10-16 (#156): Pennyroyal at replicas 0. Rollback = uncomment, drop ninfer above.
       # - name: pennyroyal
       #   url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
