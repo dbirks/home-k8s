@@ -1,0 +1,17 @@
+# Persistent voice registry for the Qwen3-TTS Base server (issue #156). Mounted as
+# SPEAKER_SAMPLES_DIR: vLLM-Omni writes one .safetensors per registered voice (audio sample +
+# name/consent/ref_text metadata) via POST /v1/audio/voices, so voices survive pod restarts.
+# Only explicitly enrolled voices live here; no transcripts or ordinary request audio (ZDR).
+# Standalone file (incident lesson): retiring or reworking the TTS Deployment must never prune it.
+# Binds on first consumer (local-path WaitForFirstConsumer), so Pending until the Base server runs.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen3-tts-voices
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi

@@ -1,0 +1,35 @@
+# Verify the staged Clef-Omni AutoRound INT4 export before it serves beside NInfer (issue #156).
+# /work/int4/export on clef-omni-hdd is the tree dbirks/clef-omni-int4 (v0.6, f1e072e) was
+# published from; file sizes already match HF. This re-hashes it against its own SHA256SUMS so the
+# serving switch (CLEF_MODEL_PATH=/work/int4/export) starts from a known-good checkpoint.
+# CPU-only, reads ~20GB off the HDD. Retire to .yaml.hold once it has passed.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clef-omni-int4-verify
+  namespace: default
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 604800
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: verify
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              cd /work/int4/export
+              sha256sum --check SHA256SUMS
+              du -sh /work/int4/export
+          resources:
+            requests: { cpu: "1", memory: 256Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          volumeMounts:
+            - { name: work, mountPath: /work, readOnly: true }
+      volumes:
+        - { name: work, persistentVolumeClaim: { claimName: clef-omni-hdd } }

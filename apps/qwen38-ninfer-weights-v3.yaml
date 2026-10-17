@@ -1,0 +1,67 @@
+# NInfer v3 artifact for qwen3.8-27b (issue #156: NVFP4 weights + NVFP4 KV co-residence).
+#
+# Current dbirks/ninfer master (rebased onto Neroued/ninfer 2026-10-16) REQUIRES v3 `.ninfer`
+# artifacts; the live Deployment's image (20260908) reads only v2. So the v3 file goes to its OWN
+# PVC and the verified v2 artifact in qwen38-ninfer-model stays untouched as the rollback pair.
+# Switch image + PVC together in apps/ninfer-standalone.yaml; never one without the other.
+#
+# Pinned HF revision a107ba1 (2026-09-29) of neroued/Qwen3.8-27B-nvfp4-NInfer; carries both mtp and
+# dflash2 drafts. SHA from that revision's SHA256SUMS. CPU-only, holds no GPU. Same atomic pattern
+# as the v2 Job: temp dir -> checksum -> rename, and skip once the marker exists (Flux re-creates the
+# Job after its TTL).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen38-ninfer-model-v3
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-ninfer-download-v3
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              REV=a107ba1b5b0609d9ca90d5ed61439f5f5cc7d64d
+              SHA=74d2c57145e6ff11d1d2faa79594477f9bc903a611af1fb20218189fbbb77d82
+              F=qwen3_8_27b_nvfp4.ninfer
+              cd /models
+              if [ -f ".verified-$SHA" ] && [ -f "$F" ]; then echo "already verified $SHA"; exit 0; fi
+              if [ -f "$F" ] && printf '%s  %s\n' "$SHA" "$F" | sha256sum --check; then touch ".verified-$SHA"; exit 0; fi
+              pip install -q -U "huggingface_hub[cli]"
+              rm -rf /models/.dl && mkdir -p /models/.dl
+              hf download neroued/Qwen3.8-27B-nvfp4-NInfer "$F" artifact-manifest.json --revision "$REV" --local-dir /models/.dl
+              (cd /models/.dl && printf '%s  %s\n' "$SHA" "$F" | sha256sum --check)
+              mv -f /models/.dl/artifact-manifest.json /models/artifact-manifest.json
+              mv -f "/models/.dl/$F" "/models/$F"
+              rm -rf /models/.dl /models/.verified-*
+              touch "/models/.verified-$SHA"
+              ls -l /models
+          resources:
+            requests: { cpu: "1", memory: 512Mi }
+            limits: { cpu: "4", memory: 4Gi }   # 46GB host RAM, Pennyroyal still awake
+          volumeMounts:
+            - { name: model, mountPath: /models }
+      volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: qwen38-ninfer-model-v3
