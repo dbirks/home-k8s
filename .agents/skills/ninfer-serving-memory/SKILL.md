@@ -46,6 +46,9 @@ prompts started 29 ms apart, so it is NOT about long context or images. No upstr
   old `--host-kv-mib 0 --host-state-slots 0` flags). It supports `--kv-dtype nvfp4` and `--vision` too
   (the v2 artifact carries Vision weights), runs 8 lanes, and passed 3- and 8-at-once bursts. It lacks
   constrained decoding / schema tool calls and `/metrics`. Same accepted reasoning levels.
+  Rejected with 400 on this build (clients need a fallback): `response_format` `json_schema`, grammar,
+  AND `{"type":"json_object"}` ("only {"type":"text"} is available"), plus `tool_choice: "required"`
+  ("NInfer cannot guarantee" a tool call). `tool_choice: "auto"` works.
   (The interim stopgap on the new build was `--max-concurrency 1`.)
 - `--kv-capacity` is capped at lanes x max-context: at 1 lane `auto` = 262,144 tokens, and an explicit
   larger value FATALs at startup ("kv_capacity is outside the usable range"). Do not try it.
