@@ -26,7 +26,9 @@ a fixed-interval crash storm (~every 18 min) has meant the cap was being overrid
 Four GPU processes on the card (NInfer + CLEF INT4 + 2x Qwen3-TTS vLLM-Omni) at 400W wedged twice in
 17 min (04:29 Xid 79 from `python`; 04:46 Xid 79 + 154 from `vllm`, 11.5 min after the driver
 reloaded). Pennyroyal alone had run 39 h clean at 400W. After dropping to 350W (b5fb315): 30 min
-clean with all four resident, mostly idle. If it recurs at 350W: 300W, or fewer co-resident procs.
+clean with all four resident, mostly idle; then wedged again at 09:52 UTC (Xid 79 + 154, `python`),
+4 h 38 min after driver load. So 350W stretched time-to-wedge from ~12 min to ~4.6 h but did not end
+it. Next levers: 300W, or fewer co-resident procs (the user's call).
 Diagnose from any box with the talosconfig: `talosctl ... dmesg | grep -E 'Xid|fallen off'` and
 `grep -c GPU_IN_FULLCHIP_RESET`; NVML failing shows in pods as `error getting device handle for
 index '0': Unknown Error` / `cannot allocate unregistered device nvidia.com/gpu`. A watcher waiting
