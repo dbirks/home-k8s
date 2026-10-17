@@ -89,7 +89,10 @@ spec:
               # 2026-09-28: RAISED 350W -> 400W (user decision). At 350W a long Pennyroyal
               # prefill pins the card at the cap (99% util, SM ~2.2GHz of 3.09GHz max,
               # ~8.5K tok/s vs upstream ~14.8K). If FULLCHIP resets return, drop back to 350.
-              value: "400"
+              # 2026-10-17: DROPPED 400W -> 350W per that note. Two FULLCHIP resets 17 min apart
+              # (04:29 and 04:46 UTC, Xid 79 + 154) right after #156 put four models on the card
+              # (NInfer + CLEF INT4 + 2x Qwen3-TTS). Next lever: 300W, or fewer co-resident procs.
+              value: "350"
             - name: GPU_POWER_MAP
               # Empty today: one GPU on the node, TARGET_WATTS covers it. Add a
               # per-card entry the moment a second GPU goes in, e.g.
