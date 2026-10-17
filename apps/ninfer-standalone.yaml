@@ -98,6 +98,9 @@ spec:
             - "--draft-tokens"
             - "7"                           # checkpoint-recommended draft count for dflash2 (accepts 1..15)
             - "--lm-head-draft"
+            # Vision (image + video parts). Weights + Vision workspace come out of the same 55000 MB slice,
+            # so the `auto` KV pool shrinks vs the 1,519,424-token text-only start; check the capacity line.
+            - "--vision"
             - "--default-max-tokens"
             - "8192"
             # ZDR (#98): minimize the Responses store (0 rejected; 1 is the engine floor).
