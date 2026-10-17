@@ -24,6 +24,7 @@ description: Size NInfer (qwen3.8-27b-ninfer, apps/ninfer-standalone.yaml) VRAM 
 | 2026-09-24 | v2, int8 | 50000 MB | host 0 | 553,600 | ~2GB |
 | 2026-10-16 | v3, **nvfp4** (18,432 B/tok) | 55000 MB | host 0, dflash2 | **1,519,424** | ~2.3GB |
 | 2026-10-17 | v3, nvfp4 | 55000 MB | + `--vision` | **1,463,424** | ~2.3GB |
+| 2026-10-17 | **Sept build** 20260908 + v2, nvfp4, 8 lanes | 55000 MB | + `--vision` | **1,245,056** (4.75 GiB free) | |
 Weights 21.4 GiB (21.7 with vision), runtime 30.5 GiB, engine ready in ~9.5 s. Vision costs only ~56K
 tokens. Single-stream decode ~177 tok/s with `--spec dflash2 --draft-tokens 7 --lm-head-draft`.
 Verify on the `capacity |` startup log line; `GET /metrics` exposes running/waiting/paused gauges.
@@ -41,7 +42,11 @@ Any 2+ requests in flight together can raise `std::logic_error "KV write exceeds
 in-flight request 500s at once, then the engine is dead: all requests 503 and `/health` 503
 `{"status":"unavailable"}`. Seen 2026-10-17 at 13:26/13:33/13:41/13:43, the last with two ~54-token
 prompts started 29 ms apart, so it is NOT about long context or images. No upstream issue or fix yet.
-- Stopgap in the manifest: `--max-concurrency 1` (3 simultaneous requests then all 200, serialized).
+- What we did: ROLLED BACK to the Sept build (`ninfer:20260908` + v2 artifact on `qwen38-ninfer-model`,
+  old `--host-kv-mib 0 --host-state-slots 0` flags). It supports `--kv-dtype nvfp4` and `--vision` too
+  (the v2 artifact carries Vision weights), runs 8 lanes, and passed 3- and 8-at-once bursts. It lacks
+  constrained decoding / schema tool calls and `/metrics`. Same accepted reasoning levels.
+  (The interim stopgap on the new build was `--max-concurrency 1`.)
 - `--kv-capacity` is capped at lanes x max-context: at 1 lane `auto` = 262,144 tokens, and an explicit
   larger value FATALs at startup ("kv_capacity is outside the usable range"). Do not try it.
 - Liveness/readiness/startup probes on `/health` restart a dead engine in ~50 s. Before the probes

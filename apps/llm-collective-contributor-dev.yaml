@@ -35,8 +35,8 @@ data:
     metrics:
       listen: 127.0.0.1:9091
     backends:
-      # Qwen3.8-27B on NInfer v3 (ghcr.io/dbirks/ninfer:20261017), NVFP4 weights + NVFP4 KV, #156.
-      # 1.46M-token shared KV pool (with --vision), 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
+      # Qwen3.8-27B on NInfer, Sept build (ghcr.io/dbirks/ninfer:20260908, v2 artifact), NVFP4 weights + NVFP4 KV, #156.
+      # 1.25M-token shared KV pool (with --vision), 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
       # Dev shares the same 8 lanes as prod; kept small so it can't starve prod.
       # /v1/chat/completions and /v1/messages both verified 2026-10-16 (thinking blocks on /v1/messages).
       - name: ninfer

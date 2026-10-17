@@ -37,8 +37,8 @@ data:
     metrics:
       listen: 127.0.0.1:9091
     backends:
-      # Qwen3.8-27B on NInfer v3 (ghcr.io/dbirks/ninfer:20261017), NVFP4 weights + NVFP4 KV, #156.
-      # 1.46M-token shared KV pool (with --vision), 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
+      # Qwen3.8-27B on NInfer, Sept build (ghcr.io/dbirks/ninfer:20260908, v2 artifact), NVFP4 weights + NVFP4 KV, #156.
+      # 1.25M-token shared KV pool (with --vision), 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
       # concurrency 10 (asked 2026-10-17): the engine still DECODES at most 8 (kMaximumConcurrency is a
       # compile-time 8, and the Gated-DeltaNet replay kernel caps rows at 8), so requests 9-10 wait in
       # NInfer's pending FIFO (--max-pending-requests 32) instead of the gateway 429ing them.
