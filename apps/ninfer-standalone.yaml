@@ -70,11 +70,9 @@ spec:
             - "--max-context"
             - "262144"                                  # model native max (plain RoPE); KV auto ~481k tok
             - "--kv-capacity"
-            # Explicit while on 1 lane: `auto` sizes to max-concurrency x max-context, so at 1 lane it shrank to
-            # 262,144 tokens and left 23 GiB of the slice idle. A big shared pool is what keeps several agent
-            # conversations' prefixes cached. 8 lanes + auto gave 1,463,424 with 1 GiB free; 1 lane needs less.
-            # Back to "auto" when max-concurrency returns to 8.
-            - "1400000"
+            # The engine caps kv_capacity at max-concurrency x max-context ("kv_capacity is outside the usable
+            # range" FATAL at startup for 1400000 on 1 lane), so the 1-lane stopgap is a 262,144-token pool.
+            - "auto"
             # CONTEXT CACHE: keep it all in VRAM (2026-09-24). This box is RAM-poor (46GB, no swap) and
             # VRAM-rich, so the default pinned-host overflow tier (Host KV 8 GiB + 8 Host State slots
             # ~1.46 GiB = ~9.5GB of unreclaimable pinned host RAM) is the wrong trade. Zero it, and
