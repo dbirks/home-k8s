@@ -71,7 +71,7 @@ data:
         protocols: [openai]
         concurrency: 1
         models:
-          - alias: clef-omni-int4
+          - alias: clef-omni
             model: clef-omni
             types: [decision]
       # Qwen3-TTS 1.7B on vLLM-Omni v0.30.0 (#156), POST /v1/audio/speech only. The gateway rewrites just
