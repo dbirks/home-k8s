@@ -65,7 +65,9 @@ Thinking BUDGET (runaway reasoning to max_tokens in long agent contexts): server
 `--default-thinking-budget N` (both builds; force-closes `</think>` with Qwen's early-close text, counted in
 max_tokens). Chat Completions has NO per-request field (`thinking_budget` etc. silently ignored,
 `chat_template_kwargs.thinking_budget` rejected); per-request only via Anthropic Messages
-`thinking.budget_tokens`. Not set today.
+`thinking.budget_tokens`. Not set today. VERIFIED 2026-10-17 through the Collective gateway: POST
+/v1/messages with `thinking: {type: enabled, budget_tokens: 1024}` capped at ~1,048 then answered
+(the gateway rejects budget_tokens below 1024). Prefer that over the server-wide flag.
 
 ## Image + artifact are a matched pair
 - Upstream Neroued/ninfer publishes NO image. ghcr.io/dbirks/ninfer is built by the fork's
