@@ -11,9 +11,13 @@
 #
 # SIZING: HAMi makes vLLM see the pod's slice as the whole card, so each stage's
 # gpu_memory_utilization is a fraction of the SLICE. The upstream config (0.3 + 0.3, max_num_seqs 64,
-# "verified on 1x H100") cannot hold the 3.9GB talker in a 7GB slice. First pass: 9000 MB slices,
-# talker 0.55 / code2wav 0.25, 8 seqs; read vLLM's memory-profile lines, then trim toward the 7000 MB
-# plan target so CLEF INT4 (25000) fits beside NInfer (55000).
+# "verified on 1x H100") cannot hold the 3.9GB talker in a 7GB slice. MEASURED 2026-10-16 at a 9000 MiB
+# first pass (talker 0.55): stage 0 = 3.99 GiB weights+non-torch, 0.16 activation peak, 0.04 graphs, KV
+# 112 KiB/token (0.76 GiB = 7,088 tok); stage 1 (code2wav) builds NO KV pool (0.29 GiB weights + graphs),
+# so its gpu_memory_utilization is inert. Pod total 7,448 MiB = talker reservation + ~2,500 MiB fixed
+# (stage 1, 2 CUDA contexts, API proc). Floor = 4,290 + 448 (one 4,096-tok request) + 2,500 ~= 7,240.
+# => 8000 MiB slices, talker 0.62 (4,960 MiB, same 0.76 GiB KV), ~540 MiB headroom per pod.
+# Card: NInfer 55000 + CLEF 25000 + 2x 8000 = 96000 of 97887. 7000 does NOT fit two 1.7B servers.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -40,7 +44,7 @@ data:
     stages:
       - stage_id: 0
         max_num_seqs: 8
-        gpu_memory_utilization: 0.55
+        gpu_memory_utilization: 0.62
         trust_remote_code: true
         enable_prefix_caching: false
         async_scheduling: true
@@ -122,7 +126,7 @@ spec:
             periodSeconds: 15
           resources:
             requests: { cpu: "1", memory: 3Gi }
-            limits: { cpu: "6", memory: 10Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "9000" }
+            limits: { cpu: "6", memory: 10Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "8000" }
           volumeMounts:
             - { name: models, mountPath: /models, readOnly: true }
             - { name: voices, mountPath: /voices }
@@ -172,7 +176,7 @@ spec:
             periodSeconds: 15
           resources:
             requests: { cpu: "1", memory: 3Gi }
-            limits: { cpu: "6", memory: 10Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "9000" }
+            limits: { cpu: "6", memory: 10Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "8000" }
           volumeMounts:
             - { name: models, mountPath: /models, readOnly: true }
             - { name: config, mountPath: /config, readOnly: true }
