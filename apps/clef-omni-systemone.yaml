@@ -20,7 +20,7 @@ metadata:
   namespace: default
   labels: { app: clef-omni-systemone }
 spec:
-  replicas: 0
+  replicas: 1                       # UP 2026-10-17 (#156): INT4 in 25000 MB beside NInfer 55000 + 2x TTS 8000 = 96000.
   strategy: { type: Recreate }
   selector:
     matchLabels: { app: clef-omni-systemone }
