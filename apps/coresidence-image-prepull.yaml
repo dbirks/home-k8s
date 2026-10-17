@@ -1,0 +1,29 @@
+# Pre-pull the #156 co-residence runtime images onto the node while Pennyroyal still serves, so
+# the solo GPU tests don't spend the Pennyroyal-down window on a ~25GB pull. Each container just
+# runs `true`; pulling is the point. CPU-only, no GPU.
+#   ninfer:20261017  - dbirks/ninfer rebased on Neroued/ninfer master + liburing Dockerfile fix (505ee46a), reads v3 artifacts
+#   vllm-omni:v0.30.0 - stable; has the persistent voice registry (SPEAKER_SAMPLES_DIR, immutable policy)
+# NVMe was ~74% after dropping catalog-models (2026-10-16); kubelet image GC starts at 85% and would
+# evict these while unused. Retire to .yaml.hold once the Deployments reference the same digests.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: coresidence-image-prepull
+  namespace: default
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 604800
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: ninfer
+          image: ghcr.io/dbirks/ninfer:20261017@sha256:3529117087d0b697353b5c383cf2e4259176b5dd809105dae371db0c6cd9c442
+          command: ["true"]
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 100m, memory: 64Mi } }
+        - name: vllm-omni
+          image: vllm/vllm-omni:v0.30.0@sha256:fc77cfaac7b1b43c30cbf32eaea214864434c6e0f303e6e9eb9f64104241a994
+          command: ["true"]
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 100m, memory: 64Mi } }
