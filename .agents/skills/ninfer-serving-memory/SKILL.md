@@ -32,7 +32,23 @@ Verify on the `capacity |` startup log line; `GET /metrics` exposes running/wait
 `--max-concurrency` accepts 1..8 only: `kMaximumConcurrency = 8` (`include/ninfer/types.h`) sizes fixed
 arrays in the scheduler/round buffers/graph capture, and the Gated-DeltaNet replay kernel has its own
 `kMaximumRows = 8`. Raising it is kernel work, not a flag. To admit more clients, raise the LLM
-Collective backend `concurrency` above 8: extras wait in NInfer's pending FIFO (`--max-pending-requests`).
+Collective backend `concurrency` above the engine lanes: extras wait in NInfer's pending FIFO
+(`--max-pending-requests`). (Currently 1 lane: see the known bug below.)
+
+## KNOWN BUG on 20261017 (upstream 64d10fbf): concurrent requests kill the engine
+Any 2+ requests in flight together can raise `std::logic_error "KV write exceeds its page reservation"`
+(`src/models/common/context/kv_history.cpp:615`, copy-on-write page count > reservation). Every
+in-flight request 500s at once, then the engine is dead: all requests 503 and `/health` 503
+`{"status":"unavailable"}`. Seen 2026-10-17 at 13:26/13:33/13:41/13:43, the last with two ~54-token
+prompts started 29 ms apart, so it is NOT about long context or images. No upstream issue or fix yet.
+- Stopgap in the manifest: `--max-concurrency 1` (3 simultaneous requests then all 200, serialized).
+- `--kv-capacity` is capped at lanes x max-context: at 1 lane `auto` = 262,144 tokens, and an explicit
+  larger value FATALs at startup ("kv_capacity is outside the usable range"). Do not try it.
+- Liveness/readiness/startup probes on `/health` restart a dead engine in ~50 s. Before the probes
+  the pod sat `1/1 Running` with a dead engine for minutes.
+- Restore 8 lanes + `auto` only after a fix; re-test by firing 3 tiny requests at once.
+Related open upstream reports: Neroued/ninfer #320 and #333 (Xid 79 / launch failures during prefill
+after near-100% cache replay, same artifact, agent workloads). Possibly behind our GPU wedges too.
 
 ## Reasoning effort (Qwen3.8 v3 artifact template)
 Accepted: `none` (engine thinking-off), `low`, `medium`, `xhigh` (template default). `minimal`, `high`,
