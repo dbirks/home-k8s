@@ -28,7 +28,7 @@ spec:
     metadata:
       labels: { app: clef-omni-systemone }
       annotations:
-        clef-omni/scripts-rev: "2026-10-17-fast-moe-free-refs"   # bump to roll after a clef-omni-scripts change
+        clef-omni/scripts-rev: "2026-10-17-health-route"   # bump to roll after a clef-omni-scripts change
     spec:
       enableServiceLinks: false
       runtimeClassName: nvidia

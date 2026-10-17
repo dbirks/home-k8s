@@ -661,6 +661,9 @@ def main():
 
     app = FastAPI()
 
+    # /health is what vLLM-style probes (and the LLM Collective contributor) GET; a 404 there reads as
+    # "unknown, keep last state", so a Clef marked down during a restart never came back (#156).
+    @app.get("/health")
     @app.get("/healthz")
     def healthz():
         body = {k: v for k, v in state.items() if k not in ("model", "processor", "jsm")}
