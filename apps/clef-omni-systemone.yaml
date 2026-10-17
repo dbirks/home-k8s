@@ -8,8 +8,10 @@
 #   /work/nvfp4-experts/export   ModelOpt NVFP4 W4A4: FP4 weights dequantized + FP4 activation rounding
 #   /work/nvfp4a16/export        ModelOpt NVFP4A16: FP4 weights dequantized
 #   /work/int4/export            AutoRound INT4: transformers int4 kernels
-# replicas: 0 by default. Needs the whole card: GPU window = Pennyroyal at replicas: 0 FIRST
-# (46 GB host RAM, no swap: never run both). /healthz turns 200 once loaded (~10 min off the HDD).
+# #156: serves the AutoRound INT4 export (~19.4 GiB weights, verified by apps/clef-omni-int4-verify.yaml)
+# in a 25000 MB HAMi slice beside NInfer (55000) and the two Qwen3-TTS servers. Bring it up LAST and alone:
+# its HDD weight load is the biggest host-RAM transient (46 GB, no swap). The BF16 path still needs the
+# whole card (gpumem 97000, Pennyroyal/NInfer at 0). /healthz turns 200 once loaded (~10 min off the HDD).
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -43,7 +45,7 @@ spec:
                 "$VENV/bin/pip" install -q --no-input -c /tmp/constraints.txt fastapi 'uvicorn[standard]'
               exec "$VENV/bin/python" /scripts/serve_clef.py --model "$CLEF_MODEL_PATH" --host 0.0.0.0 --port 8000
           env:
-            - { name: CLEF_MODEL_PATH, value: /work/clef-omni }
+            - { name: CLEF_MODEL_PATH, value: /work/int4/export }   # BF16 original: /work/clef-omni (whole card)
             - { name: PYTORCH_CUDA_ALLOC_CONF, value: "expandable_segments:True" }
           ports:
             - { name: http, containerPort: 8000 }
@@ -56,7 +58,7 @@ spec:
             periodSeconds: 20
           resources:
             requests: { cpu: "2", memory: 12Gi }
-            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 97000 }
+            limits:   { cpu: "8", memory: 34Gi, nvidia.com/gpu: 1, nvidia.com/gpumem: 25000 }
           volumeMounts:
             - { name: work, mountPath: /work }
             - { name: scripts, mountPath: /scripts, readOnly: true }

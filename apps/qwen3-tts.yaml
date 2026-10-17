@@ -1,0 +1,203 @@
+# Qwen3-TTS 1.7B on vLLM-Omni v0.30.0: TWO always-on servers sharing the RTX PRO 6000 (issue #156).
+#   qwen3-tts-voicedesign  design a voice from a text description (task_type VoiceDesign) -> sample clip
+#   qwen3-tts-base         clone/serve voices: ref audio + transcript, or a REGISTERED voice by name
+# Reusable-voice flow: VoiceDesign clip + its exact transcript -> POST /v1/audio/voices on BASE
+# (multipart audio_sample, name, consent, ref_text) -> one .safetensors per voice on qwen3-tts-voices
+# -> Base /v1/audio/speech {"voice": "<name>"} survives restarts. Registry is NOT multi-tenant: keep
+# /v1/audio/voices private (never route it through the Collective contributor).
+#
+# Weights: apps/qwen3-tts-models.yaml (pinned snapshots on the HDD). Image pre-pulled by
+# apps/coresidence-image-prepull.yaml (same digest).
+#
+# SIZING: HAMi makes vLLM see the pod's slice as the whole card, so each stage's
+# gpu_memory_utilization is a fraction of the SLICE. The upstream config (0.3 + 0.3, max_num_seqs 64,
+# "verified on 1x H100") cannot hold the 3.9GB talker in a 7GB slice. First pass: 9000 MB slices,
+# talker 0.55 / code2wav 0.25, 8 seqs; read vLLM's memory-profile lines, then trim toward the 7000 MB
+# plan target so CLEF INT4 (25000) fits beside NInfer (55000).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen3-tts-deploy
+  namespace: default
+data:
+  # Copy of vllm_omni/deploy/qwen3_tts.yaml @ v0.30.0 with the memory knobs cut down for a HAMi slice.
+  qwen3_tts.yaml: |
+    model_runner: v2
+    async_chunk: true
+    connectors:
+      connector_of_shared_memory:
+        name: SharedMemoryConnector
+        extra:
+          codec_streaming: true
+          connector_get_sleep_s: 0.01
+          connector_get_max_wait_first_chunk: 3000
+          connector_get_max_wait: 300
+          codec_chunk_frames: 25
+          codec_left_context_frames: 72
+          initial_codec_chunk_frames: 1
+          decode_batch_max_size: 4
+    stages:
+      - stage_id: 0
+        max_num_seqs: 8
+        gpu_memory_utilization: 0.55
+        trust_remote_code: true
+        enable_prefix_caching: false
+        async_scheduling: true
+        max_num_batched_tokens: 512
+        max_model_len: 4096
+        devices: "0"
+        output_connectors:
+          to_stage_1: connector_of_shared_memory
+        default_sampling_params:
+          temperature: 0.9
+          top_k: 50
+          max_tokens: 4096
+          min_tokens: 2
+          repetition_penalty: 1.05
+        silence_ban_frames: 0
+        subtalker_sampling_params:
+          do_sample: true
+          temperature: 0.9
+          top_k: 50
+          top_p: 1.0
+      - stage_id: 1
+        dtype: bfloat16
+        max_num_seqs: 8
+        gpu_memory_utilization: 0.25
+        enforce_eager: false
+        trust_remote_code: true
+        enable_prefix_caching: false
+        async_scheduling: true
+        max_num_batched_tokens: 65536
+        max_model_len: 65536
+        devices: "0"
+        input_connectors:
+          from_stage_0: connector_of_shared_memory
+        default_sampling_params:
+          temperature: 0.0
+          top_p: 1.0
+          top_k: -1
+          max_tokens: 65536
+          repetition_penalty: 1.0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-tts-base
+  namespace: default
+  labels: { app: qwen3-tts, model: base }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }        # no surge: a 2nd HAMi slice would not fit
+  selector:
+    matchLabels: { app: qwen3-tts, model: base }
+  template:
+    metadata:
+      labels: { app: qwen3-tts, model: base }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-omni:v0.30.0@sha256:fc77cfaac7b1b43c30cbf32eaea214864434c6e0f303e6e9eb9f64104241a994
+          command: ["vllm", "serve", "/models/Qwen3-TTS-12Hz-1.7B-Base",
+                    "--omni", "--deploy-config", "/config/qwen3_tts.yaml",
+                    "--host", "0.0.0.0", "--port", "8000",
+                    "--served-model-name", "qwen3-tts-base", "--trust-remote-code"]
+          env:
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: SPEAKER_SAMPLES_DIR, value: /voices }
+            - { name: VLLM_OMNI_SPEAKER_REGISTRATION_POLICY, value: immutable }   # no silent overwrite; DELETE first
+            - { name: SPEAKER_MAX_UPLOADED, value: "200" }
+            - { name: VLLM_NO_USAGE_STATS, value: "1" }
+          ports:
+            - { name: http, containerPort: 8000 }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 15
+            failureThreshold: 80            # 20 min: HDD load + graph capture
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "1", memory: 3Gi }
+            limits: { cpu: "6", memory: 10Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "9000" }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: voices, mountPath: /voices }
+            - { name: config, mountPath: /config, readOnly: true }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: qwen3-tts-models-hdd } }
+        - { name: voices, persistentVolumeClaim: { claimName: qwen3-tts-voices } }
+        - { name: config, configMap: { name: qwen3-tts-deploy } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 2Gi } }   # stage 0 -> 1 SharedMemoryConnector
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-tts-voicedesign
+  namespace: default
+  labels: { app: qwen3-tts, model: voicedesign }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: qwen3-tts, model: voicedesign }
+  template:
+    metadata:
+      labels: { app: qwen3-tts, model: voicedesign }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-omni:v0.30.0@sha256:fc77cfaac7b1b43c30cbf32eaea214864434c6e0f303e6e9eb9f64104241a994
+          command: ["vllm", "serve", "/models/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+                    "--omni", "--deploy-config", "/config/qwen3_tts.yaml",
+                    "--host", "0.0.0.0", "--port", "8000",
+                    "--served-model-name", "qwen3-tts-voicedesign", "--trust-remote-code"]
+          env:
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: VLLM_NO_USAGE_STATS, value: "1" }
+          ports:
+            - { name: http, containerPort: 8000 }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 15
+            failureThreshold: 80
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 15
+          resources:
+            requests: { cpu: "1", memory: 3Gi }
+            limits: { cpu: "6", memory: 10Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "9000" }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: config, mountPath: /config, readOnly: true }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: models, persistentVolumeClaim: { claimName: qwen3-tts-models-hdd } }
+        - { name: config, configMap: { name: qwen3-tts-deploy } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 2Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-tts-base
+  namespace: default
+spec:
+  selector: { app: qwen3-tts, model: base }
+  ports:
+    - { name: http, port: 8000, targetPort: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-tts-voicedesign
+  namespace: default
+spec:
+  selector: { app: qwen3-tts, model: voicedesign }
+  ports:
+    - { name: http, port: 8000, targetPort: http }

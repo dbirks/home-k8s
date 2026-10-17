@@ -1,5 +1,5 @@
-# vLLM TTS - Qwen3-TTS-12Hz-1.7B-VoiceDesign
-# Scaled down - enable by setting replicas to 1
+# PARKED 2026-10-16 (#156): superseded by apps/qwen3-tts.yaml (vLLM-Omni v0.30.0, Base + VoiceDesign).
+# Legacy vllm-openai v0.21.0 single-model VoiceDesign server; kept only for reference.
 ---
 apiVersion: apps/v1
 kind: Deployment
