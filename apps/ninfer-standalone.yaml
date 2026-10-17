@@ -111,6 +111,23 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
           ports:
             - containerPort: 8000
+          # GET /health is 200 while the engine serves and 503 {"status":"unavailable"} once it has faulted.
+          # 2026-10-17 13:26 UTC: two concurrent single-image requests (req#2139/2140) both died "HTTP 500
+          # internal error" and the engine stayed dead (every request 503) while the pod sat 1/1 Running for
+          # want of probes. Liveness now restarts it (~1 min). Engine start is ~10 s; startup allows 10 min.
+          startupProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             # HAMi hard VRAM cap 55000 MB (#156 plan: + CLEF 25000 + 2x TTS 7000 = 94000 of 97887, ~3.9GB slack)
             # (webhook auto-injects schedulerName hami-scheduler). host memory request kept low so it fits the
