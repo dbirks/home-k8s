@@ -1376,10 +1376,15 @@ data:
         per layer. Weights stay packed int4; only one layer's BF16 experts exist at a time. Anything
         unexpected: warn and keep the slow path for that layer."""
         done = 0
-        for name, block in list(model.named_modules()):
-            experts = getattr(block, "experts", None)
-            if not (type(experts).__name__ == "SequentialQwen3OmniThinkerExperts" and callable(getattr(block, "experts_forward", None))):
-                continue
+        # Snapshot NAMES only: a list of (name, module) pairs pins every old per-expert QuantLinear until
+        # the loop ends, so peak = old + new packed copies (OOMed a 25000 MB HAMi slice after 15 of 48
+        # layers, #156). Looked up lazily, each swapped layer's buffers free in time for the next one.
+        names = [n for n, b in model.named_modules()
+                 if type(getattr(b, "experts", None)).__name__ == "SequentialQwen3OmniThinkerExperts"
+                 and callable(getattr(b, "experts_forward", None))]
+        for name in names:
+            block = model.get_submodule(name)
+            experts = block.experts
             try:
                 projs = [getattr(e, p) for e in experts for p in ("gate_proj", "up_proj", "down_proj")]
                 for p in projs:
@@ -1403,6 +1408,7 @@ data:
                 continue
             block.experts = packed                    # drops the per-expert QuantLinears
             block.experts_forward = packed.__call__   # the block calls experts_forward(h, top_k_index, top_k_weights)
+            del experts, projs, p, g_idx, packed, block   # last local refs to the old layer
             done += 1
         log(f"fast grouped int4 MoE: {done} layers")
         return done
