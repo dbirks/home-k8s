@@ -84,7 +84,13 @@ spec:
             - "--device-state-slots"
             - "16"
             - "--max-concurrency"
-            - "8"                        # HARD engine cap: ninfer-serve rejects >8 ("--max-concurrency must be in [1,8]"). ~550 tok/s @8 is the ceiling.
+            # STOPGAP 2026-10-17: 1 lane. On the 20261017 build ANY two requests in flight together can kill the
+            # engine (std::logic_error "KV write exceeds its page reservation", kv_history.cpp:615): faults at
+            # 13:26 (2 reqs), 13:33 (3), 13:41 (3), 13:43 (two ~54-token prompts started 29 ms apart). One lane
+            # removes the concurrency while keeping prefix reuse (agent TTFT ~120 ms on 100K-token turns);
+            # extras wait in the pending FIFO below. Restore "8" once upstream fixes the reservation count.
+            # (HARD engine cap is 8: ninfer-serve rejects >8. ~550 tok/s @8 was the ceiling.)
+            - "1"
             - "--max-pending-requests"
             - "32"
             - "--pending-timeout-ms"
