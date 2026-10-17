@@ -213,19 +213,6 @@ spec:
     - port: 80
       targetPort: 8000
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: granite-speech
-  namespace: default
-spec:
-  selector:
-    app: vllm
-    model: qwen27
-  ports:
-    - port: 80
-      targetPort: 8001
----
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -248,26 +235,5 @@ spec:
               # during training). Change back to `vllm` to serve Qwen3.6-27B again.
               service:
                 name: laguna
-                port:
-                  number: 80
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: granite-speech
-  namespace: default
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
-spec:
-  ingressClassName: private
-  rules:
-    - host: speech.hoam.lan
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: granite-speech
                 port:
                   number: 80
