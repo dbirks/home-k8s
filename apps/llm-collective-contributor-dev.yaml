@@ -35,36 +35,45 @@ data:
     metrics:
       listen: 127.0.0.1:9091
     backends:
-      # Same target as the prod contributor: Qwen3.8-Flash-Next on Pennyroyal
-      # v2.5.3 (SGLang fork), whole card (#135), engine served name
-      # `pennyroyal`, concurrency 4 = MAX_RUNNING_REQUESTS.
-      # NOTE: while both contributors run, each collective call occupies a
-      # slot on the same card; only one of the two should carry traffic at a
-      # time in normal use (pause the other from either gateway's Nodes page).
-      - name: pennyroyal
-        url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
+      # Qwen3.8-27B on NInfer v3 (ghcr.io/dbirks/ninfer:20261017), NVFP4 weights + NVFP4 KV, #156.
+      # 1.52M-token shared KV pool, 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
+      # Dev shares the same 8 lanes as prod; kept small so it can't starve prod.
+      # /v1/chat/completions and /v1/messages both verified 2026-10-16 (thinking blocks on /v1/messages).
+      - name: ninfer
+        url: http://ninfer.default.svc.cluster.local:8000
         protocols: [openai, anthropic]
-        concurrency: 4
+        concurrency: 2
         models:
-          - alias: qwen3-8-flash-next
-            model: pennyroyal
-            # Same declarations as the prod contributor (see its header notes).
+          - alias: qwen3-8-27b
+            model: qwen3.8-27b-ninfer
             limits:
-              context: 524288
-            reasoning:
-              levels:
-                - none
-                - minimal
-                - low
-                - medium
-                - high
-                - xhigh
-                - max
-            # Pennyroyal runs the multimodal Flash-Next build: sglang encodes
-            # image parts (verified against the dev gateway on 2026-10-03).
-            # Declaring it earns the VISION chip and lets the gateway route
-            # image traffic here instead of rejecting it with a 400.
-            inputs: [text, image]
+              context: 262144
+            inputs: [text]                 # started without --vision; declare image only once budgeted + tested
+      # PARKED 2026-10-16 (#156): Pennyroyal at replicas 0. Rollback = uncomment, drop ninfer above.
+      # - name: pennyroyal
+      #   url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
+      #   protocols: [openai, anthropic]
+      #   concurrency: 4
+      #   models:
+      #     - alias: qwen3-8-flash-next
+      #       model: pennyroyal
+      #       # Same declarations as the prod contributor (see its header notes).
+      #       limits:
+      #         context: 524288
+      #       reasoning:
+      #         levels:
+      #           - none
+      #           - minimal
+      #           - low
+      #           - medium
+      #           - high
+      #           - xhigh
+      #           - max
+      #       # Pennyroyal runs the multimodal Flash-Next build: sglang encodes
+      #       # image parts (verified against the dev gateway on 2026-10-03).
+      #       # Declaring it earns the VISION chip and lets the gateway route
+      #       # image traffic here instead of rejecting it with a 400.
+      #       inputs: [text, image]
 ---
 apiVersion: apps/v1
 kind: Deployment
