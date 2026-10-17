@@ -61,6 +61,11 @@ after near-100% cache replay, same artifact, agent workloads). Possibly behind o
 ## Reasoning effort (Qwen3.8 v3 artifact template)
 Accepted: `none` (engine thinking-off), `low`, `medium`, `xhigh` (template default). `minimal`, `high`,
 `max` return 400 `invalid_prompt` ("Unexpected reasoning effort"). Declare only the accepted four.
+Thinking BUDGET (runaway reasoning to max_tokens in long agent contexts): server-wide only via
+`--default-thinking-budget N` (both builds; force-closes `</think>` with Qwen's early-close text, counted in
+max_tokens). Chat Completions has NO per-request field (`thinking_budget` etc. silently ignored,
+`chat_template_kwargs.thinking_budget` rejected); per-request only via Anthropic Messages
+`thinking.budget_tokens`. Not set today.
 
 ## Image + artifact are a matched pair
 - Upstream Neroued/ninfer publishes NO image. ghcr.io/dbirks/ninfer is built by the fork's
