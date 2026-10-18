@@ -468,6 +468,10 @@ spec:
             # Where the claude launcher finds its login (launchers.go AuthEnvVars);
             # the worker grants this dir rw into the nono sandbox per ADR-0019 D4.
             - {name: CLAUDE_CONFIG_DIR, value: /harness/claude}
+            # ADR-0040: a long-lived `claude setup-token` token, read at each launch
+            # and handed to the agent as CLAUDE_CODE_OAUTH_TOKEN (never argv/logs).
+            # Replaces relying on the copied interactive login, which goes stale.
+            - {name: COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE, value: /run/claude-token/token}
           volumeMounts:
             - {name: workspaces, mountPath: /workspaces}
             - {name: repos, mountPath: /repos}
@@ -480,6 +484,7 @@ spec:
             # READ-WRITE on purpose: Claude Code writes session/state files
             # back into CLAUDE_CONFIG_DIR while a turn is running.
             - {name: claude-config, mountPath: /harness/claude}
+            - {name: claude-token, mountPath: /run/claude-token, readOnly: true}
           resources:
             requests: {cpu: 250m, memory: 512Mi}
             limits: {memory: 4Gi}
@@ -512,3 +517,7 @@ spec:
             defaultMode: 0400
         - name: claude-config
           emptyDir: {}
+        - name: claude-token
+          secret:
+            secretName: communication-worker-claude-token
+            defaultMode: 0440
