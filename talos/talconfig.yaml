@@ -62,7 +62,7 @@ nodes:
     ipAddress: 10.0.0.195
     controlPlane: false
     installDiskSelector:
-      serial: IB25ADK0256S00205
+      wwid: "*IB25ADK0256S00205"
     nodeLabels:
       gpu: "on"
       feature.node.kubernetes.io/pci-10de.present: "true"

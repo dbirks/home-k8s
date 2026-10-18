@@ -10,7 +10,8 @@ machine:
     # Image Factory schematic af8eb824...: siderolabs/nonfree-kmod-nvidia-lts + nvidia-container-toolkit-lts
     image: factory.talos.dev/installer/af8eb82417d3deaa94d2ef19c3b590b0dac1b2549d0b9b35b3da2bc325de75f7:v1.13.6
     diskSelector:
-      serial: IB25ADK0256S00205        # Inland 238.5G SATA SSD, the ONLY disk in the box
+      # Talos reports no `serial` for this SATA SSD; the serial only appears inside the wwid.
+      wwid: "*IB25ADK0256S00205"       # Inland 238.5G SATA SSD, the ONLY disk in the box
     wipe: false
   kernel:
     modules:
@@ -23,6 +24,14 @@ machine:
     feature.node.kubernetes.io/pci-10de.present: "true"  # GPU DaemonSets selector (no NFD in-cluster)
   nodeTaints:
     dedicated: pascal:NoSchedule   # nothing lands here unless it tolerates dedicated=pascal
+  kubelet:
+    image: ghcr.io/siderolabs/kubelet:v1.36.2   # base worker.yaml pinned v1.35.0; match the control plane
+    # NodeRestriction (k8s 1.36) forbids a node from changing its own taints after registration, so Talos'
+    # nodeTaints alone fails ("node ... is not allowed to modify taints") and takes the nodeLabels down with it.
+    # Register WITH the taint instead; Talos then only has labels left to apply.
+    extraConfig:
+      registerWithTaints:
+        - { key: dedicated, value: pascal, effect: NoSchedule }
 cluster:
   controlPlane:
     endpoint: https://10.0.0.194:6443   # DHCP reservation on the EdgeRouter (2026-10-17)

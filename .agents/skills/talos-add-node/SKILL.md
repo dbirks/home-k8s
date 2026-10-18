@@ -5,19 +5,26 @@ description: Add a second machine to the home Talos cluster as a GPU worker, inc
 
 # Add a node (and turn an Arch box into one)
 
-STATUS: researched 2026-10-17, NOT yet run end-to-end. Update this file with what really happened.
+STATUS: DONE 2026-10-17 for dave-droid (GTX 1070, 64 GB RAM, 10.0.0.195). Files: talos/patches/dave-droid-worker.yaml,
+talos/render-dave-droid.sh, the dave-droid entry in talos/talconfig.yaml. Lessons are folded in below.
 
-## 0. Blocker first: the join endpoint is stale
-The machine config says `cluster.controlPlane.endpoint: https://10.0.0.30:6443`, but the control plane is
-`10.0.0.194` (DHCP) and 10.0.0.30 is some other device (port 6443 refused, different MAC). The existing
-node does not care (kubelet uses KubePrism on localhost), but a NEW node joins through that endpoint, so
-it would never join. Fix before enrolling anything:
-1. DHCP reservation at the router for the control plane (MAC `30:56:0f:25:2d:0b`, keep 10.0.0.194) and
-   one for the new box. Do not use a DNS name: Pi-hole runs inside the cluster.
-2. Set `endpoint: https://10.0.0.194:6443` in `talos/talconfig.yaml` (and fix the stale `ipAddress`),
-   regenerate, and `apply-config` to the control plane. The API server cert already covers the node IP
-   (kubectl works against .194 today). Re-check with `curl -k https://10.0.0.194:6443/version` style tests.
-   Alternative: a Talos VIP (`machine.network.interfaces[].vip`) on a free static IP outside the DHCP pool.
+## 0. The join endpoint (fixed 2026-10-17)
+The endpoint was a stale `https://10.0.0.30:6443`: dave-droid's old reservation (`talos-eol-mza`), from when that
+box WAS the Talos node. Now: EdgeRouter reservations talos-210-73x = .194, dave-droid = .195, pool shrunk to
+.100-.193 (ISC dhcpd does not protect a fixed address inside the pool), endpoint = `https://10.0.0.194:6443`.
+Router: `ssh ubnt@10.0.0.1` (EdgeOS 3; creds are the box default, ask David), configure with
+`/opt/vyatta/sbin/vyatta-cfg-cmd-wrapper begin|set|delete|commit|save|end`; copy `/config/config.boot` first.
+
+**Changing `cluster.controlPlane.endpoint` on a live control plane is NOT harmless (~8 min outage seen):**
+- It re-renders kube-apiserver with a NEW `--service-account-issuer` and `--api-audiences`. Every existing pod
+  token (old issuer) then fails "invalid bearer token": Flux, HAMi plugin, cert-manager crash-loop. Fix: accept both:
+  `cluster.apiServer.extraArgs: {service-account-issuer: [NEW, OLD], api-audiences: "NEW,OLD"}` (list form works
+  on 1.13; first = issuing). Do it IN THE SAME PATCH as the endpoint change next time.
+- Both apiserver restarts stalled: kubelet sat on `mounted volumes=[...]: context deadline exceeded` for the new
+  static pod (its volume manager was blocked on PVC lookups through the dead API). `talosctl service kubelet
+  restart` brought the API back in ~40 s each time. KubePrism then reported unhealthy for ~4 min and healed itself.
+- Moving a machine's reservation makes it NAK on renewal; if the new IP is still held by another device the client
+  declines it and NetworkManager can stay offline for 10+ min. dave-droid needed a manual reboot.
 
 ## 1. Pick the NVIDIA extensions by GPU generation
 | GPU | kernel module extension | toolkit |
@@ -40,15 +47,27 @@ it would never join. Fix before enrolling anything:
 
 ## 2. Repo changes for the new node
 - `talos/talconfig.yaml`: add a node with `controlPlane: false`, its reserved IP, an `installDiskSelector`
-  (by serial/model/size, NOT `/dev/sda`), the Pascal schematic above, and the module patch. Talos
+  (NOT `/dev/sda`; SATA disks may report NO `serial` in `talosctl get disks`, the serial sits inside `wwid`, so
+  use `wwid: "*SERIAL"`; a non-matching selector is rejected at apply time and nothing is written), the Pascal schematic above, and the module patch. Talos
   version must equal the cluster's (v1.13.6). Each node may have its own schematic.
 - `talos/talsecret.sops.yaml` does not exist yet (README step "Bootstrap talsecret.sops.yaml from an
   existing running cluster"). Without it a regenerated worker would get NEW secrets and could not join.
-  Do that step first, or hand-make the worker from `_newconfig/worker.yaml` (gitignored, same secrets).
+  What we did: patch `_newconfig/worker.yaml` (gitignored, SAME secrets as the live CP: compare sha256 of
+  cluster.token / cluster.ca.crt / machine.token with `talosctl get machineconfig`). A strategic-merge patch cannot
+  delete keys, so the render script drops `machine.install.disk` and swaps HostnameConfig `auto` for `hostname`.
 - `nodeLabels` on the worker: `gpu: "on"` (HAMi's device plugin selects `gpu=on` +
   `pci-10de.present`; NFD adds the second automatically).
-- Consider a `nodeTaints` entry (e.g. `dedicated=pascal:NoSchedule`) at first, so existing untainted pods
-  do not drift onto a slower box; tolerate it only in workloads you mean to place there.
+- Taint the new node (dave-droid: `dedicated=pascal:NoSchedule`) so existing untainted pods do not drift onto
+  it. `machine.nodeTaints` ALONE FAILS on k8s 1.36: NodeRestriction says "node ... is not allowed to modify
+  taints" and Talos' NodeApplyController sends labels+taints together, so the labels fail too. Register with
+  the taint instead: `machine.kubelet.extraConfig.registerWithTaints: [{key, value, effect}]` (keep nodeTaints
+  too). Put it in the config BEFORE the first boot. If you have to fix it afterwards, `kubectl delete node`
+  plus a kubelet restart re-registers, BUT the node gets a NEW podCIDR, so flannel fails with "cni0 already has
+  an IP address different from ..." until `talosctl reboot` of that node.
+- The old base `_newconfig/worker.yaml` pins `kubelet:v1.35.0`: set `machine.kubelet.image` to the control
+  plane's version (v1.36.2).
+- DaemonSets that do NOT tolerate the taint (by design they stay off it): metallb-speaker, alloy. HAMi's
+  device plugin got an explicit toleration (prereqs/hami.yaml).
 - `apps/gpu-power-limit.yaml`: the DaemonSet lands on every GPU node, and the `TARGET_WATTS` fallback is
   350 W, above any Pascal card's max. Add a `GPU_POWER_MAP` entry for the new card (by UUID or
   a unique name substring) and test with `DRY_RUN` first.
@@ -62,7 +81,11 @@ Yes, it is possible, with no USB stick. Talos boots from RAM in maintenance mode
 when you apply a config. Until that moment a power-cycle returns the box to Arch, which makes kexec the
 safe path.
 Requirements: SSH + sudo on the Arch box, `kexec-tools`, Secure Boot off (lockdown blocks unsigned kexec),
-wired DHCP. BACK UP the Arch disk: install wipes the target disk (other disks are left alone).
+wired DHCP. BACK UP the Arch disk: install wipes the target disk (other disks are left alone). dave-droid's
+backup (home minus caches/weights + /etc, 3.1 GB) is on spruce-goose at ~/backups/dave-droid-2026-10-17.
+Measured: kexec to maintenance API ~60 s. The initramfs is zstd despite the `.xz` name (`zstd -t` to check).
+Before kexec: `sudo modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia` (nothing must hold the GPU), then
+`sudo systemd-run --on-active=3 systemctl kexec` so the SSH command returns first.
 ```bash
 # on the Arch box
 S=af8eb82417d3deaa94d2ef19c3b590b0dac1b2549d0b9b35b3da2bc325de75f7; V=v1.13.6
