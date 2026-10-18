@@ -206,7 +206,7 @@ spec:
             # the worker's chat key from communication-worker-secrets — no new
             # secret, never a literal.
             - {name: COMMUNICATION_ASSISTANT_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
-            - {name: COMMUNICATION_ASSISTANT_MODEL, value: qwen3-8-flash-next}
+            - {name: COMMUNICATION_ASSISTANT_MODEL, value: qwen3-8-27b}
             - name: COMMUNICATION_ASSISTANT_API_KEY
               valueFrom:
                 secretKeyRef: {name: communication-worker-secrets, key: COMMUNICATION_MODEL_CHAT_API_KEY, optional: false}
@@ -464,7 +464,7 @@ spec:
             - {name: COMMUNICATION_AGENT_GIT_NAME, value: "Communication Worker"}
             - {name: COMMUNICATION_AGENT_GIT_EMAIL, value: worker@communication.invalid}
             - {name: COMMUNICATION_MODEL_CHAT_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
-            - {name: COMMUNICATION_MODEL_CHAT_MODELS, value: qwen3-8-flash-next}
+            - {name: COMMUNICATION_MODEL_CHAT_MODELS, value: qwen3-8-27b}
             # Where the claude launcher finds its login (launchers.go AuthEnvVars);
             # the worker grants this dir rw into the nono sandbox per ADR-0019 D4.
             - {name: CLAUDE_CONFIG_DIR, value: /harness/claude}
