@@ -124,6 +124,10 @@ spec:
       # advertised units (nvidia.com/gpu 10 -> 20) and a 32GB card sliced 10 ways gives
       # 3.2GB units — a pod asking for gpumem 4096 can NEVER land on it. Don't raise
       # deviceSplitCount to compensate; pin instead. See .agents/skills/hami-gpu-accounting.
+      # dave-droid (GTX 1070 worker) carries taint dedicated=pascal:NoSchedule so ordinary pods stay off
+      # it; the device plugin must still run there to advertise the card.
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
 
     prometheus:
       enabled: false                      # no ServiceMonitor CRD in this cluster

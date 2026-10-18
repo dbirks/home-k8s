@@ -20,7 +20,7 @@
 clusterName: home
 talosVersion: v1.13.6
 kubernetesVersion: v1.36.2
-endpoint: https://10.0.0.30:6443
+endpoint: https://10.0.0.194:6443   # 2026-10-17: was .30 (dave-droid's old reservation); .194 is now a DHCP reservation
 
 # Talos Image Factory schematic — installer image with NVIDIA extensions
 # (siderolabs/nvidia-open-gpu-kernel-modules-lts,
@@ -40,7 +40,7 @@ endpoint: https://10.0.0.30:6443
 
 nodes:
   - hostname: talos-210-73x
-    ipAddress: 10.0.0.177
+    ipAddress: 10.0.0.194
     controlPlane: true
     installDiskSelector:
       busPath: /dev/sda
@@ -56,3 +56,21 @@ nodes:
       - "@./patches/nvidia-module-options.yaml"
       - "@./patches/hdd-storage.yaml"
       - "@./patches/kubelet-max-pods.yaml"
+  # GTX 1070 (Pascal) worker, 2026-10-17. Actually rendered from _newconfig/worker.yaml by
+  # talos/render-dave-droid.sh + talos/patches/dave-droid-worker.yaml (talsecret.sops.yaml not made yet).
+  - hostname: dave-droid
+    ipAddress: 10.0.0.195
+    controlPlane: false
+    installDiskSelector:
+      serial: IB25ADK0256S00205
+    nodeLabels:
+      gpu: "on"
+      feature.node.kubernetes.io/pci-10de.present: "true"
+    nodeTaints:
+      dedicated: pascal:NoSchedule
+    schematic:
+      customization:
+        systemExtensions:
+          officialExtensions:
+            - siderolabs/nonfree-kmod-nvidia-lts       # Pascal: proprietary 580 only (no open modules, no 595)
+            - siderolabs/nvidia-container-toolkit-lts

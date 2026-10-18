@@ -68,6 +68,14 @@ spec:
       priorityClassName: system-node-critical
       nodeSelector:
         feature.node.kubernetes.io/pci-10de.present: "true"   # same NFD label HAMi + the watchdog key on
+      # NOT on dave-droid (GTX 1070 worker, 2026-10-17): its cap is the card's own default, and the
+      # 350 W fallback is far above a 1070's range. Pascal never ran the GSP firmware this works around.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: kubernetes.io/hostname, operator: NotIn, values: [dave-droid] }
       tolerations:
         - operator: Exists   # single-node control-plane; tolerate all taints
       containers:

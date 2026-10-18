@@ -1,0 +1,28 @@
+# dave-droid: GTX 1070 (Pascal GP104, 8 GiB) worker. Applied on top of _newconfig/worker.yaml (same
+# cluster secrets as the control plane). Render:
+#   talosctl machineconfig patch _newconfig/worker.yaml --patch @talos/patches/dave-droid-worker.yaml -o <out>
+#   then: talos/render-dave-droid.sh does both steps plus the two edits a strategic merge cannot do
+#   (drop machine.install.disk so only the serial selector applies; HostnameConfig auto -> static name).
+# Pascal needs the PROPRIETARY 580 (lts) driver: nonfree-kmod-nvidia-lts + nvidia-container-toolkit-lts.
+# See .agents/skills/talos-add-node.
+machine:
+  install:
+    # Image Factory schematic af8eb824...: siderolabs/nonfree-kmod-nvidia-lts + nvidia-container-toolkit-lts
+    image: factory.talos.dev/installer/af8eb82417d3deaa94d2ef19c3b590b0dac1b2549d0b9b35b3da2bc325de75f7:v1.13.6
+    diskSelector:
+      serial: IB25ADK0256S00205        # Inland 238.5G SATA SSD, the ONLY disk in the box
+    wipe: false
+  kernel:
+    modules:
+      - name: nvidia
+      - name: nvidia_uvm
+      - name: nvidia_drm
+      - name: nvidia_modeset
+  nodeLabels:
+    gpu: "on"                                            # HAMi device plugin selector
+    feature.node.kubernetes.io/pci-10de.present: "true"  # GPU DaemonSets selector (no NFD in-cluster)
+  nodeTaints:
+    dedicated: pascal:NoSchedule   # nothing lands here unless it tolerates dedicated=pascal
+cluster:
+  controlPlane:
+    endpoint: https://10.0.0.194:6443   # DHCP reservation on the EdgeRouter (2026-10-17)
