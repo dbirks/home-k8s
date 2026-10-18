@@ -71,9 +71,15 @@ missing_uuids(){
 # device-plugin StartError ("error getting device handle for index '0': Unknown
 # Error") is the RELIABLE EARLY signal — node capacity lags and can still read 10
 # (stale) for a while after a wedge, so keying on cap=0 alone misses it for minutes.
+plugin_pod_line(){
+  kubectl get pods -n kube-system --no-headers --field-selector "spec.nodeName=$NODE" 2>/dev/null \
+    | grep -E '^hami-device-plugin' | head -1
+}
 gpu_unserviceable(){
   [ "$(gpu_cap)" = "0" ] && return 0
-  local line; line=$(kubectl get pods -n kube-system --no-headers 2>/dev/null | grep -E '^hami-device-plugin')
+  # Only THIS node's plugin pod: with 2+ nodes (dave-droid joined 2026-10-17) an unfiltered list gives
+  # several lines, "2/2\n2/2" != "2/2", and the check would always claim the GPU is unserviceable.
+  local line; line=$(plugin_pod_line)
   [ -n "$line" ] || return 1
   echo "$line" | grep -qE 'RunContainerError|CrashLoopBackOff|StartError|Error' && return 0
   [ "$(echo "$line" | awk '{print $2}')" = "2/2" ] || return 0
@@ -101,7 +107,7 @@ status(){
   echo "expected GPUs   : $(expected_uuids | tr '\n' ' ')"
   echo "live GPUs       : $(live_uuids | tr '\n' ' ' || echo '<query failed>')"
   echo "missing         : $(missing_uuids | tr '\n' ' ')"
-  echo "device-plugin   : $(kubectl get pods -n kube-system --no-headers 2>/dev/null | grep -E '^hami-device-plugin')"
+  echo "device-plugin   : $(plugin_pod_line)"
   echo "applied caps    :"
   timeout 25 kubectl -n "$POD_NS" exec "$POD" -- nvidia-smi \
     --query-gpu=index,uuid,name,power.limit,persistence_mode --format=csv,noheader 2>&1 | sed -e 's/^/  /'
