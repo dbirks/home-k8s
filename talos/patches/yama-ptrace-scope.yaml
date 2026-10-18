@@ -1,0 +1,18 @@
+# Yama ptrace_scope 2 -> 1 (2026-10-18), for the communication-worker's nono sandbox.
+#
+# Why: nono's supervisor mediates connect() via seccomp user-notify and has to read the
+# sandboxed child's sockaddr from /proc/<pid>/mem (a PTRACE_MODE_ATTACH check). Talos ships
+# ptrace_scope=2 (CAP_SYS_PTRACE only); the worker runs as uid 10001 with all caps dropped, so
+# every connect() in the agent sandbox failed EPERM. Scope 1 still lets an unprivileged process
+# ptrace ONLY its own descendants (nono -> its child), which is the Ubuntu/Debian/Fedora default.
+#
+# What we give up vs 2: an unprivileged process may now ptrace/read memory of processes it
+# spawned. Sibling and cross-container access stay blocked (scope 1 + per-pod PID namespaces).
+# Scope 2 was also the interim mitigation for CVE-2026-46333 (pidfd_getfd fd theft); the kernel
+# here (6.18.38) carries the fix (stable backport 2a93a4fac7b6). Re-check this choice for any
+# new ptrace-path CVE, and drop this patch if nono stops needing it.
+#
+# Sysctls apply live: no reboot needed.
+machine:
+  sysctls:
+    kernel.yama.ptrace_scope: "1"

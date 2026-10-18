@@ -5,7 +5,7 @@ set -euo pipefail
 out=${1:?output path (outside the repo)}
 cd "$(dirname "$0")/.."
 umask 077
-talosctl machineconfig patch _newconfig/worker.yaml --patch @talos/patches/dave-droid-worker.yaml -o "$out"
+talosctl machineconfig patch _newconfig/worker.yaml --patch @talos/patches/dave-droid-worker.yaml --patch @talos/patches/yama-ptrace-scope.yaml -o "$out"
 yq -i '(select(.machine) | .machine.install) |= del(.disk)' "$out"
 yq -i '(select(.kind == "HostnameConfig")) |= (del(.auto) | .hostname = "dave-droid")' "$out"
 talosctl validate --mode metal --config "$out"

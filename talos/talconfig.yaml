@@ -56,6 +56,7 @@ nodes:
       - "@./patches/nvidia-module-options.yaml"
       - "@./patches/hdd-storage.yaml"
       - "@./patches/kubelet-max-pods.yaml"
+      - "@./patches/yama-ptrace-scope.yaml"
   # GTX 1070 (Pascal) worker, 2026-10-17. Actually rendered from _newconfig/worker.yaml by
   # talos/render-dave-droid.sh + talos/patches/dave-droid-worker.yaml (talsecret.sops.yaml not made yet).
   - hostname: dave-droid
@@ -74,3 +75,5 @@ nodes:
           officialExtensions:
             - siderolabs/nonfree-kmod-nvidia-lts       # Pascal: proprietary 580 only (no open modules, no 595)
             - siderolabs/nvidia-container-toolkit-lts
+    patches:
+      - "@./patches/yama-ptrace-scope.yaml"
