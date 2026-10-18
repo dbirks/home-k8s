@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    token: ENC[AES256_GCM,data:F45crcYiVa3lz7JKj6o0EzHl5RC3C7BKsDKQeIl75Ansl33VvH+497AloRbs1UBwUdXJHdq+rkZuG1cKNeiKd+Bcfec6DWnwqT/QtuEBYGjF7gxiD5tGGO2ijqTtpsvstn3x7gJo4vZ7mIxTPD7B/2FY9RcLzklsVXMdaG/IX9AwIAK7CROAnesMUK89Zx/E,iv:7tzQQ0DptQlZTJBar8/fE79Iu16Kvo6fRfTfw++NPsE=,tag:NmvhmHKlHPaTHkUDqQx61w==,type:str]
+kind: Secret
+metadata:
+    name: communication-worker-claude-token
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBSSW54aE4yeG5DWDMremxX
+            em50YjVqWjdMbWNRc2R4djBsR2tDUUpZdWpVCjVQc0pHQjJqVnN5cUxoOEJZYUpj
+            WU9nUjhEOVk4aWRPQTVUV2NHVzJRV2MKLS0tIHQ4NHVDWW95RnVaSXFHd000dXV1
+            eTRrSWZ3S2tnK1J6U3paZ2dGY2hic0EK9/QZsxMB+/H0GOq7ojliXOwck1OidVu3
+            fUjJEXChjMZ2FZnUs/z6f7yoJSxlzCwZ+G9R91CEWwrAP0yqGJ75FQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-18T13:25:26Z"
+    mac: ENC[AES256_GCM,data:aOk4//1p6JIB57kEhKYkRPZ0xtWP/fggWE+yPAKoPAKkSlCNOEL9ugAcvyfNVYvXRWX/B8MmWvmaB8JLbOYGTAe2/C9zC6amaY3S1JCju+XTg4Dtit0au2FfPTMZgB6zLcrW4dt70nt51S5Rp8rzO4WaXo0lhYrT4rzqBnm50wI=,iv:BF3OsZXw9H+kEQlYfsOZTF2KBEbMG2qX/LK1tR1kQ1A=,tag:GuDWbpsvftxMZsqeiyDukQ==,type:str]
+    version: 3.13.3
