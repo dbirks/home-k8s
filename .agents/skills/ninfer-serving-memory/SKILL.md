@@ -58,6 +58,15 @@ prompts started 29 ms apart, so it is NOT about long context or images. No upstr
 Related open upstream reports: Neroued/ninfer #320 and #333 (Xid 79 / launch failures during prefill
 after near-100% cache replay, same artifact, agent workloads). Possibly behind our GPU wedges too.
 
+## Speculative decoding (dflash2) acceptance, measured 2026-10-18
+Each `req#N done` log line carries `dflash2 accepted A/P`. Over 7,229 production requests (agentic tool
+calls, 100k-150k-token prompts, batch ~4): 35.0% of proposed drafts accepted, per-request p10/median/p90
+27/37/51%, mean accept length (output / verify steps) **3.71** with `--draft-tokens 7`. z-lab publishes
+4.10 (MT-Bench) to 5.46 (GSM8K) for this drafter, so we run below the benchmark but not broken. Thinking on vs off
+and short vs long prompts made no difference (3.71 vs 3.68; 37% vs 36%). With ~2.7 of 7 drafts accepted per step, a
+smaller K (4-5) might give more throughput at batch 4. Untested: measure with the bench before changing it.
+Aggregate: `kubectl logs deploy/ninfer | grep -o 'dflash2 accepted [0-9,]*/[0-9,]*'`.
+
 ## Reasoning effort (Qwen3.8 v3 artifact template)
 Accepted: `none` (engine thinking-off), `low`, `medium`, `xhigh` (template default). `minimal`, `high`,
 `max` return 400 `invalid_prompt` ("Unexpected reasoning effort"). Declare only the accepted four.

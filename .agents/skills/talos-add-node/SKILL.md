@@ -43,7 +43,12 @@ Router: `ssh ubnt@10.0.0.1` (EdgeOS 3; creds are the box default, ask David), co
   CUDA 13 cannot build for Pascal, so images built only for CUDA 13 have no Pascal kernels. Use
   CUDA 12.x builds: llama.cpp (`ghcr.io/ggml-org/llama.cpp:server-cuda`), Ollama, whisper.cpp, TTS
   in PyTorch with a cu12x wheel. No FP8/FP4, little FP16 speed except P100.
-- HAMi lists only "driver >= 440", so Pascal should work, but nobody has tested it here.
+- HAMi on Pascal WORKS (2026-10-17): a 4000 MiB slice showed as 4000 MiB in `nvidia-smi` in-pod (it also
+  prints a harmless-looking `ERROR: init 250 result=11`). HAMi limits CUDA only, not Vulkan.
+- Vulkan works in pods on Talos: the nvidia CDI spec injects `/etc/vulkan/icd.d/nvidia_icd.json` plus
+  libGLX_nvidia/libnvidia-glvkspirv. Set `NVIDIA_DRIVER_CAPABILITIES=all` and
+  `VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json` (no Mesa llvmpipe fallback). Worked example:
+  apps/qwen3-asr.yaml (speech.cpp Vulkan build, Qwen3-ASR 1.7B Q6_K, 0.41 s for 5 s / 1.17 s for 30 s warm).
 
 ## 2. Repo changes for the new node
 - `talos/talconfig.yaml`: add a node with `controlPlane: false`, its reserved IP, an `installDiskSelector`
