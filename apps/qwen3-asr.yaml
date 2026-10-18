@@ -1,0 +1,110 @@
+# Qwen3-ASR 1.7B (Q6_K) on speech.cpp v0.8.7, Vulkan, on dave-droid's GTX 1070 (Pascal), 2026-10-17.
+# Same runtime + model that ran on the Arch box as woodduck (home-k8s#155): measured there at 10-17x real
+# time, peak 2113 MiB VRAM, word-perfect on synthetic speech. vLLM/SGLang cannot run on Pascal (sm_61).
+#
+# speech.cpp ships no CUDA Linux build, only Vulkan. On Talos the nvidia CDI spec injects the Vulkan ICD
+# (/etc/vulkan/icd.d/nvidia_icd.json) and libGLX_nvidia/libnvidia-glvkspirv; VK_ICD_FILENAMES pins it so the
+# loader cannot fall back to Mesa llvmpipe (CPU), and --device gpu refuses to start without a GPU.
+# HAMi's gpumem only limits CUDA, not Vulkan: the 3000 MiB here is accounting, not enforcement.
+#
+# `speech serve` has NO auth/TLS and handles one request at a time: ClusterIP only, reached by the LLM
+# Collective contributor (backend `qwen3-asr`, concurrency 1). WAV 16-bit PCM in, 25 MB cap.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen3-asr-speechcpp
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path        # binds on dave-droid (WaitForFirstConsumer)
+  resources: { requests: { storage: 5Gi } }   # binary 100 MB + Q6_K weights 1.68 GB
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-asr
+  namespace: default
+  labels: { app: qwen3-asr }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: qwen3-asr }
+  template:
+    metadata:
+      labels: { app: qwen3-asr }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      initContainers:
+        # Pinned release, verified against the release's own SHA256SUMS entry for this asset.
+        - name: fetch-speechcpp
+          image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+          command:
+            - sh
+            - -ec
+            - |
+              d=/data/bin/v0.8.7
+              [ -x "$d/speech" ] && { echo "speech.cpp v0.8.7 already installed"; exit 0; }
+              mkdir -p "$d" && cd /tmp
+              wget -q -O s.zip https://github.com/nyosegawa/speech.cpp/releases/download/v0.8.7/speech-0.8.7-linux-x64-vulkan.zip
+              echo "080d71a25228e694073dbc4b4a75378957b84815aaaf54b0ec937a5b3ee3fb52  s.zip" | sha256sum -c -
+              unzip -o -q s.zip -d "$d" && chmod +x "$d/speech" && ls -la "$d"
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      containers:
+        - name: speech
+          # Ubuntu + Vulkan loader (libvulkan.so.1); speech is static apart from libvulkan and glibc >= 2.34.
+          image: ghcr.io/ggml-org/llama.cpp:server-vulkan@sha256:5096299bac58e2b24f0371221c83eac786b206165bf8235dabc83d3ed514eb48
+          command:
+            - sh
+            - -ec
+            - |
+              S=/data/bin/v0.8.7/speech
+              "$S" --version
+              "$S" devices
+              "$S" pull qwen3-asr-1.7b:q6_k        # verifies its own SHA-256
+              exec "$S" serve qwen3-asr-1.7b:q6_k --host 0.0.0.0 --port 8001 --device gpu
+          env:
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }          # graphics = the Vulkan ICD
+            - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
+            - { name: SPEECH_MODEL_DIR, value: /data/models }
+            - { name: SPEECH_NO_UPDATE_CHECK, value: "1" }
+            - { name: HOME, value: /data }
+          ports:
+            - { name: http, containerPort: 8001 }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 60      # first start downloads the 1.68 GB weights
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 10        # single-flight server: a long transcription can delay /health
+            failureThreshold: 4
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { cpu: "6", memory: 6Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "3000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: qwen3-asr-speechcpp }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-asr
+  namespace: default
+spec:
+  selector: { app: qwen3-asr }
+  ports:
+    - { name: http, port: 8001, targetPort: http }

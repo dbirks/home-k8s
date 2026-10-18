@@ -95,6 +95,18 @@ data:
           - alias: qwen3-tts-base
             model: qwen3-tts-base
             types: [speech]
+      # Qwen3-ASR 1.7B Q6_K, speech.cpp on dave-droid's GTX 1070 (apps/qwen3-asr.yaml). Took over from the
+      # woodduck contributor when that Arch box became a Talos worker (2026-10-17). speech serve is
+      # single-flight, and the backend id is `Qwen3-ASR-1.7B` (its own /v1/models), not the CLI catalog name.
+      - name: qwen3-asr
+        url: http://qwen3-asr.default.svc.cluster.local:8001
+        protocols: [openai]
+        concurrency: 1
+        models:
+          - alias: qwen3-asr-1-7b
+            model: Qwen3-ASR-1.7B
+            types: [transcription]
+            inputs: [audio]
       # PARKED 2026-10-16 (#156): Pennyroyal at replicas 0. Rollback = uncomment, drop ninfer above.
       # - name: pennyroyal
       #   url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
