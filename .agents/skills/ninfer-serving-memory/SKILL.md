@@ -70,6 +70,11 @@ History: `--spec mtp --draft-tokens 3` until 2026-09-08, switched to dflash2 K=7
 never A/B'd on our traffic. Upstream docs/performance/qwen3.8-27b.md (nvfp4, 75-request corpus): C=1 DFlash2
 K=7 207.9 tok/s at 36.6% acceptance vs MTP3 168.6 tok/s at 59.6%, so our 35% is NORMAL for dflash2. MTP3 scales
 to 440 tok/s at C=4 and 491 at C=8; DFlash2 is published only at C=1. Under load (batch 3-4) MTP3 may win: A/B it.
+**A/B in progress (2026-10-19 06:10 UTC): switched to MTP3.** Compare with `scripts/spec-decode-stats.py`.
+DFlash2 K=7 baseline (735 requests, 10-18 13:32 .. 10-19 06:09): 34.0% accepted, 3.75 tok/step, per-request
+decode median 128 tok/s (p10 92, p90 182), TTFT median 0.44 s, engine 128/208/281 tok/s at batch 1/2/3 (an earlier
+sample showed 318-399 at batch 4). Raw log: spruce-goose ~/backups/ninfer-ab/. MTP3 frees VRAM: KV pool
+1,490,688 tokens (vs 1,245,056 with dflash2) on the same 55000 MB slice.
 
 ## Reasoning effort (Qwen3.8 v3 artifact template)
 Accepted: `none` (engine thinking-off), `low`, `medium`, `xhigh` (template default). `minimal`, `high`,
