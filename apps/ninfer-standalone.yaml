@@ -100,10 +100,14 @@ spec:
             - "1024"
             - "--kv-dtype"
             - "nvfp4"                       # #156: 18,432 B/token vs int8 33,792. The Sept build supports nvfp4 too (it ran int8 by choice).
+            # A/B 2026-10-19: back to MTP3 (what ran before 2026-09-08). DFlash2 K=7 baseline is in the
+            # ninfer-serving-memory skill: 34% accepted, 3.75 tok/step, 128 tok/s single, ~281 tok/s at batch 3.
+            # Upstream: DFlash2 wins at C=1 (208 vs 169 tok/s), MTP3 is the only one published at C=2..8.
+            # Rollback: --spec dflash2 --draft-tokens 7 (the artifact carries both drafters).
             - "--spec"
-            - "dflash2"                     # dflash2 companion weights in the artifact (issue #121: old 20260829 image couldn't consume dflash2/feature_projection)
+            - "mtp"
             - "--draft-tokens"
-            - "7"                           # checkpoint-recommended draft count for dflash2 (accepts 1..15)
+            - "3"                           # MTP accepts 1..5; 3 is the artifact card's recommended serving shape
             - "--lm-head-draft"
             # Vision (image + video parts). Weights + Vision workspace come out of the same 55000 MB slice,
             # so the `auto` KV pool shrinks vs the 1,519,424-token text-only start; check the capacity line.
