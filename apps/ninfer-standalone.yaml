@@ -97,7 +97,10 @@ spec:
             - "--pending-timeout-ms"
             - "600000"
             - "--prefill-chunk"
-            - "1024"
+            # 2026-10-19: 1024 -> 512. The scheduler strictly alternates one prefill chunk with one decode round,
+            # so a 1024 chunk on a 45k+ context (~0.35 s) starved the other lanes to ~45 tok/s total. 512 halves
+            # each stall for ~3% prefill speed (upstream #277). See ninfer-serving-memory "Prefill vs decode".
+            - "512"
             - "--kv-dtype"
             - "nvfp4"                       # #156: 18,432 B/token vs int8 33,792. The Sept build supports nvfp4 too (it ran int8 by choice).
             # A/B 2026-10-19: back to MTP3 (what ran before 2026-09-08). DFlash2 K=7 baseline is in the
