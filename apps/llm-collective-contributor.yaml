@@ -37,16 +37,16 @@ data:
     metrics:
       listen: 127.0.0.1:9091
     backends:
-      # Qwen3.8-27B on NInfer, Sept build (ghcr.io/dbirks/ninfer:20260908, v2 artifact), NVFP4 weights + NVFP4 KV, #156.
+      # Qwen3.8-27B on NInfer, dbirks fork 2026-10-19 (ninfer:20261019, v3 artifact), NVFP4 weights + NVFP4 KV, #156.
       # 1.49M-token shared KV pool (MTP3 + --vision), 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
-      # concurrency 15 (asked 2026-10-19; was 10): the engine still DECODES at most 8 (kMaximumConcurrency is a
-      # compile-time 8, and the Gated-DeltaNet replay kernel caps rows at 8), so requests 9-15 wait in
-      # NInfer's pending FIFO (--max-pending-requests 32) instead of the gateway 429ing them.
+      # concurrency 16 (2026-10-19): the dbirks fork admits 16 resident lanes (upstream caps at 8; see
+      # ninfer-serving-memory). Up to 8 decode per round and the rest take turns, so nothing queues
+      # inside NInfer until 17+; --max-pending-requests 32 still backs it.
       # /v1/chat/completions and /v1/messages both verified 2026-10-16 (thinking blocks on /v1/messages).
       - name: ninfer
         url: http://ninfer.default.svc.cluster.local:8000
         protocols: [openai, anthropic]
-        concurrency: 15         # 2026-10-19 (asked): 8 decode lanes + up to 7 queued in NInfer's FIFO
+        concurrency: 16         # 2026-10-19: matches NInfer --max-concurrency 16 (fork: 16 resident lanes)
         models:
           - alias: qwen3-8-27b
             model: qwen3.8-27b-ninfer

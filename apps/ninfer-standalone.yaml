@@ -26,7 +26,7 @@ metadata:
   labels:
     app.kubernetes.io/name: ninfer
 spec:
-  replicas: 1                     # UP 2026-10-16 (#156). 2026-10-17: ROLLED BACK to the Sept v2 pair (ninfer:20260908 + qwen38-ninfer-model) after the 20261017 concurrency fault; v3 pair (20261017 + qwen38-ninfer-model-v3, --host-context-mib 0) kept for when upstream fixes it.
+  replicas: 1                     # UP 2026-10-16 (#156). 10-17 rolled back to Sept (concurrency fault); 10-19 forward to the fork build with the fault fixed + 16 lanes.
   # NO SURGE: a surge pod would ask HAMi for a 2nd 50GB slice that can't fit beside Muse, so the
   # rollout would hang Pending. maxSurge 0 = stop old first (~15s gap: weights reload 4s + graphs).
   # (Not `type: Recreate`: Flux SSA keeps the live rollingUpdate block and the API rejects the combo.)
@@ -57,7 +57,11 @@ spec:
           # The 20261017 build (v3 artifacts) faulted whenever 2+ requests were in flight:
           # std::logic_error "KV write exceeds its page reservation" (kv_history.cpp:615), see the
           # ninfer-serving-memory skill. Its pair: ninfer:20261017@sha256:35291170...c442 + qwen38-ninfer-model-v3.
-          image: ghcr.io/dbirks/ninfer:20260908@sha256:0a4bb65aa6bfa9135aae1fcb9ecf5af183722e1e367233a3b1ffe04479963f6e
+          # 2026-10-19: dbirks fork 8213c792 = upstream 64d10fbf + 20075061 (KV copy-on-write reservation
+          # fix for the 2+ request fault) + 8213c792 (16 resident lanes, compact rounds of <= 8). Reads v3
+          # artifacts only (qwen38-ninfer-model-v3). Rollback: ninfer:20260908@sha256:0a4bb65a...f6e +
+          # qwen38-ninfer-model + --host-kv-mib 0 --host-state-slots 0 + --max-concurrency 8.
+          image: ghcr.io/dbirks/ninfer:20261019@sha256:6c4b2b6e66a5338f5bec95d95c031354cc9e07c3814d38db0235a4c06d3723d5
           # ninfer-serve uses SPACE-separated args (--flag value), NOT --flag=value.
           command: ["ninfer-serve"]
           args:
@@ -81,17 +85,15 @@ spec:
             # instead buy more on-card room: bigger HAMi slice -> bigger `auto` KV pool, and 16 extra
             # Device checkpoint slots (~187MB VRAM each) so retained prefixes keep their DeltaNet state
             # on-card. Evicted-from-VRAM continuations now recompute instead of restoring from host.
-            # Sept build flags. (The 2026-10 builds folded these into one `--host-context-mib 0`.)
-            - "--host-kv-mib"
-            - "0"
-            - "--host-state-slots"
+            # 2026-10 builds: one `--host-context-mib 0` (the Sept build took --host-kv-mib 0 --host-state-slots 0).
+            - "--host-context-mib"
             - "0"
             - "--device-state-slots"
             - "16"
             - "--max-concurrency"
-            # HARD engine cap is 8 (ninfer-serve rejects >8). ~550 tok/s @8 was the ceiling. Back to 8 on the
-            # Sept build 2026-10-17; the 20261017 build had to run 1 (concurrent-request engine fault).
-            - "8"
+            # 16 (2026-10-19): the fork admits 16 resident lanes; at most 8 run in one decode round and the
+            # rest take turns (upstream's cap is 8). Matches the Collective backend concurrency.
+            - "16"
             - "--max-pending-requests"
             - "32"
             - "--pending-timeout-ms"
@@ -154,7 +156,7 @@ spec:
       volumes:
         - name: model
           persistentVolumeClaim:
-            claimName: qwen38-ninfer-model        # v2 (pinned 11dbbbb, SHA-verified, apps/qwen38-ninfer-weights.yaml) for the Sept image; v3: qwen38-ninfer-model-v3
+            claimName: qwen38-ninfer-model-v3     # v3 (SHA-verified, apps/qwen38-ninfer-weights-v3.yaml) for the 2026-10 fork image; Sept rollback: qwen38-ninfer-model
         - name: dshm
           emptyDir:
             medium: Memory
