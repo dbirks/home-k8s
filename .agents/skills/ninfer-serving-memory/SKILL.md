@@ -66,6 +66,10 @@ calls, 100k-150k-token prompts, batch ~4): 35.0% of proposed drafts accepted, pe
 and short vs long prompts made no difference (3.71 vs 3.68; 37% vs 36%). With ~2.7 of 7 drafts accepted per step, a
 smaller K (4-5) might give more throughput at batch 4. Untested: measure with the bench before changing it.
 Aggregate: `kubectl logs deploy/ninfer | grep -o 'dflash2 accepted [0-9,]*/[0-9,]*'`.
+History: `--spec mtp --draft-tokens 3` until 2026-09-08, switched to dflash2 K=7 with the #121 image rebuild,
+never A/B'd on our traffic. Upstream docs/performance/qwen3.8-27b.md (nvfp4, 75-request corpus): C=1 DFlash2
+K=7 207.9 tok/s at 36.6% acceptance vs MTP3 168.6 tok/s at 59.6%, so our 35% is NORMAL for dflash2. MTP3 scales
+to 440 tok/s at C=4 and 491 at C=8; DFlash2 is published only at C=1. Under load (batch 3-4) MTP3 may win: A/B it.
 
 ## Reasoning effort (Qwen3.8 v3 artifact template)
 Accepted: `none` (engine thinking-off), `low`, `medium`, `xhigh` (template default). `minimal`, `high`,
