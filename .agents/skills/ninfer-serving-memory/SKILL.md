@@ -76,6 +76,19 @@ decode median 128 tok/s (p10 92, p90 182), TTFT median 0.44 s, engine 128/208/28
 sample showed 318-399 at batch 4). Raw log: spruce-goose ~/backups/ninfer-ab/. MTP3 frees VRAM: KV pool
 1,490,688 tokens (vs 1,245,056 with dflash2) on the same 55000 MB slice.
 
+## Prefill vs decode: strict 1:1 alternation (researched 2026-10-19)
+Both the Sept build (`scheduler.h` `choose_execution`) and master (`engine_core.h`: one decode round, then one
+`next_prefill` unit) alternate ONE prefill chunk with ONE decode round, one prefilling request at a time. No
+knob sets the ratio, so `--prefill-chunk` (multiple of 128, default 1024) is the only lever. A 1024 chunk at 45k+
+context takes ~0.3-0.4 s against a ~50 ms decode round, so during a big uncached prefill all 7 other lanes drop
+to ~40-55 tok/s total. Measured: a prefill was running in 79% (DFlash2 log) and 98% (MTP log) of busy 5-s
+windows; mostly small cache-hit suffixes costing ~25% (MTP at 7-8 decoding: 616 pure vs 474 mixed).
+Upstream #277 (RTX 5090, 2.3k prompt): 512 = 2.91k, 1024 = 2.99k, 2048 = 3.02k prefill tok/s, ~10 ms per chunk
+boundary, math-neutral. So 512 costs ~3% prefill speed and roughly doubles decode's share during big prefills.
+Candidate A/B after the MTP one: `--prefill-chunk 512`. Related open upstream: #303 (multi-chunk units when no decode
+is waiting, i.e. faster TTFT when idle), #356/PR #355 (NVFP4 tiled prefill attention under-occupies the GPU; the
+split-KV prefill work, 7f6aafed on 09-28, is NOT in our Sept build).
+
 ## Reasoning effort (Qwen3.8 v3 artifact template)
 Accepted: `none` (engine thinking-off), `low`, `medium`, `xhigh` (template default). `minimal`, `high`,
 `max` return 400 `invalid_prompt` ("Unexpected reasoning effort"). Declare only the accepted four.
