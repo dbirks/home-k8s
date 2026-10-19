@@ -29,34 +29,28 @@ Weights 21.4 GiB (21.7 with vision), runtime 30.5 GiB, engine ready in ~9.5 s. V
 tokens. Single-stream decode ~177 tok/s with `--spec dflash2 --draft-tokens 7 --lm-head-draft`.
 Verify on the `capacity |` startup log line; `GET /metrics` exposes running/waiting/paused gauges.
 
-## Concurrency is a compile-time 8
-`--max-concurrency` accepts 1..8 only: `kMaximumConcurrency = 8` (`include/ninfer/types.h`) sizes fixed
-arrays in the scheduler/round buffers/graph capture, and the Gated-DeltaNet replay kernel has its own
-`kMaximumRows = 8`. Raising it is kernel work, not a flag. To admit more clients, raise the LLM
-Collective backend `concurrency` above the engine lanes: extras wait in NInfer's pending FIFO
-(`--max-pending-requests`). (Currently 1 lane: see the known bug below.)
-
-## KNOWN BUG on 20261017 (upstream 64d10fbf): concurrent requests kill the engine
-Any 2+ requests in flight together can raise `std::logic_error "KV write exceeds its page reservation"`
-(`src/models/common/context/kv_history.cpp:615`, copy-on-write page count > reservation). Every
-in-flight request 500s at once, then the engine is dead: all requests 503 and `/health` 503
-`{"status":"unavailable"}`. Seen 2026-10-17 at 13:26/13:33/13:41/13:43, the last with two ~54-token
-prompts started 29 ms apart, so it is NOT about long context or images. No upstream issue or fix yet.
-- What we did: ROLLED BACK to the Sept build (`ninfer:20260908` + v2 artifact on `qwen38-ninfer-model`,
-  old `--host-kv-mib 0 --host-state-slots 0` flags). It supports `--kv-dtype nvfp4` and `--vision` too
-  (the v2 artifact carries Vision weights), runs 8 lanes, and passed 3- and 8-at-once bursts. It lacks
-  constrained decoding / schema tool calls and `/metrics`. Same accepted reasoning levels.
-  Rejected with 400 on this build (clients need a fallback): `response_format` `json_schema`, grammar,
-  AND `{"type":"json_object"}` ("only {"type":"text"} is available"), plus `tool_choice: "required"`
-  ("NInfer cannot guarantee" a tool call). `tool_choice: "auto"` works.
-  (The interim stopgap on the new build was `--max-concurrency 1`.)
-- `--kv-capacity` is capped at lanes x max-context: at 1 lane `auto` = 262,144 tokens, and an explicit
-  larger value FATALs at startup ("kv_capacity is outside the usable range"). Do not try it.
-- Liveness/readiness/startup probes on `/health` restart a dead engine in ~50 s. Before the probes
-  the pod sat `1/1 Running` with a dead engine for minutes.
-- Restore 8 lanes + `auto` only after a fix; re-test by firing 3 tiny requests at once.
-Related open upstream reports: Neroued/ninfer #320 and #333 (Xid 79 / launch failures during prefill
-after near-100% cache replay, same artifact, agent workloads). Possibly behind our GPU wedges too.
+## Current build: dbirks fork, crash fixed, 16 lanes (2026-10-19)
+`ghcr.io/dbirks/ninfer:20261019@sha256:6c4b2b6e...23d5` = upstream 64d10fbf + two fork commits, with the v3
+artifact on `qwen38-ninfer-model-v3`, `--host-context-mib 0`, `--max-concurrency 16`; Collective backend 16.
+- `20075061` fixes the 2026-10-17 engine fault `std::logic_error "KV write exceeds its page reservation"`
+  (`src/models/common/context/kv_history.cpp` `prepare_write`). Cause: `settle_growth()` sizes the copy-on-write
+  reservation one boundary early; with 2+ requests another history (e.g. a new prompt matching the same
+  chat-template prefix) starts reading/protecting/pinning a page before the write, so more copies are needed
+  than reserved. Fix: `can_resize_reservation`/`resize_reservation` from free pool pages; only throw if full.
+- `8213c792`: `kMaximumConcurrency` 8 -> 16 (resident lanes) plus `kMaximumRoundBatch = 8`. Upstream's 8 is
+  baked into ~25 ops (`batch > 8` checks), kernel tables (candidate selector, `GdnReplayFoldKernelRow row[8]`),
+  per-batch CUDA graphs and workspace plans, so the fork does NOT raise the GPU batch. `reserve_resident_units`
+  licenses at most 8 ready lanes per cycle (the oldest or a protected recovery always, the rest
+  least-recently-executed first) and the others wait one cycle. The program uses `round_batch_limit()` for graph
+  capture, GDN replay record capacity and per-batch workspace loops; lane buffers stay at max_concurrency
+  (ops get `.slice(0,0,B)` views; KV/state go through `table_rows[b]`/`state_slots[b]`). qwen4_exp (Flash-Next)
+  stays at 8. Effect: 16 admitted with no queue, but total decode speed is about the 8-wide rate shared by all 16.
+- Verified on the card: bursts of 2/3/8/16 all 200; 16 concurrent 400-token generations 16/16 correct with
+  `running 16 (decode-ready 16)`; vision OK; KV pool 1,461,568 tokens; no faults in early production traffic.
+- Rollback (one commit): `ninfer:20260908@sha256:0a4bb65a...f6e` + `qwen38-ninfer-model` (v2) +
+  `--host-kv-mib 0 --host-state-slots 0` + `--max-concurrency 8`, Collective back to 8.
+- The fork has no CI tests run (Dockerfile builds with BUILD_TESTING=OFF); CI takes ~27 min. No upstream issue
+  was filed (owner's choice).
 
 ## Speculative decoding (dflash2) acceptance, measured 2026-10-18
 Each `req#N done` log line carries `dflash2 accepted A/P`. Over 7,229 production requests (agentic tool
