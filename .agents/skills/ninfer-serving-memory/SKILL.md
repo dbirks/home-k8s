@@ -70,7 +70,7 @@ History: `--spec mtp --draft-tokens 3` until 2026-09-08, switched to dflash2 K=7
 never A/B'd on our traffic. Upstream docs/performance/qwen3.8-27b.md (nvfp4, 75-request corpus): C=1 DFlash2
 K=7 207.9 tok/s at 36.6% acceptance vs MTP3 168.6 tok/s at 59.6%, so our 35% is NORMAL for dflash2. MTP3 scales
 to 440 tok/s at C=4 and 491 at C=8; DFlash2 is published only at C=1. Under load (batch 3-4) MTP3 may win: A/B it.
-**A/B in progress (2026-10-19 06:10 UTC): switched to MTP3.** Compare with `scripts/spec-decode-stats.py`.
+**2026-10-19 06:10 UTC: switched to MTP3 and kept it.** Compare with `scripts/spec-decode-stats.py`.
 DFlash2 K=7 baseline (735 requests, 10-18 13:32 .. 10-19 06:09): 34.0% accepted, 3.75 tok/step, per-request
 decode median 128 tok/s (p10 92, p90 182), TTFT median 0.44 s, engine 128/208/281 tok/s at batch 1/2/3 (an earlier
 sample showed 318-399 at batch 4). Raw log: spruce-goose ~/backups/ninfer-ab/. MTP3 frees VRAM: KV pool
@@ -85,7 +85,9 @@ to ~40-55 tok/s total. Measured: a prefill was running in 79% (DFlash2 log) and 
 windows; mostly small cache-hit suffixes costing ~25% (MTP at 7-8 decoding: 616 pure vs 474 mixed).
 Upstream #277 (RTX 5090, 2.3k prompt): 512 = 2.91k, 1024 = 2.99k, 2048 = 3.02k prefill tok/s, ~10 ms per chunk
 boundary, math-neutral. So 512 costs ~3% prefill speed and roughly doubles decode's share during big prefills.
-Candidate A/B after the MTP one: `--prefill-chunk 512`. Related open upstream: #303 (multi-chunk units when no decode
+APPLIED 2026-10-19 06:26 UTC: `--prefill-chunk 512`, MTP3 kept (no further A/B wanted), Collective ninfer
+concurrency 15 (8 lanes + 7 queued). First minutes, >=4 decoding during a big prefill: decode 77 -> 217 tok/s,
+prefill 3,070 -> 2,865 tok/s (-7%); small sample, re-check. Logs in ~/backups/ninfer-ab/ on spruce-goose. Related open upstream: #303 (multi-chunk units when no decode
 is waiting, i.e. faster TTFT when idle), #356/PR #355 (NVFP4 tiled prefill attention under-occupies the GPU; the
 split-KV prefill work, 7f6aafed on 09-28, is NOT in our Sept build).
 
