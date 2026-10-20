@@ -150,7 +150,7 @@ spec:
     spec:
       containers:
         - name: contributor
-          image: ghcr.io/e-gineering/llm-collective/contributor:2c01d2b-1792470559 # {"$imagepolicy": "flux-system:llm-collective-contributor-dev"}
+          image: ghcr.io/e-gineering/llm-collective/contributor:2c01d2b-1792472907 # {"$imagepolicy": "flux-system:llm-collective-contributor-dev"}
           env:
             - {name: KEY_FILE, value: /etc/collective-key/identity.key}
             - {name: PUBKEY_OUT, value: ""}
