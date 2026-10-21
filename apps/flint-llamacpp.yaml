@@ -15,12 +15,17 @@
 #
 # SIZING (estimates, not measured on this card), 50000 MB HAMi slice = 48.8 GiB:
 #   weights ~21.3 GiB (the GGUF file; vLLM's 23.5 GB includes a BF16 LM head llama.cpp does not make).
-#   KV: only the 14 full-attention layers keep whole-sequence KV = 28 KiB/token at f16. The 35
-#   sliding-window layers hold ~35 MiB per slot (~0.6 GiB for 16). Compute buffers + CUDA context ~3 GiB.
-#   -c 655360 unified = 17.5 GiB KV, shared by all 16 slots; each slot is capped at the 262,144 training
-#   context by llama-server itself (n_ctx_slot). Total ~42.4 GiB, ~6 GiB margin for the estimates.
-#   Room to grow once measured: f16 ~786K tokens at this slice; q8_0 KV (-ctk/-ctv q8_0, ~15 KiB/token)
-#   ~1.4M, but quantized KV is unvalidated for Flint (no RoPE + sinks on the full layers): A/B it first.
+#   KV: only the 14 full-attention layers keep whole-sequence KV: 14 x 2 (K,V) x 4 heads x 128 dims =
+#   14,336 values/token. q8_0 (34 B per 32 values) = ~14.9 KiB/token, vs 28 KiB at f16. The 35
+#   sliding-window layers hold ~19 MiB per slot at q8_0 (~0.3 GiB for 16). Compute buffers + CUDA
+#   context + the q8_0->f16 staging buffer the prefill kernel uses ~3.5 GiB.
+#   --ctx-size 1310720 unified (5 x 262,144) = ~18.6 GiB KV, shared by all 16 slots; llama-server caps each
+#   slot at the 262,144 training context itself (n_ctx_slot). Total ~43.7 GiB, ~5 GiB margin.
+#   KV TYPE: llama.cpp has no FP8 (e4m3/e5m2) KV type; its choices are f32/f16/bf16/q8_0/q5_1/q5_0/
+#   iq4_nl/q4_1/q4_0, and q8_0 is the near-lossless one. The CUDA flash-attention build has q8_0/q8_0
+#   kernels at head size 128 by default. Flint's own card and every published recipe use f16, and its
+#   full layers have no RoPE plus learned sinks, so A/B it. ROLLBACK to the card's setup:
+#   --cache-type-k/v f16 with --ctx-size 655360 (17.5 GiB, same memory).
 #   Step down to 45000/40000 only after measuring at 50000 (#158 fit ramp).
 # HOST RAM: --load-mode none (no mmap) + --cache-ram 0 so the 23 GB file does not sit in page cache or a host prompt
 #   cache; the node has 46 GB, no swap.
@@ -56,7 +61,7 @@ spec:
           image: ghcr.io/dbirks/llama-cpp-flint:b11799-pr30928-1b44e307   # TODO pin @sha256 from the build
           command: ["/app/llama-server"]
           args:
-            - "-m"
+            - "--model"
             - "/models/flint-nvfp4-gguf/flint-nvfp4.gguf"
             - "--alias"
             - "flint"
@@ -64,23 +69,23 @@ spec:
             - "0.0.0.0"
             - "--port"
             - "8080"
-            - "-ngl"
+            - "--gpu-layers"
             - "all"
-            - "-fa"
+            - "--flash-attn"
             - "on"
-            - "-ctk"
-            - "f16"                       # model card: f16 KV. Quantized KV is unvalidated for Flint.
-            - "-ctv"
-            - "f16"
-            - "-c"
-            - "655360"                    # total KV pool (unified, 2.5 x 262,144), not per request
-            - "-np"
+            - "--cache-type-k"
+            - "q8_0"                      # card uses f16; q8_0 halves KV (see KV TYPE above)
+            - "--cache-type-v"
+            - "q8_0"
+            - "--ctx-size"
+            - "1310720"                   # total KV pool (unified, 5 x 262,144), not per request
+            - "--parallel"
             - "16"                        # matches the Collective concurrency NInfer has today
             - "--kv-unified"
             - "--jinja"                   # chat template from the GGUF (needs #30929 hex escapes)
             - "--reasoning-format"
             - "deepseek"                  # think block -> reasoning_content (preserve it across turns)
-            - "--temp"
+            - "--temperature"
             - "1.0"
             - "--top-p"
             - "0.95"
@@ -88,7 +93,7 @@ spec:
             - "20"
             - "--min-p"
             - "0"
-            - "-n"
+            - "--n-predict"
             - "65536"                     # default output budget incl. reasoning (the card's client configs)
             - "--load-mode"
             - "none"                      # no mmap (b11799 replaced --no-mmap with --load-mode)

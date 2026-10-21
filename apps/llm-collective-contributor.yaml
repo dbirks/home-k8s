@@ -113,7 +113,7 @@ data:
       # - name: flint
       #   url: http://flint.default.svc.cluster.local:8080
       #   protocols: [openai]               # llama-server also serves /v1/messages; verify before adding anthropic
-      #   concurrency: 16                   # -np 16, unified 655,360-token KV pool
+      #   concurrency: 16                   # --parallel 16, unified 1,310,720-token q8_0 KV pool
       #   models:
       #     - alias: flint
       #       model: flint
