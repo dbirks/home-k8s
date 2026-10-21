@@ -58,7 +58,7 @@ spec:
       nodeSelector: { kubernetes.io/hostname: talos-210-73x }   # the PRO 6000 + the HDD PVC
       containers:
         - name: main
-          image: ghcr.io/dbirks/llama-cpp-flint:b11799-pr30928-1b44e307   # TODO pin @sha256 from the build
+          image: ghcr.io/dbirks/llama-cpp-flint:b11799-pr30928-1b44e307@sha256:ffcb4edcb923b45a055a374b0090df040033611b987175b49ef8b2364a6598b2   # workflow run 39673515873
           command: ["/app/llama-server"]
           args:
             - "--model"
