@@ -110,10 +110,11 @@ data:
             inputs: [audio]
       # Recursive Flint NVFP4 GGUF on llama.cpp (apps/flint-llamacpp.yaml), 2026-10-21 (#158), in place of ninfer.
       # Text only; tools + reasoning_content. --parallel 16, one unified 1,310,720-token q8_0 KV pool;
-      # llama-server caps each slot at the 262,144 training context.
+      # llama-server caps each slot at the 262,144 training context. Measured 2026-10-21: decode 200 tok/s
+      # single, 494/679/713 tok/s aggregate at 4/8/16; 16/16 correct at 16 parallel; 160K-token needle found.
       - name: flint
         url: http://flint.default.svc.cluster.local:8080
-        protocols: [openai]
+        protocols: [openai, anthropic]   # llama-server /v1/messages verified 2026-10-21 (thinking + text blocks)
         concurrency: 16
         models:
           - alias: flint
