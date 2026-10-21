@@ -107,6 +107,19 @@ data:
             model: Qwen3-ASR-1.7B
             types: [transcription]
             inputs: [audio]
+      # STAGED 2026-10-21 (#158): Recursive Flint NVFP4 on llama.cpp (apps/flint-llamacpp.yaml, replicas 0).
+      # Uncomment when the flint Deployment goes to 1 (and ninfer to 0, dropping its block above).
+      # Text only; tools + reasoning_content. Reasoning levels still need a live probe before declaring any.
+      # - name: flint
+      #   url: http://flint.default.svc.cluster.local:8080
+      #   protocols: [openai]               # llama-server also serves /v1/messages; verify before adding anthropic
+      #   concurrency: 16                   # -np 16, unified 524,288-token KV pool
+      #   models:
+      #     - alias: flint
+      #       model: flint
+      #       limits:
+      #         context: 262144
+      #       inputs: [text]
       # PARKED 2026-10-16 (#156): Pennyroyal at replicas 0. Rollback = uncomment, drop ninfer above.
       # - name: pennyroyal
       #   url: http://pennyroyal-flashnext.default.svc.cluster.local:8001

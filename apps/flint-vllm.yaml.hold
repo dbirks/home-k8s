@@ -1,0 +1,116 @@
+# flint (vLLM) — Recursive Flint NVFP4 GGUF on the vLLM day-0 image. Issue #158. ON HOLD (.yaml.hold).
+# ============================================================================================
+# Second option after apps/flint-llamacpp.yaml. Day-0 image vllm/vllm-openai:flint (CUDA 13.0) carries
+# PR #62938 (still OPEN). Its Flint kernels are FlashInfer/CuTe DSL SM100 (tcgen05) kernels validated
+# on GB200, and on one GPU they are "always used", so they may not run on SM120 (RTX PRO 6000) at all.
+# The first start will tell: watch for CuTe/tcgen05 compile errors during warmup.
+#
+# To try it: NEVER at the same time as apps/flint-llamacpp.yaml (same Service name, same 50 GB slice).
+# Scale that one to 0, rename this to .yaml, replicas 1.
+#
+# NVFP4 GGUF runs weight-only (W4A16), BF16 activations, BF16 KV (28 KiB/token across the 14 full
+# layers). Recipe: ~23.5 GB resident after load (the LM head is dequantized to BF16), 29 GB minimum.
+# HAMi shows vLLM a 50000 MiB GPU, so --gpu-memory-utilization is a fraction of the SLICE.
+# Config + tokenizer come from /models/flint-config (BF16 repo files only, staged by apps/flint-models.yaml).
+# ============================================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flint
+  namespace: default
+  labels:
+    app.kubernetes.io/name: flint
+spec:
+  replicas: 0
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flint
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flint
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false   # a Service named like an engine env var prefix must not leak in
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      containers:
+        - name: main
+          # day-0 multi-arch index, 2026-10-21 (amd64 sha256:81e0d524...).
+          image: vllm/vllm-openai:flint@sha256:be337371b88c770a25a7c029ecc1096dde132889853609b28093ddabc002b0bd
+          command: ["vllm", "serve"]
+          args:
+            - "/models/flint-nvfp4-gguf/flint-nvfp4.gguf"
+            - "--hf-config-path"
+            - "/models/flint-config"
+            - "--tokenizer"
+            - "/models/flint-config"
+            - "--served-model-name"
+            - "flint"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+            - "--max-model-len"
+            - "262144"
+            - "--max-num-seqs"
+            - "16"
+            - "--gpu-memory-utilization"
+            - "0.90"                      # of the 50000 MiB HAMi slice
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser"
+            - "glm47"
+            - "--reasoning-parser"
+            - "glm47"
+            - "--exclude-tools-when-tool-choice-none"
+          env:
+            - { name: VLLM_USE_RUST_FRONTEND, value: "0" }   # recipe: Rust frontend rejects the flags above
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+          ports:
+            - containerPort: 8080
+          startupProbe:                   # load + repack + CuTe JIT + CUDA graphs: allow 20 min
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 120
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "50000", cpu: "8", memory: 24Gi }
+            requests: { cpu: "4", memory: 8Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: flint-models-hdd
+            readOnly: true
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 4Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flint
+  namespace: default
+  labels:
+    app.kubernetes.io/name: flint
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: flint
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

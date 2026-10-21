@@ -1,0 +1,92 @@
+# Recursive Flint (39.8B total / ~2.5B active MoE coding model) NVFP4 GGUF + config/tokenizer (#158).
+#
+# Staging only: the weights land on disk; no GPU is touched. The engines that read them are parked
+# (apps/flint-llamacpp.yaml at replicas 0, apps/flint-vllm.yaml.hold).
+#
+#   /models/flint-nvfp4-gguf/flint-nvfp4.gguf   22,863,084,160 B, RecursiveSI/flint-nvfp4-gguf @ 6ec43e19
+#   /models/flint-nvfp4-gguf/{opencode,pi-models}.json   client configs from the same revision
+#   /models/flint-config/                       config.json, generation_config.json, tokenizer*.json,
+#                                               chat_template.jinja from RecursiveSI/flint @ 2a247be0.
+#                                               vLLM needs these (--hf-config-path/--tokenizer); llama.cpp
+#                                               reads everything from the GGUF. NEVER the ~80 GB BF16 shards.
+#
+# On the HDD on purpose (same call as qwen3-tts-models): NVMe /var is ~79% used and kubelet image GC
+# starts at 85%; a 23 GB file from the HDD is a ~2-3 min load, paid once per engine start.
+# Standalone PVC: retiring this Job must never prune the weights. Every SHA below was checked against
+# the HF API (LFS sha256) or computed from the pinned revision, 2026-10-21.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flint-models-hdd
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 40Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flint-models-download
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }   # the HDD and the GPU that will read it
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              GGUF_REV=6ec43e19b565fc8d560e2d04985d7724f20673bf
+              CFG_REV=2a247be0c0aec895ccb0ac7ca92229ec6df37288
+              MARK=/models/.verified-$GGUF_REV-$CFG_REV
+              if [ -f "$MARK" ]; then echo "already verified"; ls -lR /models; exit 0; fi
+              pip install -q -U "huggingface_hub[cli]"
+
+              # config + tokenizer only (explicit file list: never pulls the BF16 safetensors)
+              rm -rf /models/flint-config.dl && mkdir -p /models/flint-config.dl
+              hf download RecursiveSI/flint --revision "$CFG_REV" --local-dir /models/flint-config.dl \
+                config.json generation_config.json tokenizer.json tokenizer_config.json chat_template.jinja
+              (cd /models/flint-config.dl && sha256sum --check <<'EOF'
+              a57c33d11f725099105b657043c113149763066d204fd472d0b2ee399abc2ba7  config.json
+              a499c71895e008abd572558a5ad5904feaed92cf2a3b6e2cb0e9cabf03b96ed3  generation_config.json
+              a263cce0b7e2b03f7ee07ce809783ef4b47f160c3f268a4ea1524f638da45b68  tokenizer.json
+              159ac88217e90ffd0a4a294726048bb302829e82e1958dc85bb203aa79138fbf  tokenizer_config.json
+              7940f4ffa3275c36caa4a582f845aaad79da11018b3961e8fbcad6ae29733466  chat_template.jinja
+              EOF
+              )
+              rm -rf /models/flint-config.dl/.cache /models/flint-config && mv /models/flint-config.dl /models/flint-config
+
+              # NVFP4 GGUF: skip the 23 GB re-download if a previous attempt already got a good file
+              G=/models/flint-nvfp4-gguf
+              mkdir -p "$G.dl"
+              hf download RecursiveSI/flint-nvfp4-gguf --revision "$GGUF_REV" --local-dir "$G.dl" \
+                flint-nvfp4.gguf opencode.json pi-models.json
+              (cd "$G.dl" && sha256sum --check <<'EOF'
+              97cc8009ff9b132d5cf3c488e6767962bb5a5dc158a90ed661bbbddf876b8bde  flint-nvfp4.gguf
+              21683c3d40c3f7637bbeb3050c8ad1a72528670cace6f10f6120705b0bd7cfc9  opencode.json
+              71b5b205ad31a6b88e3cd83e070d8210ea0b40a43dfbf910c9c34174321c9065  pi-models.json
+              EOF
+              )
+              rm -rf "$G.dl/.cache" "$G" && mv "$G.dl" "$G"
+              rm -f /models/.verified-* && touch "$MARK"
+              ls -lR /models
+          resources:
+            requests: { cpu: "1", memory: 512Mi }
+            limits: { cpu: "4", memory: 4Gi }   # 46 GB host RAM, ~7 GB available with NInfer + CLEF + 2x TTS up
+          volumeMounts:
+            - { name: models, mountPath: /models }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: flint-models-hdd

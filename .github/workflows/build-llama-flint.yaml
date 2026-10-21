@@ -1,0 +1,63 @@
+name: build-llama-flint
+
+# Builds llama.cpp's CUDA llama-server image with Recursive Flint support (#158) and pushes it to GHCR.
+# Flint (PR #30928) is not merged yet, so this merges the PR head onto a pinned master release that
+# already has its two prerequisites (#30861 MoE down-projection scaling, #30929 jinja hex escapes).
+# One arch only (120a-real = RTX PRO 6000 Blackwell, FP4 tensor cores) to keep the runner build short.
+# Manual trigger only.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "llama.cpp release tag to build on"
+        default: "b11799"
+        required: true
+      pr_sha:
+        description: "Flint PR #30928 head commit"
+        default: "1b44e30775dcb2f93952116b05f89e5bd797fb00"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free disk space (CUDA devel image is ~8 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Check out base release + merge the Flint PR
+        run: |
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp.git /tmp/llama
+          cd /tmp/llama
+          git checkout "${{ inputs.base }}"
+          git fetch origin pull/30928/head
+          test "$(git rev-parse FETCH_HEAD)" = "${{ inputs.pr_sha }}" || { echo "PR head moved: $(git rev-parse FETCH_HEAD)"; exit 1; }
+          git -c user.name=ci -c user.email=ci@localhost merge --no-edit "${{ inputs.pr_sha }}"
+          git log --oneline -3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build llama-server (CUDA 12.8, sm_120a)
+        run: |
+          short=$(echo "${{ inputs.pr_sha }}" | cut -c1-8)
+          echo "TAG=${{ inputs.base }}-pr30928-$short" >> "$GITHUB_ENV"
+          cd /tmp/llama
+          docker build \
+            -f .devops/cuda.Dockerfile --target server \
+            --build-arg CUDA_VERSION=12.8.1 \
+            --build-arg CUDA_DOCKER_ARCH=120a-real \
+            --build-arg APP_VERSION=${{ inputs.base }} \
+            -t ghcr.io/dbirks/llama-cpp-flint:${{ inputs.base }}-pr30928-$short .
+
+      - name: Push to GHCR
+        run: |
+          docker push ghcr.io/dbirks/llama-cpp-flint:$TAG
+          docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/dbirks/llama-cpp-flint:$TAG
