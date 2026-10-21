@@ -37,32 +37,33 @@ data:
     metrics:
       listen: 127.0.0.1:9091
     backends:
+      # PARKED 2026-10-21 (#158): ninfer at replicas 0 for the Flint canary. Rollback = uncomment, drop flint.
       # Qwen3.8-27B on NInfer, dbirks fork 2026-10-19 (ninfer:20261019, v3 artifact), NVFP4 weights + NVFP4 KV, #156.
       # 1.49M-token shared KV pool (MTP3 + --vision), 262,144 ctx per request, 8 engine lanes (excess queues; 32 pending).
       # concurrency 16 (2026-10-19): the dbirks fork admits 16 resident lanes (upstream caps at 8; see
       # ninfer-serving-memory). Up to 8 decode per round and the rest take turns, so nothing queues
       # inside NInfer until 17+; --max-pending-requests 32 still backs it.
       # /v1/chat/completions and /v1/messages both verified 2026-10-16 (thinking blocks on /v1/messages).
-      - name: ninfer
-        url: http://ninfer.default.svc.cluster.local:8000
-        protocols: [openai, anthropic]
-        concurrency: 16         # 2026-10-19: matches NInfer --max-concurrency 16 (fork: 16 resident lanes)
-        models:
-          - alias: qwen3-8-27b
-            model: qwen3.8-27b-ninfer
-            limits:
-              context: 262144
-            # Probed live 2026-10-17: the artifact template accepts xhigh (its default), medium and low;
-            # `none` is the engine's thinking-off switch. minimal/high/max are rejected with a 400.
-            reasoning:
-              levels:
-                - none
-                - low
-                - medium
-                - xhigh
-            # --vision on since 2026-10-17 (data-URI image verified). Video parts also work engine-side;
-            # the Collective has no video input type, so they ride under image.
-            inputs: [text, image]
+      # - name: ninfer
+      #   url: http://ninfer.default.svc.cluster.local:8000
+      #   protocols: [openai, anthropic]
+      #   concurrency: 16         # 2026-10-19: matches NInfer --max-concurrency 16 (fork: 16 resident lanes)
+      #   models:
+      #     - alias: qwen3-8-27b
+      #       model: qwen3.8-27b-ninfer
+      #       limits:
+      #         context: 262144
+      #       # Probed live 2026-10-17: the artifact template accepts xhigh (its default), medium and low;
+      #       # `none` is the engine's thinking-off switch. minimal/high/max are rejected with a 400.
+      #       reasoning:
+      #         levels:
+      #           - none
+      #           - low
+      #           - medium
+      #           - xhigh
+      #       # --vision on since 2026-10-17 (data-URI image verified). Video parts also work engine-side;
+      #       # the Collective has no video input type, so they ride under image.
+      #       inputs: [text, image]
       # CLEF-Omni AutoRound INT4 (#156): Cloudflare's System One decision model, POST /v1/systemone only.
       # serve_clef.py runs one decision at a time, so concurrency 1 (excess 429s, no queue). Warm ~0.21 s,
       # deterministic; the first call after a restart is a ~13 s warm-up.
@@ -107,19 +108,19 @@ data:
             model: Qwen3-ASR-1.7B
             types: [transcription]
             inputs: [audio]
-      # STAGED 2026-10-21 (#158): Recursive Flint NVFP4 on llama.cpp (apps/flint-llamacpp.yaml, replicas 0).
-      # Uncomment when the flint Deployment goes to 1 (and ninfer to 0, dropping its block above).
-      # Text only; tools + reasoning_content. Reasoning levels still need a live probe before declaring any.
-      # - name: flint
-      #   url: http://flint.default.svc.cluster.local:8080
-      #   protocols: [openai]               # llama-server also serves /v1/messages; verify before adding anthropic
-      #   concurrency: 16                   # --parallel 16, unified 1,310,720-token q8_0 KV pool
-      #   models:
-      #     - alias: flint
-      #       model: flint
-      #       limits:
-      #         context: 262144
-      #       inputs: [text]
+      # Recursive Flint NVFP4 GGUF on llama.cpp (apps/flint-llamacpp.yaml), 2026-10-21 (#158), in place of ninfer.
+      # Text only; tools + reasoning_content. --parallel 16, one unified 1,310,720-token q8_0 KV pool;
+      # llama-server caps each slot at the 262,144 training context.
+      - name: flint
+        url: http://flint.default.svc.cluster.local:8080
+        protocols: [openai]
+        concurrency: 16
+        models:
+          - alias: flint
+            model: flint
+            limits:
+              context: 262144
+            inputs: [text]
       # PARKED 2026-10-16 (#156): Pennyroyal at replicas 0. Rollback = uncomment, drop ninfer above.
       # - name: pennyroyal
       #   url: http://pennyroyal-flashnext.default.svc.cluster.local:8001

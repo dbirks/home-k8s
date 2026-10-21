@@ -40,7 +40,7 @@ metadata:
   labels:
     app.kubernetes.io/name: flint
 spec:
-  replicas: 0                     # PARKED 2026-10-21 (#158): weights staged, waiting on the NInfer switch.
+  replicas: 1                     # UP 2026-10-21 (#158) in place of NInfer; rollback = 0 (and ninfer to 1).
   # NO SURGE: two 50 GB slices cannot fit beside CLEF + 2x TTS.
   strategy:
     type: RollingUpdate

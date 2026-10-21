@@ -26,7 +26,7 @@ metadata:
   labels:
     app.kubernetes.io/name: ninfer
 spec:
-  replicas: 1                     # UP 2026-10-16 (#156). 10-17 rolled back to Sept (concurrency fault); 10-19 forward to the fork build with the fault fixed + 16 lanes.
+  replicas: 0                     # DOWN 2026-10-21 for the Flint canary (#158); rollback = 1 (and flint to 0). Was: UP 2026-10-16 (#156). 10-17 rolled back to Sept (concurrency fault); 10-19 forward to the fork build with the fault fixed + 16 lanes.
   # NO SURGE: a surge pod would ask HAMi for a 2nd 50GB slice that can't fit beside Muse, so the
   # rollout would hang Pending. maxSurge 0 = stop old first (~15s gap: weights reload 4s + graphs).
   # (Not `type: Recreate`: Flux SSA keeps the live rollingUpdate block and the API rejects the combo.)
