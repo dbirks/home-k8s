@@ -63,5 +63,6 @@ entry (reasoning, 262144 ctx, 65536 out); their `apiKey` is the literal `${LLMC_
 so test curl with the env var, not the file value. `pi --provider collective --model flint`.
 
 ## Gotchas
-- `ERROR: init 250 result=11` as the first log line is HAMi-core's preload shim, not llama.cpp; the server starts fine.
+- `ERROR: init 250 result=11` is printed once at container start, before llama-server's own logging; source
+  not pinned down (the TTS pods don't print it). Harmless so far: the server loads and serves normally.
 - The Collective needs `protocols: [openai, anthropic]`; most live agent traffic arrives as Anthropic `/v1/messages`.
