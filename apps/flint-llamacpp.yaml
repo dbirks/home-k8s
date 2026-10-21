@@ -13,11 +13,14 @@
 # commit, then swap the Collective backend (commented `flint` block in apps/llm-collective-contributor.yaml).
 # Rollback is the reverse; the NInfer v3 PVC and image stay untouched.
 #
-# SIZING (estimates, not measured on this card):
-#   weights ~23.5 GB VRAM after load. KV: only the 14 full-attention layers keep whole-sequence KV, so
-#   28 KiB/token at f16; the 35 sliding-window layers hold ~35 MiB per sequence.
-#   -c 524288 with a unified KV pool = ~14 GiB, shared by all 16 slots (each still capped at 262,144),
-#   + 16 x 35 MiB SWA + compute buffers. Total ~40 GB, so a 50000 MB HAMi slice (5 GB less than NInfer).
+# SIZING (estimates, not measured on this card), 50000 MB HAMi slice = 48.8 GiB:
+#   weights ~21.3 GiB (the GGUF file; vLLM's 23.5 GB includes a BF16 LM head llama.cpp does not make).
+#   KV: only the 14 full-attention layers keep whole-sequence KV = 28 KiB/token at f16. The 35
+#   sliding-window layers hold ~35 MiB per slot (~0.6 GiB for 16). Compute buffers + CUDA context ~3 GiB.
+#   -c 655360 unified = 17.5 GiB KV, shared by all 16 slots; each slot is capped at the 262,144 training
+#   context by llama-server itself (n_ctx_slot). Total ~42.4 GiB, ~6 GiB margin for the estimates.
+#   Room to grow once measured: f16 ~786K tokens at this slice; q8_0 KV (-ctk/-ctv q8_0, ~15 KiB/token)
+#   ~1.4M, but quantized KV is unvalidated for Flint (no RoPE + sinks on the full layers): A/B it first.
 #   Step down to 45000/40000 only after measuring at 50000 (#158 fit ramp).
 # HOST RAM: --load-mode none (no mmap) + --cache-ram 0 so the 23 GB file does not sit in page cache or a host prompt
 #   cache; the node has 46 GB, no swap.
@@ -70,7 +73,7 @@ spec:
             - "-ctv"
             - "f16"
             - "-c"
-            - "524288"                    # total KV pool (unified), not per request
+            - "655360"                    # total KV pool (unified, 2.5 x 262,144), not per request
             - "-np"
             - "16"                        # matches the Collective concurrency NInfer has today
             - "--kv-unified"
