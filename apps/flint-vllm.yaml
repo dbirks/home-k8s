@@ -9,9 +9,10 @@
 # Why vLLM over llama.cpp here: llama.cpp batched MoE decode under real agent load gave ~30 tok/s per request
 # at ~5 busy slots even with split KV (apps/flint-llamacpp.yaml.hold); vLLM batches continuously with paged KV.
 #
-# KV: only the 14 full-attention layers keep whole-sequence KV (vLLM's hybrid allocator gives the 35
-# sliding-window layers window-sized pages). fp8 KV (e4m3) halves it vs bf16; it is NOT what the recipe uses
-# (BF16). If startup fails on the attention backend or quality looks off, drop --kv-cache-dtype (= auto/bf16).
+# KV: BF16 only. FlintAttention asserts kv_cache_dtype in ("auto", "bfloat16") (its fused Q/K-norm + RoPE +
+# KV-write kernel writes BF16), so --kv-cache-dtype fp8 dies at model init (tried 2026-10-22). Only the 14
+# full-attention layers keep whole-sequence KV, 28 KiB/token; the hybrid allocator gives the 35
+# sliding-window layers window-sized pages.
 # HAMi shows vLLM a 55000 MiB GPU, so --gpu-memory-utilization is a fraction of the SLICE.
 # Config + tokenizer + generation_config come from /models/flint-config (BF16 repo files only).
 # ============================================================================================
@@ -65,8 +66,6 @@ spec:
             - "8192"
             - "--gpu-memory-utilization"
             - "0.90"                      # of the 55000 MiB HAMi slice
-            - "--kv-cache-dtype"
-            - "fp8"
             - "--enable-prefix-caching"
             - "--enable-auto-tool-choice"
             - "--tool-call-parser"
