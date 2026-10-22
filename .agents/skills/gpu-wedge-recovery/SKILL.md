@@ -53,6 +53,12 @@ cp $S/systemd/gpu-wedge-watchdog.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload && systemctl --user enable --now gpu-wedge-watchdog.timer
 loginctl enable-linger "$USER"    # else the timer stops when you log out
 ```
+**Bug fixed 2026-10-22 (it had never been able to fire):** the dmesg check was
+`talosctl dmesg | grep -q FULLCHIP` under `set -o pipefail`. grep -q exits on the first hit, talosctl
+dies of SIGPIPE (rc 141) and the pipeline reads as "no marker", most reliably when dmesg is full of
+assertions. A real wedge sat 3.7 h with the timer running every 2 min and logging nothing. Now it
+captures dmesg into a variable first. Never pipe a producer into `grep -q` in this script. The mock
+tests passed through the bug (tiny mocked dmesg), so trust `--check` against a live wedge.
 Canonical tracked copy: `scripts/gpu-wedge-watchdog.sh` here. **Edit the tracked copy, then
 install it** (keep a `.bak`): `cp -p ~/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh{,.bak}`
 then copy over and `systemctl --user restart gpu-wedge-watchdog.timer`.

@@ -81,7 +81,7 @@ gpu_unserviceable(){
   # several lines, "2/2\n2/2" != "2/2", and the check would always claim the GPU is unserviceable.
   local line; line=$(plugin_pod_line)
   [ -n "$line" ] || return 1
-  echo "$line" | grep -qE 'RunContainerError|CrashLoopBackOff|StartError|Error' && return 0
+  [[ "$line" =~ RunContainerError|CrashLoopBackOff|StartError|Error ]] && return 0
   [ "$(echo "$line" | awk '{print $2}')" = "2/2" ] || return 0
   return 1
 }
@@ -91,8 +91,11 @@ gpu_unserviceable(){
 # assertions can't linger to cause a double power-cycle.
 is_wedged(){
   local ip; ip=$(node_ip); [ -n "$ip" ] || return 1
-  timeout 20 talosctl --talosconfig "$TC" -e "$ip" -n "$ip" dmesg 2>/dev/null \
-    | grep -q 'GPU_IN_FULLCHIP_RESET' || return 1
+  # Capture first, then match. NOT `talosctl dmesg | grep -q`: under `set -o pipefail`, grep -q exits on
+  # the first hit, talosctl dies of SIGPIPE (141) and the pipeline reads as "no marker". The bigger the
+  # wedge (more assertions in dmesg), the surer that was, so this watchdog never fired (2026-10-22).
+  local dm; dm=$(timeout 20 talosctl --talosconfig "$TC" -e "$ip" -n "$ip" dmesg 2>/dev/null) || true
+  [[ "$dm" == *GPU_IN_FULLCHIP_RESET* ]] || return 1
   gpu_unserviceable && return 0
   local miss; miss=$(missing_uuids)
   if [ -n "$miss" ]; then
