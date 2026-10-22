@@ -13,20 +13,17 @@
 # commit, then swap the Collective backend (commented `flint` block in apps/llm-collective-contributor.yaml).
 # Rollback is the reverse; the NInfer v3 PVC and image stay untouched.
 #
-# SIZING (estimates, not measured on this card), 50000 MB HAMi slice = 48.8 GiB:
-#   weights ~21.3 GiB (the GGUF file; vLLM's 23.5 GB includes a BF16 LM head llama.cpp does not make).
-#   KV: only the 14 full-attention layers keep whole-sequence KV: 14 x 2 (K,V) x 4 heads x 128 dims =
-#   14,336 values/token. q8_0 (34 B per 32 values) = ~14.9 KiB/token, vs 28 KiB at f16. The 35
-#   sliding-window layers hold ~19 MiB per slot at q8_0 (~0.3 GiB for 16). Compute buffers + CUDA
-#   context + the q8_0->f16 staging buffer the prefill kernel uses ~3.5 GiB.
-#   --ctx-size 1310720 unified (5 x 262,144) = ~18.6 GiB KV, shared by all 16 slots; llama-server caps each
-#   slot at the 262,144 training context itself (n_ctx_slot). Total ~43.7 GiB, ~5 GiB margin.
-#   KV TYPE: llama.cpp has no FP8 (e4m3/e5m2) KV type; its choices are f32/f16/bf16/q8_0/q5_1/q5_0/
-#   iq4_nl/q4_1/q4_0, and q8_0 is the near-lossless one. The CUDA flash-attention build has q8_0/q8_0
-#   kernels at head size 128 by default. Flint's own card and every published recipe use f16, and its
-#   full layers have no RoPE plus learned sinks, so A/B it. ROLLBACK to the card's setup:
-#   --cache-type-k/v f16 with --ctx-size 655360 (17.5 GiB, same memory).
-#   Step down to 45000/40000 only after measuring at 50000 (#158 fit ramp).
+# SPLIT KV (2026-10-21, after the first hour of real agent traffic): with --kv-unified there is ONE KV stream
+#   and llama.cpp attends over every cell up to the highest one in use (llama_kv_cache::get_n_kv ->
+#   used_max_p1), so each decode step scanned the whole ~1.3M-cell pool that 16 cached agent sessions
+#   filled: ~58 ms/token at 5 busy slots (5 ms single), ~17 tok/s per request, ~0.2 tok/s while a long prompt
+#   prefilled. --no-kv-unified gives each slot its own stream, so a step costs the longest ACTIVE context,
+#   not the sum of everything cached. Price: a fixed per-slot context (ctx-size / parallel).
+# SIZING (measured: 47.3 GB = 44.1 GiB in a 50000 slice with an 18.6 GiB pool, so ~25.5 GiB is weights +
+#   compute + SWA): 55000 MB slice (53.7 GiB, NInfer's old size; 25000 CLEF + 2x 8000 TTS + 55000 = 96000 of
+#   97887) leaves ~28 GiB for KV. q8_0 = ~14.9 KiB/token on the 14 full-attention layers:
+#   8 x 229,376 = 1,835,008 tokens = ~26.1 GiB. Agent prompts of 171-174K were seen, so 8 x 224K beats 16 x 112K.
+#   KV TYPE: llama.cpp has no FP8 KV type; q8_0 is the near-lossless one (card uses f16, A/B it).
 # HOST RAM: --load-mode none (no mmap) + --cache-ram 0 so the 23 GB file does not sit in page cache or a host prompt
 #   cache; the node has 46 GB, no swap.
 # ZDR (#98): no --slot-save-path (no on-disk KV), no verbose/prompt logging, --cache-ram 0 (no host prompt cache).
@@ -78,10 +75,10 @@ spec:
             - "--cache-type-v"
             - "q8_0"
             - "--ctx-size"
-            - "1310720"                   # total KV pool (unified, 5 x 262,144), not per request
+            - "1835008"                   # 8 slots x 229,376 tokens, each slot its own KV stream (see SPLIT KV)
             - "--parallel"
-            - "16"                        # matches the Collective concurrency NInfer has today
-            - "--kv-unified"
+            - "8"
+            - "--no-kv-unified"
             - "--jinja"                   # chat template from the GGUF (needs #30929 hex escapes)
             - "--reasoning-format"
             - "deepseek"                  # think block -> reasoning_content (preserve it across turns)
@@ -121,7 +118,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
           resources:
-            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "50000", cpu: "8", memory: 16Gi }
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "55000", cpu: "8", memory: 16Gi }
             requests: { cpu: "2", memory: 4Gi }
           volumeMounts:
             - { name: models, mountPath: /models, readOnly: true }
