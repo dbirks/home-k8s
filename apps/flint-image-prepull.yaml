@@ -1,0 +1,23 @@
+# One-shot pre-pull of the vLLM Flint SM120 image (#158) so the llama.cpp -> vLLM switch only waits on the
+# model load. CPU-only, exits immediately. Delete once flint has started on it.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flint-vllm-image-prepull
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      containers:
+        - name: pull
+          image: ghcr.io/dbirks/vllm-openai:flint-sm120-20261021@sha256:73fb73ab5b7319ab5f4239cf7f7f366608ace38e5093c721b30138a3159f3e61
+          command: ["/bin/sh", "-c", "true"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 64Mi }
