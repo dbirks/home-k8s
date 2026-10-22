@@ -100,7 +100,10 @@ spec:
               # 2026-10-17: DROPPED 400W -> 350W per that note. Two FULLCHIP resets 17 min apart
               # (04:29 and 04:46 UTC, Xid 79 + 154) right after #156 put four models on the card
               # (NInfer + CLEF INT4 + 2x Qwen3-TTS). Next lever: 300W, or fewer co-resident procs.
-              value: "350"
+              # 2026-10-22: DROPPED 350W -> 300W (user approved). Two FULLCHIP resets ~4h apart (02:45 and
+              # 06:51 UTC, Xid 79 + 154 from the vLLM Flint engine) after Flint moved to vLLM (#158),
+              # which drives the card far harder than llama.cpp/NInfer. Do NOT raise it.
+              value: "300"
             - name: GPU_POWER_MAP
               # Empty today: one GPU on the node, TARGET_WATTS covers it. Add a
               # per-card entry the moment a second GPU goes in, e.g.
