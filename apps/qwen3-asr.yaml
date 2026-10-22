@@ -7,8 +7,8 @@
 # loader cannot fall back to Mesa llvmpipe (CPU), and --device gpu refuses to start without a GPU.
 # HAMi's gpumem only limits CUDA, not Vulkan: the 3000 MiB here is accounting, not enforcement.
 #
-# `speech serve` has NO auth/TLS and handles one request at a time: ClusterIP only, reached by the LLM
-# Collective contributor (backend `qwen3-asr`, concurrency 1). WAV 16-bit PCM in, 25 MB cap.
+# `speech serve` has NO auth/TLS and handles one request at a time (others wait in its own queue): ClusterIP only, reached by the LLM
+# Collective contributor (backend `qwen3-asr`, concurrency 8 = queue depth). WAV 16-bit PCM in, 25 MB cap.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

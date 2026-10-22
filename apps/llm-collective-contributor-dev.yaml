@@ -118,10 +118,13 @@ data:
             types: [speech]
       # Qwen3-ASR 1.7B Q6_K, speech.cpp on dave-droid's GTX 1070 (apps/qwen3-asr.yaml).
       # speech serve is single-flight; the backend id is `Qwen3-ASR-1.7B` (its own /v1/models).
+      # concurrency 8 (2026-10-22): the contributor never queues (try-acquire, else 429), but speech serve
+      # queues internally and runs one at a time (6 concurrent 114 s clips: all 200, ~6.8 s each, /health
+      # stayed <6 ms). So 8 here = up to 8 waiting in speech serve instead of 429s; the 9th still gets a 429.
       - name: qwen3-asr
         url: http://qwen3-asr.default.svc.cluster.local:8001
         protocols: [openai]
-        concurrency: 1
+        concurrency: 8
         models:
           - alias: qwen3-asr-1-7b
             model: Qwen3-ASR-1.7B
