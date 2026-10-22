@@ -108,19 +108,18 @@ data:
             model: Qwen3-ASR-1.7B
             types: [transcription]
             inputs: [audio]
-      # Recursive Flint NVFP4 GGUF on llama.cpp (apps/flint-llamacpp.yaml), 2026-10-21 (#158), in place of ninfer.
-      # Text only; tools + reasoning_content. --parallel 8 with split KV (229,376 tokens per slot, q8_0):
-      # the unified 16-slot pool made every step scan all cached sessions (~17 tok/s each under real load).
-      # Isolated benchmarks 2026-10-21 (unified, short prompts): 200 tok/s single, 713 tok/s aggregate at 16.
+      # Recursive Flint NVFP4 GGUF on vLLM (apps/flint-vllm.yaml, SM120 stock layers), 2026-10-22 (#158), in place
+      # of ninfer. Text only; tools + reasoning (glm47 parsers). llama.cpp (apps/flint-llamacpp.yaml.hold) gave
+      # ~30 tok/s per request at ~5 busy slots under real agent load; vLLM batches continuously (max-num-seqs 32).
       - name: flint
         url: http://flint.default.svc.cluster.local:8080
         protocols: [openai, anthropic]   # llama-server /v1/messages verified 2026-10-21 (thinking + text blocks)
-        concurrency: 8          # = --parallel 8 (split KV, 229,376 per slot); see apps/flint-llamacpp.yaml
+        concurrency: 16         # vLLM --max-num-seqs 32 behind it
         models:
           - alias: flint
             model: flint
             limits:
-              context: 229376
+              context: 262144
             inputs: [text]
       # PARKED 2026-10-16 (#156): Pennyroyal at replicas 0. Rollback = uncomment, drop ninfer above.
       # - name: pennyroyal

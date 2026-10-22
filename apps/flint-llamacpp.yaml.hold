@@ -37,7 +37,7 @@ metadata:
   labels:
     app.kubernetes.io/name: flint
 spec:
-  replicas: 1                     # UP 2026-10-21 (#158) in place of NInfer; rollback = 0 (and ninfer to 1).
+  replicas: 1                     # PARKED (.hold) 2026-10-22: replaced by apps/flint-vllm.yaml. To revive: rename this to .yaml and that one to .hold.
   # NO SURGE: two 50 GB slices cannot fit beside CLEF + 2x TTS.
   strategy:
     type: RollingUpdate

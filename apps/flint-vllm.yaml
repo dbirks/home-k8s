@@ -1,17 +1,19 @@
-# flint (vLLM) — Recursive Flint NVFP4 GGUF on the vLLM day-0 image. Issue #158. ON HOLD (.yaml.hold).
+# flint — Recursive Flint NVFP4 GGUF on vLLM (stock layers on SM120). Issue #158.
 # ============================================================================================
-# Second option after apps/flint-llamacpp.yaml. Day-0 image vllm/vllm-openai:flint (CUDA 13.0) carries
-# PR #62938 (still OPEN). Its Flint kernels are FlashInfer/CuTe DSL SM100 (tcgen05) kernels validated
-# on GB200, and on one GPU they are "always used", so they may not run on SM120 (RTX PRO 6000) at all.
-# The first start will tell: watch for CuTe/tcgen05 compile errors during warmup.
+# Image: ghcr.io/dbirks/vllm-openai:flint-sm120-* = vllm/vllm-openai:flint (day-0, PR #62938) + three fixes
+# from the PR thread (build/vllm-flint/Dockerfile): `_flint_kernels()` gated to SM100, so SM120 takes vLLM's
+# stock layers (Marlin W4A16 NVFP4 linears + MoE, FlashInfer attention with sinks); `gguf>=0.19.0`; CUDA
+# compat libs removed (clash with the 580 driver). Same path verified on an RTX PRO 6000 (LiveCodeBench v6
+# 82.2%, SWE-bench Verified 80%) and on a 5090 (2,572 tok/s output at 32 concurrent, TPOT 11.3 ms).
 #
-# To try it: NEVER at the same time as apps/flint-llamacpp.yaml (same Service name, same 50 GB slice).
-# Scale that one to 0, rename this to .yaml, replicas 1.
+# Why vLLM over llama.cpp here: llama.cpp batched MoE decode under real agent load gave ~30 tok/s per request
+# at ~5 busy slots even with split KV (apps/flint-llamacpp.yaml.hold); vLLM batches continuously with paged KV.
 #
-# NVFP4 GGUF runs weight-only (W4A16), BF16 activations, BF16 KV (28 KiB/token across the 14 full
-# layers). Recipe: ~23.5 GB resident after load (the LM head is dequantized to BF16), 29 GB minimum.
-# HAMi shows vLLM a 50000 MiB GPU, so --gpu-memory-utilization is a fraction of the SLICE.
-# Config + tokenizer come from /models/flint-config (BF16 repo files only, staged by apps/flint-models.yaml).
+# KV: only the 14 full-attention layers keep whole-sequence KV (vLLM's hybrid allocator gives the 35
+# sliding-window layers window-sized pages). fp8 KV (e4m3) halves it vs bf16; it is NOT what the recipe uses
+# (BF16). If startup fails on the attention backend or quality looks off, drop --kv-cache-dtype (= auto/bf16).
+# HAMi shows vLLM a 55000 MiB GPU, so --gpu-memory-utilization is a fraction of the SLICE.
+# Config + tokenizer + generation_config come from /models/flint-config (BF16 repo files only).
 # ============================================================================================
 ---
 apiVersion: apps/v1
@@ -22,7 +24,7 @@ metadata:
   labels:
     app.kubernetes.io/name: flint
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
@@ -35,19 +37,20 @@ spec:
         app.kubernetes.io/name: flint
     spec:
       runtimeClassName: nvidia
-      enableServiceLinks: false   # a Service named like an engine env var prefix must not leak in
+      enableServiceLinks: false
       nodeSelector: { kubernetes.io/hostname: talos-210-73x }
       containers:
         - name: main
-          # day-0 multi-arch index, 2026-10-21 (amd64 sha256:81e0d524...).
-          image: vllm/vllm-openai:flint@sha256:be337371b88c770a25a7c029ecc1096dde132889853609b28093ddabc002b0bd
+          image: ghcr.io/dbirks/vllm-openai:flint-sm120-20261021@sha256:73fb73ab5b7319ab5f4239cf7f7f366608ace38e5093c721b30138a3159f3e61
           command: ["vllm", "serve"]
           args:
-            - "/models/flint-nvfp4-gguf/flint-nvfp4.gguf"
+            - "/models/flint-nvfp4-gguf"   # the directory holding flint-nvfp4.gguf (the recipe passes the dir)
             - "--hf-config-path"
             - "/models/flint-config"
             - "--tokenizer"
             - "/models/flint-config"
+            - "--generation-config"
+            - "/models/flint-config"      # temperature 1.0 / top-p 0.95 / top-k 20 defaults
             - "--served-model-name"
             - "flint"
             - "--host"
@@ -57,9 +60,14 @@ spec:
             - "--max-model-len"
             - "262144"
             - "--max-num-seqs"
-            - "16"
+            - "32"
+            - "--max-num-batched-tokens"
+            - "8192"
             - "--gpu-memory-utilization"
-            - "0.90"                      # of the 50000 MiB HAMi slice
+            - "0.90"                      # of the 55000 MiB HAMi slice
+            - "--kv-cache-dtype"
+            - "fp8"
+            - "--enable-prefix-caching"
             - "--enable-auto-tool-choice"
             - "--tool-call-parser"
             - "glm47"
@@ -72,7 +80,7 @@ spec:
             - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
           ports:
             - containerPort: 8080
-          startupProbe:                   # load + repack + CuTe JIT + CUDA graphs: allow 20 min
+          startupProbe:                   # GGUF load + NVFP4 repack + Marlin + CUDA graphs: allow 20 min
             httpGet: { path: /health, port: 8080 }
             periodSeconds: 10
             failureThreshold: 120
@@ -86,7 +94,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
           resources:
-            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "50000", cpu: "8", memory: 24Gi }
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "55000", cpu: "8", memory: 28Gi }
             requests: { cpu: "4", memory: 8Gi }
           volumeMounts:
             - { name: models, mountPath: /models, readOnly: true }
