@@ -1,9 +1,34 @@
 ---
 name: flint-llamacpp
-description: Run Recursive Flint (40B-A2.5B MoE coding model, NVFP4 GGUF) on llama.cpp on the RTX PRO 6000 (SM120) as the Collective `flint` model - image build, flags, KV sizing, switch/rollback with NInfer, and how to test it (curl, parallel, pi). Use when operating, resizing, upgrading or rolling back apps/flint-llamacpp.yaml.
+description: Run Recursive Flint (40B-A2.5B MoE coding model, NVFP4 GGUF) on the RTX PRO 6000 (SM120) as the Collective `flint` model - vLLM with an SM120 arch gate (live) or llama.cpp (parked) - image builds, flags, KV sizing and why, switch/rollback with NInfer, and how to test it (curl, parallel, pi). Use when operating, resizing, upgrading or rolling back apps/flint-vllm.yaml or apps/flint-llamacpp.yaml.hold.
 ---
 
-# Flint on llama.cpp (#158)
+# Flint (#158): vLLM live, llama.cpp parked
+
+## LIVE since 2026-10-22: vLLM (apps/flint-vllm.yaml)
+Image `ghcr.io/dbirks/vllm-openai:flint-sm120-*` from `build/vllm-flint/Dockerfile` via
+`.github/workflows/build-vllm-flint.yaml`: day-0 `vllm/vllm-openai:flint` + three fixes from the PR #62938
+thread: (1) gate `_flint_kernels()` on `is_device_capability_family(100)` so SM120 takes stock layers
+(Marlin NVFP4 linear + MoE, FlashInfer attention with sinks; without it: "No supported CUDA architectures
+found for major versions [9, 10]"); (2) `pip install gguf>=0.19.0`; (3) delete `/usr/local/cuda-*/compat`.
+- KV is BF16 only: `FlintAttention` asserts `kv_cache_dtype in ("auto","bfloat16")` because its fused
+  Triton `qk_norm_rope_cache` writes the cache itself, even on the stock path. `--kv-cache-dtype fp8`
+  dies at init. FP8 would need a patch that skips the fused write on non-SM100 and lets
+  `Attention` write the cache (plus checking FlashInfer fp8 + sinks on SM120).
+- 55000 MB slice, `--gpu-memory-utilization 0.90`: weights 21.9 GiB, KV 25.2 GiB = 790,158 tokens
+  (3.0x full 262K requests), load ~2 min from the HDD + ~1 min graphs. Pass the GGUF DIRECTORY as the model.
+- Measured 2026-10-22 with live Collective traffic on top: 101 tok/s single (stock layers; llama.cpp did
+  200), 425/676/995 tok/s aggregate at 4/8/16, 159K-token needle in 21 s total (llama.cpp: 57 s prefill);
+  live peaks 1,228 tok/s generation at 19 running; prefix cache hit 74-86%.
+- vLLM logs stats only while busy: a silent log is idle, not hung (check `/health`).
+
+## Why llama.cpp was parked
+Under real agent load (16 slots, 30-170K prompts) it was ~17 tok/s per request with `--kv-unified`: one KV
+stream, and `get_n_kv` = highest used cell, so every decode step scanned ALL cached sessions (~1.3M
+cells). `--no-kv-unified` (8 x 229K) doubled that to ~30 tok/s, still ~150 tok/s total at 5 busy. Its
+batched MoE decode is the ceiling. The notes below are kept for reviving it.
+
+# llama.cpp notes (apps/flint-llamacpp.yaml.hold)
 
 Files: `apps/flint-models.yaml` (HDD PVC `flint-models-hdd` + pinned, SHA-checked download Job),
 `apps/flint-llamacpp.yaml` (Deployment + Service `flint:8080`), `apps/flint-vllm.yaml.hold` (fallback),
