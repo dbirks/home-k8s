@@ -40,6 +40,19 @@ on one service can miss a SECOND wedge: after recovery, re-check `nvidia-smi` it
 systemctl --user list-timers gpu-wedge-watchdog.timer        # is it alive?
 tail -40 ~/.local/share/home-k8s-auto/gpu-wedge-watchdog.log
 ```
+**Fresh install** (done on David's Arch workstation 2026-10-22, after a wedge went unrecovered for
+25 min because nothing was installed). The units are tracked in `scripts/systemd/`; they set PATH for
+`~/.local/bin` (kubectl, talosctl) because the user manager does not have it:
+```bash
+S=.agents/skills/gpu-wedge-recovery/scripts
+mkdir -p ~/.local/share/home-k8s-auto ~/.config/systemd/user
+install -m 0755 $S/gpu-wedge-watchdog.sh ~/.local/share/home-k8s-auto/
+cp $S/systemd/gpu-wedge-watchdog.{service,timer} ~/.config/systemd/user/
+~/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh --learn    # with the GPU healthy
+~/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh --check    # rc 0 = healthy, never acts
+systemctl --user daemon-reload && systemctl --user enable --now gpu-wedge-watchdog.timer
+loginctl enable-linger "$USER"    # else the timer stops when you log out
+```
 Canonical tracked copy: `scripts/gpu-wedge-watchdog.sh` here. **Edit the tracked copy, then
 install it** (keep a `.bak`): `cp -p ~/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh{,.bak}`
 then copy over and `systemctl --user restart gpu-wedge-watchdog.timer`.

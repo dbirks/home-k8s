@@ -1,0 +1,12 @@
+[Unit]
+Description=home-k8s GPU FULLCHIP_RESET wedge watchdog (power-cycles talos-210-73x only on a confirmed wedge)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# kubectl/talosctl live in ~/.local/bin; the user manager's PATH does not include it.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=KUBECONFIG=%h/.kube/config
+ExecStart=%h/.local/share/home-k8s-auto/gpu-wedge-watchdog.sh
+# One run can wait out the 120 s confirm window plus a power-cycle call.
+TimeoutStartSec=600
