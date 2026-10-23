@@ -87,3 +87,25 @@ spec:
       volumes:
         - name: models
           persistentVolumeClaim: { claimName: qwen38-27b-models-hdd }
+---
+# Pre-pull the vLLM image onto the node (CPU only, exits at once) so the engine switch costs only the model load.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-27b-image-prepull
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      containers:
+        - name: pull
+          image: vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34
+          command: ["python3", "-c", "import vllm; print('vllm', vllm.__version__)"]
+          resources:
+            requests: { cpu: "100m", memory: 256Mi }
+            limits: { cpu: "1", memory: 2Gi }
