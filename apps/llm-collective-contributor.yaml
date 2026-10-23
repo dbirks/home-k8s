@@ -123,6 +123,10 @@ data:
             model: flint
             limits:
               context: 262144
+            # Always thinks (glm47 reasoning parser -> reasoning_content / Anthropic thinking blocks). The chat
+            # template has no effort or thinking-off switch, so no levels. Text only: FlintForCausalLM has no
+            # vision encoder (checked config.json 2026-10-22).
+            reasoning: true
             inputs: [text]
       # PARKED 2026-10-16 (#156): Pennyroyal at replicas 0. Rollback = uncomment, drop ninfer above.
       # - name: pennyroyal
