@@ -9,11 +9,15 @@
 # Why vLLM over llama.cpp here: llama.cpp batched MoE decode under real agent load gave ~30 tok/s per request
 # at ~5 busy slots even with split KV (apps/flint-llamacpp.yaml.hold); vLLM batches continuously with paged KV.
 #
-# KV: BF16 only. FlintAttention asserts kv_cache_dtype in ("auto", "bfloat16") (its fused Q/K-norm + RoPE +
-# KV-write kernel writes BF16), so --kv-cache-dtype fp8 dies at model init (tried 2026-10-22). Only the 14
-# full-attention layers keep whole-sequence KV, 28 KiB/token; the hybrid allocator gives the 35
-# sliding-window layers window-sized pages.
-# HAMi shows vLLM a 55000 MiB GPU, so --gpu-memory-utilization is a fraction of the SLICE.
+# KV: FP8 (e4m3) since 2026-10-22 via build/vllm-flint/fp8_kv.py. Stock FlintAttention asserts a BF16 cache
+# (its fused Q/K-norm + RoPE kernel writes the cache in BF16); the patch skips that write and lets vLLM's
+# reshape_and_cache quantize K/V. Rollback: drop --kv-cache-dtype (same image still serves BF16). Only the 14
+# full-attention layers keep whole-sequence KV; the 35 sliding-window layers get window-sized pages.
+# Memory: slice 56800 MiB (all HAMi headroom: CLEF 25000 + 2x TTS 8000 + this = 97800 of 97887) and a fixed
+# --kv-cache-memory 30 GiB. At 55000 / util 0.90 vLLM reported 25.18 GiB KV and "29.75 GiB to fully use the
+# GPU"; +1800 MiB of slice makes that ~31.5, so 30 leaves ~1.5 GiB of headroom under the HAMi limit.
+# Why (2026-10-22): ~98K-token average agent prompts filled the 790K BF16 pool at 6-8 running, the rest queued
+# ~45 s and evicted prefixes were re-prefilled (hit rate fell to ~6%).
 # Config + tokenizer + generation_config come from /models/flint-config (BF16 repo files only).
 # ============================================================================================
 ---
@@ -42,7 +46,7 @@ spec:
       nodeSelector: { kubernetes.io/hostname: talos-210-73x }
       containers:
         - name: main
-          image: ghcr.io/dbirks/vllm-openai:flint-sm120-20261021@sha256:73fb73ab5b7319ab5f4239cf7f7f366608ace38e5093c721b30138a3159f3e61
+          image: ghcr.io/dbirks/vllm-openai:flint-sm120-fp8kv-20261022@sha256:9701ed5a090469d03cae702e297b41bc2521b830d792a409d125df80aaf23c5f
           command: ["vllm", "serve"]
           args:
             - "/models/flint-nvfp4-gguf"   # the directory holding flint-nvfp4.gguf (the recipe passes the dir)
@@ -64,8 +68,10 @@ spec:
             - "32"
             - "--max-num-batched-tokens"
             - "8192"
-            - "--gpu-memory-utilization"
-            - "0.90"                      # of the 55000 MiB HAMi slice
+            - "--kv-cache-memory"
+            - "32212254720"               # 30 GiB, see header (overrides --gpu-memory-utilization)
+            - "--kv-cache-dtype"
+            - "fp8"
             - "--enable-prefix-caching"
             - "--enable-auto-tool-choice"
             - "--tool-call-parser"
@@ -93,7 +99,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
           resources:
-            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "55000", cpu: "8", memory: 28Gi }
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "56800", cpu: "8", memory: 28Gi }
             requests: { cpu: "4", memory: 8Gi }
           volumeMounts:
             - { name: models, mountPath: /models, readOnly: true }
