@@ -126,7 +126,7 @@ data:
             # off (vLLM maps it to enable_thinking=false); high/minimal/max are rejected (400) by Qwen's template.
             # Server default is medium (--default-chat-template-kwargs). The gateway web chat's "off" sends
             # chat_template_kwargs.thinking_enabled, which Qwen ignores (its key is enable_thinking); API clients
-            # sending reasoning_effort=none or Anthropic thinking.type=disabled do get thinking off.
+            # sending reasoning_effort=none or Anthropic thinking.type=disabled do get thinking off (llm-collective#84).
             reasoning:
               levels:
                 - none

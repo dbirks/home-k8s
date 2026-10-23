@@ -40,7 +40,7 @@ Qwen's template accepts `reasoning_effort` xhigh (Qwen's default), medium, low O
   template raw and 400s every plain request; `enable_thinking:false` as the default disables ALL levels. So
   thinking cannot be off-by-default with working levels on stock vLLM: default is medium.
 - The Collective web chat's "off" sends `chat_template_kwargs.thinking_enabled` (Qwen ignores it); API
-  clients are fine. Collective declares levels none/low/medium/xhigh.
+  clients are fine (e-gineering/llm-collective#84). Collective declares levels none/low/medium/xhigh.
 
 ## pi
 `~/.pi/agent/models.json` `collective` / `qwen3-8-27b` has `thinkingLevelMap`
