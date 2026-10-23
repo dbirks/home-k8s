@@ -3,9 +3,12 @@ name: flint-llamacpp
 description: Run Recursive Flint (40B-A2.5B MoE coding model, NVFP4 GGUF) on the RTX PRO 6000 (SM120) as the Collective `flint` model - vLLM with an SM120 arch gate (live) or llama.cpp (parked) - image builds, flags, KV sizing and why, switch/rollback with NInfer, and how to test it (curl, parallel, pi). Use when operating, resizing, upgrading or rolling back apps/flint-vllm.yaml or apps/flint-llamacpp.yaml.hold.
 ---
 
-# Flint (#158): vLLM live, llama.cpp parked
+# Flint (#158): PARKED 2026-10-23 (vLLM at replicas 0, llama.cpp .hold)
 
-## LIVE since 2026-10-22: vLLM (apps/flint-vllm.yaml)
+Replaced by Qwen3.8-27B on stock vLLM (qwen38-27b-vllm skill): the user did not want to run our own
+unreviewed vLLM patches (SM120 gate + fp8 KV). Revival = flip replicas + Collective block in one commit.
+
+## vLLM (apps/flint-vllm.yaml), was live 2026-10-22..23
 Image `ghcr.io/dbirks/vllm-openai:flint-sm120-*` from `build/vllm-flint/Dockerfile` via
 `.github/workflows/build-vllm-flint.yaml`: day-0 `vllm/vllm-openai:flint` + three fixes from the PR #62938
 thread: (1) gate `_flint_kernels()` on `is_device_capability_family(100)` so SM120 takes stock layers

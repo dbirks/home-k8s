@@ -91,16 +91,18 @@ API CRDs are all gone. History: issues #95, #105, #135, #144 and git history.
 
 What serves models today:
 
-- **Pennyroyal** (`apps/pennyroyal-flashnext.yaml`, SGLang fork, Qwen3.8-Flash-Next NVFP4) owns
-  the whole card and is the primary engine: model name `pennyroyal`, context 524,288, no
-  scale-to-zero (sleep-on-idle keeps it hot). Operate it via the pennyroyal-flashnext skill.
+- **Qwen3.8-27B on stock vLLM** (`apps/qwen38-27b-vllm.yaml`, `nvidia/Qwen3.8-27B-NVFP4`, vLLM
+  v0.32.0, no patches) is the primary engine since 2026-10-23: model `qwen3-8-27b`, context 262,144,
+  MTP 3, fp8 KV, prefix caching, vision, reasoning default medium. It shares the card with CLEF and
+  2x Qwen3-TTS via HAMi slices (56800 MiB). Operate it via the qwen38-27b-vllm skill.
 - **LLM Collective contributor** (`apps/llm-collective-contributor*.yaml`) is the consumer and it
   talks to engines DIRECTLY over the cluster Service (e.g.
-  `http://pennyroyal-flashnext.default.svc.cluster.local:8001`). This direct pattern is the only
+  `http://qwen38-27b.default.svc.cluster.local:8000`). This direct pattern is the only
   wiring; there is no in-cluster gateway.
-- **Parked engines** (ninfer, flashnext rollback) keep Deployment+Service manifests with revival
-  notes in their headers (direct Service + Collective backend, or a tailscale Ingress). KEDA is
-  gone, so a revived engine is always-on at `replicas: 1`.
+- **Parked engines** (flint = vLLM with our patches, ninfer = our fork, pennyroyal = whole-card
+  Flash-Next) keep Deployment+Service manifests with revival notes in their headers (direct Service +
+  Collective backend, or a tailscale Ingress). KEDA is gone, so a revived engine is always-on at
+  `replicas: 1`.
 - **Co-residence limit still applies**: the binding constraint is **46GB host RAM (no swap), NOT
   the 96GB VRAM**; scale one engine to 0 before rolling out another (see the ninfer-serving-memory
   and pennyroyal-flashnext skills).
