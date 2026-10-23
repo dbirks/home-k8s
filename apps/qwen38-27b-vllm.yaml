@@ -1,0 +1,116 @@
+# qwen38-27b — Qwen3.8-27B (NVIDIA NVFP4) on STOCK upstream vLLM v0.32.0. No forks, no patches (2026-10-22).
+# ============================================================================================
+# Replaces Flint (apps/flint-vllm.yaml, which needs our own SM120 + fp8 KV patches) and NInfer (our fork,
+# apps/ninfer-standalone.yaml): NInfer prefills ~3K tok/s, one request at a time, alternating with decode,
+# so one long prompt dragged every other agent; vLLM batches prefill and keeps prefix caching on for this
+# hybrid model.
+#
+# Flags follow the vLLM recipe (recipes.vllm.ai/Qwen/Qwen3.8-27B) and NVIDIA's model card:
+#   --kv-cache-dtype fp8_e4m3 (NVIDIA's own serve command; KV only lives on the 16 full-attention layers of 64,
+#     32 KiB/token in fp8), MTP 3 (the checkpoint keeps the MTP head in BF16), qwen3 reasoning parser,
+#     qwen3_coder tool parser. Vision tower included (Qwen3_5ForConditionalGeneration).
+# HAMi shows vLLM a 56800 MiB GPU (same slice Flint had), so --gpu-memory-utilization is a fraction of the SLICE.
+# Weights: apps/qwen38-27b-models.yaml (HDD PVC, pinned + sha-checked).
+# Switch: this to replicas 1 + flint to 0 + the Collective backend in ONE commit (they cannot co-reside).
+# ============================================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen38-27b
+  namespace: default
+  labels:
+    app.kubernetes.io/name: qwen38-27b
+spec:
+  replicas: 0
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qwen38-27b
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: qwen38-27b
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      containers:
+        - name: main
+          image: vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34
+          command: ["vllm", "serve"]
+          args:
+            - "/models/qwen38-27b-nvfp4"
+            - "--served-model-name"
+            - "qwen3-8-27b"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--max-model-len"
+            - "262144"
+            - "--max-num-seqs"
+            - "24"
+            - "--max-num-batched-tokens"
+            - "8192"
+            - "--gpu-memory-utilization"
+            - "0.90"                      # of the 56800 MiB HAMi slice; tune from the startup log
+            - "--kv-cache-dtype"
+            - "fp8_e4m3"
+            - "--enable-prefix-caching"
+            - "--speculative-config"
+            - '{"method":"mtp","num_speculative_tokens":3}'
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser"
+            - "qwen3_coder"
+            - "--reasoning-parser"
+            - "qwen3"
+          env:
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+          ports:
+            - containerPort: 8000
+          startupProbe:                   # 20 GiB off the HDD + compile + CUDA graphs: allow 20 min
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            failureThreshold: 120
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "56800", cpu: "8", memory: 28Gi }
+            requests: { cpu: "4", memory: 8Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: qwen38-27b-models-hdd
+            readOnly: true
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 4Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen38-27b
+  namespace: default
+  labels:
+    app.kubernetes.io/name: qwen38-27b
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: qwen38-27b
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

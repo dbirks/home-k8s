@@ -1,0 +1,89 @@
+# Qwen3.8-27B NVFP4 (NVIDIA ModelOpt) weights for apps/qwen38-27b-vllm.yaml. Staging only: no GPU is touched.
+#
+#   /models/qwen38-27b-nvfp4/   nvidia/Qwen3.8-27B-NVFP4 @ 482ca0f3 (20.4 GiB, 3 safetensors shards)
+#
+# Why this checkpoint (2026-10-22): vendor-published and calibrated (Local-Hessian, 2,048 samples); mixed
+# precision, NVFP4 on the MLPs + lm_head and FP8 on self-attention and linear-attention; MTP head kept in BF16
+# (ignore: mtp*); vision tower unquantized. NVIDIA's card: GPQA Diamond 88.92 -> 88.01, Terminal-Bench
+# 75.56 -> 74.02, AA-LCR 72.63 -> 73.38 vs BF16; served by stock vLLM. Considered and not used:
+# unsloth/Qwen3.8-27B-NVFP4 (compressed-tensors, 21.8 GiB, no published evals), our own
+# dbirks/Qwen3.8-27B-NVFP4-AutoRound (W4A4 everywhere incl. attention, 19.2 GiB, never evaluated).
+#
+# On the HDD like flint-models-hdd: NVMe /var is near kubelet's image-GC threshold. Standalone PVC so retiring
+# this Job never prunes the weights. LFS sha256 from the HF API; the small files were hashed from the pinned
+# revision, 2026-10-22.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen38-27b-models-hdd
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 40Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen38-27b-models-download
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }   # the HDD and the GPU that will read it
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              REV=482ca0f3832238542f8f5295dde86b5f22711d80
+              M=/models/qwen38-27b-nvfp4
+              MARK=/models/.verified-$REV
+              if [ -f "$MARK" ]; then echo "already verified"; ls -l "$M"; exit 0; fi
+              pip install -q -U "huggingface_hub[cli]"
+              mkdir -p "$M.dl"
+              hf download nvidia/Qwen3.8-27B-NVFP4 --revision "$REV" --local-dir "$M.dl" \
+                model-00001-of-00003.safetensors model-00002-of-00003.safetensors model-00003-of-00003.safetensors \
+                model.safetensors.index.json config.json generation_config.json hf_quant_config.json \
+                chat_template.jinja tokenizer.json tokenizer_config.json vocab.json merges.txt \
+                preprocessor_config.json processor_config.json video_preprocessor_config.json
+              (cd "$M.dl" && sha256sum --check <<'EOF'
+              7d0fd155118901373eb0fd13ed3aae68f95be747bc205be72ebc41739c25ee80  model-00001-of-00003.safetensors
+              98a7e9486baa860c792c9463a770cb9d017696bdd17606300a5b9334149f4c27  model-00002-of-00003.safetensors
+              0506ad35dc21469708e7813bd76c592cef08bd0317b4a1fe899745ebe2435271  model-00003-of-00003.safetensors
+              7aa103a2582b7d26631988de33dea19e8a308ee9c239e8e14feb374af30905e2  model.safetensors.index.json
+              71fa01bb64de20971045cd82a82c0ebb25a54e1b0a3f09ef23cf5479e9c54df8  config.json
+              8a3a817a9d330f6f9e62f048fe62a48594946c4a5c4cb314a8011316d5094986  generation_config.json
+              5f4aaa9e462ddb26a9790ab459eee69d100b9ade7541f0c86038e925c013f80b  hf_quant_config.json
+              c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041  chat_template.jinja
+              0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3  tokenizer.json
+              e5d078b00e6c1223b32444db8c1001dc71d86ceef8ee706b5bf084c3a43a1f9c  tokenizer_config.json
+              ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003  vocab.json
+              a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d  merges.txt
+              27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516  preprocessor_config.json
+              d89ef49ce9cd37fbf510158e13c1ef063d9286411c1ec9049932dbe0487143b1  processor_config.json
+              7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13  video_preprocessor_config.json
+              EOF
+              )
+              rm -rf "$M.dl/.cache" "$M" && mv "$M.dl" "$M"
+              touch "$MARK" && ls -l "$M" && df -h /models
+          env:
+            - { name: HF_HUB_DISABLE_TELEMETRY, value: "1" }
+            - { name: HF_HUB_ENABLE_HF_TRANSFER, value: "0" }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: qwen38-27b-models-hdd }
