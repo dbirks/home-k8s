@@ -111,23 +111,31 @@ data:
             model: Qwen3-ASR-1.7B
             types: [transcription]
             inputs: [audio]
-      # Recursive Flint NVFP4 GGUF on vLLM (apps/flint-vllm.yaml, SM120 stock layers), 2026-10-22 (#158), in place
-      # of ninfer. Text only; tools + reasoning (glm47 parsers). llama.cpp (apps/flint-llamacpp.yaml.hold) gave
-      # ~30 tok/s per request at ~5 busy slots under real agent load; vLLM batches continuously (max-num-seqs 32).
-      - name: flint
-        url: http://flint.default.svc.cluster.local:8080
-        protocols: [openai, anthropic]   # llama-server /v1/messages verified 2026-10-21 (thinking + text blocks)
-        concurrency: 16         # vLLM --max-num-seqs 32 behind it
+      # Qwen3.8-27B NVFP4 (nvidia ModelOpt) on STOCK vLLM v0.32.0 (apps/qwen38-27b-vllm.yaml), 2026-10-22, in place
+      # of flint. Prefix caching + batched prefill; MTP 3; vision; tools (qwen3_coder) + reasoning (qwen3).
+      - name: qwen38-27b
+        url: http://qwen38-27b.default.svc.cluster.local:8000
+        protocols: [openai, anthropic]
+        concurrency: 16         # vLLM --max-num-seqs 24 behind it
         models:
-          - alias: flint
-            model: flint
+          - alias: qwen3-8-27b
+            model: qwen3-8-27b
             limits:
               context: 262144
-            # Always thinks (glm47 reasoning parser -> reasoning_content / Anthropic thinking blocks). The chat
-            # template has no effort or thinking-off switch, so no levels. Text only: FlintForCausalLM has no
-            # vision encoder (checked config.json 2026-10-22).
-            reasoning: true
-            inputs: [text]
+            inputs: [text, image]
+      # PARKED 2026-10-22: flint on vLLM with our SM120 + fp8 KV patches (apps/flint-vllm.yaml). Rollback = uncomment,
+      # drop qwen38-27b, flip both replicas. Always thinks (glm47), no levels; text only.
+      # - name: flint
+      #   url: http://flint.default.svc.cluster.local:8080
+      #   protocols: [openai, anthropic]
+      #   concurrency: 16         # vLLM --max-num-seqs 32 behind it
+      #   models:
+      #     - alias: flint
+      #       model: flint
+      #       limits:
+      #         context: 262144
+      #       reasoning: true
+      #       inputs: [text]
       # PARKED 2026-10-16 (#156): Pennyroyal at replicas 0. Rollback = uncomment, drop ninfer above.
       # - name: pennyroyal
       #   url: http://pennyroyal-flashnext.default.svc.cluster.local:8001

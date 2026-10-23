@@ -22,7 +22,7 @@ metadata:
   labels:
     app.kubernetes.io/name: qwen38-27b
 spec:
-  replicas: 0
+  replicas: 1                     # LIVE 2026-10-22 in place of flint (same 56800 MiB slice)
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
@@ -67,6 +67,8 @@ spec:
             - "qwen3_coder"
             - "--reasoning-parser"
             - "qwen3"
+            - "--default-chat-template-kwargs"   # server default effort medium (stock Qwen default is xhigh);
+            - '{"reasoning_effort":"medium"}'    # requests override with reasoning_effort / enable_thinking=false
           env:
             - { name: HF_HUB_OFFLINE, value: "1" }
             - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
