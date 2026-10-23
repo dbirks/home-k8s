@@ -122,6 +122,18 @@ data:
             model: qwen3-8-27b
             limits:
               context: 262144
+            # Probed live 2026-10-23 on vLLM v0.32.0: reasoning_effort low/medium/xhigh think; `none` turns thinking
+            # off (vLLM maps it to enable_thinking=false); high/minimal/max are rejected (400) by Qwen's template.
+            # Server default is medium (--default-chat-template-kwargs). The gateway web chat's "off" sends
+            # chat_template_kwargs.thinking_enabled, which Qwen ignores (its key is enable_thinking); API clients
+            # sending reasoning_effort=none or Anthropic thinking.type=disabled do get thinking off.
+            reasoning:
+              levels:
+                - none
+                - low
+                - medium
+                - xhigh
+            # Vision verified (data-URI PNG, colors read correctly).
             inputs: [text, image]
       # PARKED 2026-10-22: flint on vLLM with our SM120 + fp8 KV patches (apps/flint-vllm.yaml). Rollback = uncomment,
       # drop qwen38-27b, flip both replicas. Always thinks (glm47), no levels; text only.
