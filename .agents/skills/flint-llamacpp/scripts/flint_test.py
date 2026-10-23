@@ -34,8 +34,8 @@ def anthropic():
 def one(i, max_tokens=600):
     d, dt = post("/v1/chat/completions", {"model": "flint", "max_tokens": max_tokens,
                  "messages": [{"role": "user", "content": f"Write a short Python function #{i} that returns the {i+2}th Fibonacci number, with a docstring. Then explain it in two sentences."}]})
-    t = d.get("timings", {})
-    return i, d["choices"][0]["finish_reason"], d["usage"]["completion_tokens"], t.get("predicted_per_second", 0), dt, "def " in (d["choices"][0]["message"].get("content") or "")
+    t = d.get("timings") or {}
+    return i, d["choices"][0]["finish_reason"], d["usage"]["completion_tokens"], t.get("predicted_per_second") or d["usage"]["completion_tokens"] / dt, dt, "def " in (d["choices"][0]["message"].get("content") or "")
 
 
 def parallel(n):
@@ -56,10 +56,14 @@ def longctx(n_words):
     text = filler[:mid] + " " + secret + " " + filler[mid:]
     d, dt = post("/v1/chat/completions", {"model": "flint", "max_tokens": 2048,
                  "messages": [{"role": "user", "content": text + "\n\nWhat is the vault code mentioned above? Reply with just the code."}]})
-    t = d["timings"]
-    print("LONGCTX prompt %d tok: prefill %.0f tok/s (%.1fs), decode %.0f tok/s, answer=%r" % (
-        t["prompt_n"], t["prompt_per_second"], t["prompt_ms"] / 1000, t["predicted_per_second"], (d["choices"][0]["message"].get("content") or "").strip()[:60]))
-
+    t = d.get("timings")
+    if t:
+        print("LONGCTX prompt %d tok: prefill %.0f tok/s (%.1fs), decode %.0f tok/s, answer=%r" % (
+            t["prompt_n"], t["prompt_per_second"], t["prompt_ms"] / 1000, t["predicted_per_second"], (d["choices"][0]["message"].get("content") or "").strip()[:60]))
+    else:
+        u = d["usage"]
+        print("LONGCTX prompt %d tok, %d out: total %.1fs (prefill+decode), answer=%r" % (
+            u["prompt_tokens"], u["completion_tokens"], dt, (d["choices"][0]["message"].get("content") or "").strip()[:60]))
 
 if MODE in ("all", "tools"): tools()
 if MODE in ("all", "anthropic"): anthropic()

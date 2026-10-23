@@ -11,15 +11,27 @@ Image `ghcr.io/dbirks/vllm-openai:flint-sm120-*` from `build/vllm-flint/Dockerfi
 thread: (1) gate `_flint_kernels()` on `is_device_capability_family(100)` so SM120 takes stock layers
 (Marlin NVFP4 linear + MoE, FlashInfer attention with sinks; without it: "No supported CUDA architectures
 found for major versions [9, 10]"); (2) `pip install gguf>=0.19.0`; (3) delete `/usr/local/cuda-*/compat`.
-- KV is BF16 only: `FlintAttention` asserts `kv_cache_dtype in ("auto","bfloat16")` because its fused
-  Triton `qk_norm_rope_cache` writes the cache itself, even on the stock path. `--kv-cache-dtype fp8`
-  dies at init. FP8 would need a patch that skips the fused write on non-SM100 and lets
-  `Attention` write the cache (plus checking FlashInfer fp8 + sinks on SM120).
-- 55000 MB slice, `--gpu-memory-utilization 0.90`: weights 21.9 GiB, KV 25.2 GiB = 790,158 tokens
-  (3.0x full 262K requests), load ~2 min from the HDD + ~1 min graphs. Pass the GGUF DIRECTORY as the model.
-- Measured 2026-10-22 with live Collective traffic on top: 101 tok/s single (stock layers; llama.cpp did
-  200), 425/676/995 tok/s aggregate at 4/8/16, 159K-token needle in 21 s total (llama.cpp: 57 s prefill);
-  live peaks 1,228 tok/s generation at 19 running; prefix cache hit 74-86%.
+- KV is FP8 since 2026-10-22 (image `flint-sm120-fp8kv-*`, patch `build/vllm-flint/fp8_kv.py`). Stock
+  `FlintAttention` asserts a BF16 cache because its fused Triton `qk_norm_rope_cache` writes the cache itself.
+  The patch passes no cache views to that kernel when `--kv-cache-dtype fp8` (it still norms/ropes q and k,
+  k in place) and calls vLLM's `unified_kv_cache_update` (reshape_and_cache_flash quantizes) before
+  `unified_attention_with_output`. FlashInfer on SM120 resolves Q=bf16 for fa2 prefill + XQA decode with an
+  e4m3 cache, sinks + sliding window OK. Scales are uncalibrated 1.0 (vLLM warns; the 159K needle still
+  passes). The SM100 Flint decode kernels read BF16, so the patch refuses fp8 there. Rollback = drop the flag.
+- Memory: slice 56800 MiB (every MiB HAMi has left beside CLEF 25000 + 2x TTS 8000) with
+  `--kv-cache-memory 30 GiB` instead of `--gpu-memory-utilization`: 1,882,584 tokens (7.2x full 262K
+  requests), pod at 55,233 of 56,800 MiB. vLLM's own startup line "`--kv-cache-memory=N` to fully utilize gpu
+  memory" is the ceiling to size against; leave ~1.5 GiB under it.
+- Why it mattered: under real agent load (avg prompt ~98K tokens) the old 790K BF16 pool held only 6-8
+  requests; the rest waited ~45 s and evicted prefixes got re-prefilled (hit rate fell from ~75% to ~6%).
+  Diagnose with the engine log (`GPU KV cache usage` ~90%+, `Waiting`/`Deferred` > 0) and
+  `/metrics` `vllm:request_queue_time_seconds`, `vllm:prefix_cache_hits_total / _queries_total`.
+- The 300 W cap shows as `clocks_throttle_reasons.active 0x4` (SW power cap) with SM ~1.2 GHz of 3.09:
+  prefill is compute-bound, so it is roughly proportionally slower. Stability trade-off, see gpu-power-management.
+- After FP8 + 30 GiB (light live load): 236 tok/s single, 787/1286/1928 tok/s aggregate at 4/8/16;
+  159K needle found in 21.6 s; tool calls and `/v1/messages` thinking blocks OK.
+- First BF16 measurements (55000 slice, util 0.90, 25.18 GiB = 790,158 tokens), with live traffic on top:
+  101 tok/s single, 425/676/995 tok/s at 4/8/16, 159K needle in 21 s.
 - vLLM logs stats only while busy: a silent log is idle, not hung (check `/health`).
 
 ## Why llama.cpp was parked
