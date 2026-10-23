@@ -1,6 +1,6 @@
 name: build-vllm-flint
 
-# vLLM day-0 Flint image + SM120 arch gate + gguf (build/vllm-flint/Dockerfile), pushed to GHCR (#158).
+# vLLM day-0 Flint image + SM120 arch gate + gguf + fp8 KV patch (build/vllm-flint/Dockerfile), pushed to GHCR (#158).
 # Pure-Python overlay, no CUDA compile. Manual trigger only.
 on:
   workflow_dispatch:
