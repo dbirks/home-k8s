@@ -22,7 +22,7 @@ metadata:
   labels:
     app.kubernetes.io/name: qwen38-27b
 spec:
-  replicas: 1                     # LIVE 2026-10-22 in place of flint (same 56800 MiB slice)
+  replicas: 0                     # PARKED 2026-10-24: Pennyroyal Flash-Next has the whole card. Rollback = 1 (pennyroyal to 0 first).
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }

@@ -92,7 +92,7 @@ metadata:
   namespace: default
   labels: { app: qwen3-tts, model: base }
 spec:
-  replicas: 1
+  replicas: 0                     # DOWN 2026-10-24: Pennyroyal Flash-Next has the whole card. Rollback = 1.
   strategy: { type: Recreate }        # no surge: a 2nd HAMi slice would not fit
   selector:
     matchLabels: { app: qwen3-tts, model: base }
@@ -145,7 +145,7 @@ metadata:
   namespace: default
   labels: { app: qwen3-tts, model: voicedesign }
 spec:
-  replicas: 1
+  replicas: 0                     # DOWN 2026-10-24: Pennyroyal Flash-Next has the whole card. Rollback = 1.
   strategy: { type: Recreate }
   selector:
     matchLabels: { app: qwen3-tts, model: voicedesign }
