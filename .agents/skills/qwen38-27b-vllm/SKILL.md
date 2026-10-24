@@ -18,7 +18,7 @@ MTP head and vision tower. Published GPQA-D 88.92 -> 88.01, Terminal-Bench 75.56
 `unsloth/...-NVFP4` has no published evals.
 
 ## Flags (see the manifest comments)
-Recipe recipes.vllm.ai/Qwen/Qwen3.8-27B + NVIDIA's card: `--kv-cache-dtype fp8_e4m3`,
+Recipe recipes.vllm.ai/Qwen/Qwen3.8-27B + NVIDIA's card: `--kv-cache-dtype nvfp4` (fp8_e4m3 until 2026-10-24, see below),
 `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'` (4 crashed 0.27.1),
 `--tool-call-parser qwen3_coder --reasoning-parser qwen3`, `--enable-prefix-caching` (hybrid model: vLLM
 picks mamba cache mode `align`), `--max-num-seqs 24`, `--max-num-batched-tokens 8192`,
@@ -41,6 +41,23 @@ Qwen's template accepts `reasoning_effort` xhigh (Qwen's default), medium, low O
   thinking cannot be off-by-default with working levels on stock vLLM: default is medium.
 - The Collective web chat's "off" sends `chat_template_kwargs.thinking_enabled` (Qwen ignores it); API
   clients are fine (e-gineering/llm-collective#84). Collective declares levels none/low/medium/xhigh.
+
+## Prefix-cache collapse and the NVFP4 KV fix (2026-10-24)
+Symptom under agent load with the fp8 KV pool (741K tokens): KV 77-99%, 3-4 waiting, preemptions climbing,
+prefix-cache hit rate fell to 2-4%, a follow-up turn of a just-sent 24K/92K prompt re-prefilled fully (87-164 s),
+TTFT up to 241 s. Cause: an overload spiral. ~6K tok/s of prompt offered vs ~3K tok/s of prefill at 300 W, so it
+only keeps up with >50% cache hits; with the pool full, an agent's cached prefix is freed between turns and
+reused by others within seconds, every miss adds a full prefill, which evicts more. Not a bug: at idle a
+222K resend was 2.4 s.
+Fix: `--kv-cache-dtype nvfp4` (stock in vLLM >= 0.32 on SM12x, XQA decode) -> 1,225,765 tokens (1.65x; the
+linear-attention state pages do not shrink). Same quality.py 15/15 and tools OK. First 10 min under heavier load
+(17.6 req/min, 31K avg prompt): hit 83%, 0 preemptions, queue 0.06 s, TTFT 2.2 s, KV 21-31%.
+Diagnose it again with /metrics deltas over a window: prefix_cache_hits/queries, num_preemptions_total,
+request_queue_time, TTFT, plus `GPU KV cache usage` / `Waiting` in the engine log. Do not trust the log's
+"Prefix cache hit rate" alone (it is a long trailing average). Next levers if it recurs: lower concurrency
+(fewer agents evicting each other), and a chat template that accepts non-leading system messages if a client
+sends inline system messages on /v1/messages (vLLM warns it merges them into the leading system prompt,
+which breaks the prefix every turn). Host RAM (~7 GB free) rules out CPU KV offload.
 
 ## pi
 `~/.pi/agent/models.json` `collective` / `qwen3-8-27b` has `thinkingLevelMap`
