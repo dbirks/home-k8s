@@ -6,8 +6,8 @@
 # hybrid model.
 #
 # Flags follow the vLLM recipe (recipes.vllm.ai/Qwen/Qwen3.8-27B) and NVIDIA's model card:
-#   --kv-cache-dtype fp8_e4m3 (NVIDIA's own serve command; KV only lives on the 16 full-attention layers of 64,
-#     32 KiB/token in fp8), MTP 3 (the checkpoint keeps the MTP head in BF16), qwen3 reasoning parser,
+#   --kv-cache-dtype nvfp4 since 2026-10-24 (was fp8_e4m3 per NVIDIA's serve command; the 741K-token pool was full
+#     under agent load, prefix-cache hits fell to ~2% and every turn re-prefilled; KV only on the 16 full-attention layers), MTP 3 (the checkpoint keeps the MTP head in BF16), qwen3 reasoning parser,
 #     qwen3_coder tool parser. Vision tower included (Qwen3_5ForConditionalGeneration).
 # HAMi shows vLLM a 56800 MiB GPU (same slice Flint had), so --gpu-memory-utilization is a fraction of the SLICE.
 # Weights: apps/qwen38-27b-models.yaml (HDD PVC, pinned + sha-checked).
@@ -58,7 +58,8 @@ spec:
             - "--gpu-memory-utilization"
             - "0.90"                      # of the 56800 MiB HAMi slice; tune from the startup log
             - "--kv-cache-dtype"
-            - "fp8_e4m3"
+            - "nvfp4"                     # 2026-10-24: was fp8_e4m3 (741K tokens). Stock vLLM >= 0.32 NVFP4 KV on SM12x
+                                          # (#46963, XQA decode #60452): ~2x pool so agents' prefixes survive between turns.
             - "--enable-prefix-caching"
             - "--speculative-config"
             - '{"method":"mtp","num_speculative_tokens":3}'
