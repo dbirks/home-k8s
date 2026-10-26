@@ -45,7 +45,7 @@
 # lossy mp3 pass so the shim gets the original recording. If the Collective ever accepts
 # other formats, point AUDIO_STT_OPENAI_API_BASE_URL straight at it and drop the shim.
 #
-# TTS (read aloud + voice calls): AUDIO_TTS_ENGINE=openai pointed straight at the Collective's phonon-31m-en
+# TTS (read aloud + voice calls): AUDIO_TTS_ENGINE=openai pointed straight at the Collective's phonon-31m
 # (Gradium Phonon, CPU on dave-droid, apps/phonon-tts.yaml). Open WebUI sends {model, input, voice} and gets mp3
 # back, which is Phonon's default, so no shim is needed. Its voice picker can't list the Collective's voices
 # (it GETs <base>/audio/voices without the key and falls back to OpenAI's names), so the Phonon server aliases
@@ -137,12 +137,12 @@ spec:
               valueFrom: { secretKeyRef: { name: openwebui-llmc, key: LLMC_API_KEY } }
             - { name: AUDIO_STT_MODEL, value: "qwen3-asr-1-7b" }
             - { name: BYPASS_PYDUB_PREPROCESSING, value: "true" }
-            # --- TTS: Collective phonon-31m-en, direct (see header) ---
+            # --- TTS: Collective phonon-31m, direct (see header) ---
             - { name: AUDIO_TTS_ENGINE, value: "openai" }
             - { name: AUDIO_TTS_OPENAI_API_BASE_URL, value: "https://llm-collective.e-gineering.com/v1" }
             - name: AUDIO_TTS_OPENAI_API_KEY
               valueFrom: { secretKeyRef: { name: openwebui-llmc, key: LLMC_API_KEY } }
-            - { name: AUDIO_TTS_MODEL, value: "phonon-31m-en" }
+            - { name: AUDIO_TTS_MODEL, value: "phonon-31m" }
             - { name: AUDIO_TTS_VOICE, value: "Harper" }
             # --- no telemetry / phoning home ---
             - { name: SCARF_NO_ANALYTICS, value: "true" }

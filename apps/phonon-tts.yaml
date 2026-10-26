@@ -2,7 +2,7 @@
 #
 # Official Rust server ghcr.io/gradium-ai/ptts-openai-server 0.4.2 (OpenAI POST /v1/audio/speech), CPU only:
 # no GPU resource, no runtimeClassName. Lives on dave-droid (i7-6700K, AVX2, 64 GB) because the main node is
-# short on host RAM. Contributed to the LLM Collective as `phonon-31m-en` (types: [speech]); Open WebUI's
+# short on host RAM. Contributed to the LLM Collective as `phonon-31m` (types: [speech]); Open WebUI's
 # read-aloud / voice mode uses it through the Collective.
 #
 # LICENCE: only phonon-31m-en is Apache-2.0. The 40m and multilingual checkpoints are CC BY-NC 4.0 and must

@@ -1,6 +1,6 @@
 ---
 name: phonon-tts
-description: Run Gradium Phonon TTS (phonon-31m-en, q8, CPU only) on dave-droid behind the LLM Collective as phonon-31m-en, and as Open WebUI's read-aloud and voice-call voice. Covers offline asset staging, licences, voices and aliases, concurrency and CPU sizing, measuring latency and RTF, and upgrading. Use when changing apps/phonon-tts.yaml, adding voices, tuning its concurrency, debugging 429s, 400s or 502s on /v1/audio/speech, or swapping TTS engines.
+description: Run Gradium Phonon TTS (phonon-31m-en, q8, CPU only) on dave-droid behind the LLM Collective as phonon-31m, and as Open WebUI's read-aloud and voice-call voice. Covers offline asset staging, licences, voices and aliases, concurrency and CPU sizing, measuring latency and RTF, and upgrading. Use when changing apps/phonon-tts.yaml, adding voices, tuning its concurrency, debugging 429s, 400s or 502s on /v1/audio/speech, or swapping TTS engines.
 ---
 
 # Phonon TTS (CPU) on dave-droid
@@ -13,10 +13,10 @@ description: Run Gradium Phonon TTS (phonon-31m-en, q8, CPU only) on dave-droid 
 - Image: `ghcr.io/gradium-ai/ptts-openai-server:<ver>@sha256:<index digest>` (Rust server, official).
   The image holds no weights. At startup the wrapper picks the x86-64-v3 (AVX2) build; dave-droid's
   i7-6700K has AVX2.
-- Collective backend `phonon` (alias `phonon-31m-en`, `types: [speech]`) is set in both
+- Collective backend `phonon` (alias `phonon-31m`, upstream model id `phonon-31m-en`, `types: [speech]`) is set in both
   `apps/llm-collective-contributor.yaml` (concurrency 3) and `-dev.yaml` (concurrency 1). The two
   add up to the server's `PTTS_MAX_CONCURRENT_REQUESTS=4`.
-- Open WebUI calls the Collective directly (no shim): `AUDIO_TTS_MODEL=phonon-31m-en`,
+- Open WebUI calls the Collective directly (no shim): `AUDIO_TTS_MODEL=phonon-31m`,
   `AUDIO_TTS_VOICE=Harper`. See the open-webui skill.
 
 ## Licence gate (do not skip)
@@ -80,7 +80,7 @@ curl -s localhost:18881/v1/audio/speech -H 'Content-Type: application/json' \
   -d '{"input":"Hello from Phonon.","voice":"Harper"}' -o x.mp3
 # through the gateway (key from env, never echoed):
 curl -s https://llm-collective.e-gineering.com/v1/audio/speech -H "Authorization: Bearer $LLMC_API_KEY" \
-  -H 'Content-Type: application/json' -d '{"model":"phonon-31m-en","input":"Hi.","voice":"nova"}' -o y.mp3
+  -H 'Content-Type: application/json' -d '{"model":"phonon-31m","input":"Hi.","voice":"nova"}' -o y.mp3
 # intelligibility: ffmpeg -i y.mp3 -ar 16000 -ac 1 y.wav, then POST it to qwen3-asr-1-7b /v1/audio/transcriptions
 ```
 - To measure time to first audio, request `response_format: pcm` and time the arrival of the first

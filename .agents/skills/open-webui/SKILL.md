@@ -1,6 +1,6 @@
 ---
 name: open-webui
-description: Operate the tailnet Open WebUI chat app (apps/openwebui.yaml, openwebui.beluga-wyvern.ts.net) - tsidp SSO login, the LLM Collective as its model backend, Collective qwen3-asr speech-to-text through the WAV shim, Collective phonon-31m-en text-to-speech, the RAM-only voice cache, upgrades, and how to verify each piece headlessly. Use when changing Open WebUI settings, upgrading its image, rotating its Collective key, or when a setting in the manifest seems to be ignored or dictation fails.
+description: Operate the tailnet Open WebUI chat app (apps/openwebui.yaml, openwebui.beluga-wyvern.ts.net) - tsidp SSO login, the LLM Collective as its model backend, Collective qwen3-asr speech-to-text through the WAV shim, Collective phonon-31m text-to-speech, the RAM-only voice cache, upgrades, and how to verify each piece headlessly. Use when changing Open WebUI settings, upgrading its image, rotating its Collective key, or when a setting in the manifest seems to be ignored or dictation fails.
 ---
 
 # Open WebUI (tailnet chat app)
@@ -71,10 +71,10 @@ curl -s -H "Authorization: Bearer $LLMC_API_KEY" -F model=qwen3-asr-1-7b \
   -F file=@/tmp/x.webm http://127.0.0.1:18000/v1/audio/transcriptions   # {"text":"Front, center."}
 ```
 
-## Text-to-speech: Collective phonon-31m-en (no shim)
+## Text-to-speech: Collective phonon-31m (no shim)
 
 Read aloud and voice calls use `AUDIO_TTS_ENGINE=openai`, with the Collective as the base URL, the
-same `openwebui-llmc` key (it must be set explicitly, as for STT), `AUDIO_TTS_MODEL=phonon-31m-en`
+same `openwebui-llmc` key (it must be set explicitly, as for STT), `AUDIO_TTS_MODEL=phonon-31m`
 and `AUDIO_TTS_VOICE=Harper`. The engine is Gradium Phonon on CPU; see the phonon-tts skill.
 - Open WebUI posts `{model, input, voice}` and gets mp3 back, which is Phonon's default, so the
   formats already match.

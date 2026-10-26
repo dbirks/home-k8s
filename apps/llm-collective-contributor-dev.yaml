@@ -142,7 +142,7 @@ data:
         protocols: [openai]
         concurrency: 1
         models:
-          - alias: phonon-31m-en
+          - alias: phonon-31m            # English only (the Apache-2.0 checkpoint)
             model: phonon-31m-en
             types: [speech]
 ---

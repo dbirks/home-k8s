@@ -123,7 +123,7 @@ data:
         protocols: [openai]
         concurrency: 3
         models:
-          - alias: phonon-31m-en
+          - alias: phonon-31m            # English only (the Apache-2.0 checkpoint)
             model: phonon-31m-en
             types: [speech]
       # Qwen3.8-27B NVFP4 (nvidia ModelOpt) on STOCK vLLM v0.32.0 (apps/qwen38-27b-vllm.yaml), 2026-10-22, in place

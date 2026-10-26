@@ -78,7 +78,7 @@ kubectl create secret generic sops-age --namespace=flux-system \
 
 - Main deployment: `apps/vllm.yaml` — Qwen3.6-27B (coding), parked. (The Granite Speech STT sidecar and the standalone `granite-stt` were removed 2026-10-16; local ASR is deferred to woodduck, #155.)
 - TTS: `apps/qwen3-tts.yaml` — Qwen3-TTS 1.7B Base + VoiceDesign on vLLM-Omni (#156); legacy `apps/vllm-tts.yaml.hold` parked
-- CPU TTS: `apps/phonon-tts.yaml` — Gradium Phonon 31m-en (Apache-2.0) on dave-droid, Collective `phonon-31m-en`, Open WebUI's voice (#160; phonon-tts skill)
+- CPU TTS: `apps/phonon-tts.yaml` — Gradium Phonon 31m-en (Apache-2.0) on dave-droid, Collective `phonon-31m`, Open WebUI's voice (#160; phonon-tts skill)
 - Endpoints: `vllm.hoam.lan` (LLM). `speech.hoam.lan` is gone with granite-stt. TTS: `qwen3-tts-base` / `qwen3-tts-voicedesign` ClusterIP Services (apps/qwen3-tts.yaml, #156).
 - Qwen3.6-27B is a hybrid model (DeltaNet+Attention) — TurboQuant KV cache is NOT compatible, use fp8_e4m3
 - NVFP4 quantization leverages Blackwell FP4 tensor cores for native 4-bit compute
