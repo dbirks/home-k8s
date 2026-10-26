@@ -106,9 +106,10 @@ spec:
             - { name: SGLANG_FORWARD_UNKNOWN_TOOLS, value: "true" }
             - { name: MAX_RUNNING_REQUESTS, value: "6" }               # 2026-10-12: 4 -> 6 (Collective concurrency 6)
             - { name: MAX_MAMBA_CACHE_SIZE, value: "24" }
-            # MAX_TOTAL_TOKENS unset -> recipe CAP of 824,384 fp8 tokens (not a memory limit: boot leaves
-            # ~4 GB VRAM free after graphs; upstream qualified 1,000,000). Raising it is the quality-neutral
-            # way to grow the shared prefix cache; not done yet (needs approval).
+            # 2026-10-26: 1,000,000 fp8 tokens (was unset -> recipe CAP of 824,384, not a memory limit: boot left
+            # ~4 GB VRAM free after graphs; upstream qualified 1,000,000). The quality-neutral way to grow the
+            # shared prefix cache; costs ~2 GB of the post-boot VRAM headroom. Rollback = delete this line.
+            - { name: MAX_TOTAL_TOKENS, value: "1000000" }
             - { name: PENNY_REASONING_EFFORT, value: medium }
             - { name: HF_HUB_OFFLINE, value: "1" }
           ports:
