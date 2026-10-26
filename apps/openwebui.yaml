@@ -45,6 +45,17 @@
 # lossy mp3 pass so the shim gets the original recording. If the Collective ever accepts
 # other formats, point AUDIO_STT_OPENAI_API_BASE_URL straight at it and drop the shim.
 #
+# TTS (read aloud + voice calls): AUDIO_TTS_ENGINE=openai pointed straight at the Collective's phonon-31m-en
+# (Gradium Phonon, CPU on dave-droid, apps/phonon-tts.yaml). Open WebUI sends {model, input, voice} and gets mp3
+# back, which is Phonon's default, so no shim is needed. Its voice picker can't list the Collective's voices
+# (it GETs <base>/audio/voices without the key and falls back to OpenAI's names), so the Phonon server aliases
+# alloy/echo/fable/onyx/nova/shimmer to catalog voices; the default voice is the catalog voice Harper.
+#
+# ZERO DATA RETENTION for voice: Open WebUI caches every TTS result (mp3 + a JSON with the spoken TEXT) under
+# cache/audio/speech and every dictation upload + transcript under cache/audio/transcriptions, forever, on the
+# PVC. That directory is a RAM-backed emptyDir here, and the audio-cache-sweeper sidecar deletes anything older
+# than 10 minutes, so no voice audio or spoken text reaches disk or outlives a restart.
+#
 # No telemetry: the image already sets SCARF_NO_ANALYTICS/DO_NOT_TRACK/
 # ANONYMIZED_TELEMETRY; they are repeated below so they can't silently flip, and the
 # GitHub version check and community sharing are off.
@@ -126,6 +137,13 @@ spec:
               valueFrom: { secretKeyRef: { name: openwebui-llmc, key: LLMC_API_KEY } }
             - { name: AUDIO_STT_MODEL, value: "qwen3-asr-1-7b" }
             - { name: BYPASS_PYDUB_PREPROCESSING, value: "true" }
+            # --- TTS: Collective phonon-31m-en, direct (see header) ---
+            - { name: AUDIO_TTS_ENGINE, value: "openai" }
+            - { name: AUDIO_TTS_OPENAI_API_BASE_URL, value: "https://llm-collective.e-gineering.com/v1" }
+            - name: AUDIO_TTS_OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: openwebui-llmc, key: LLMC_API_KEY } }
+            - { name: AUDIO_TTS_MODEL, value: "phonon-31m-en" }
+            - { name: AUDIO_TTS_VOICE, value: "Harper" }
             # --- no telemetry / phoning home ---
             - { name: SCARF_NO_ANALYTICS, value: "true" }
             - { name: DO_NOT_TRACK, value: "true" }
@@ -147,9 +165,22 @@ spec:
             limits: { cpu: "2", memory: 2Gi }
           volumeMounts:
             - { name: data, mountPath: /app/backend/data }
+            - { name: audio-cache, mountPath: /app/backend/data/cache/audio }   # RAM only (see header)
+        # Deletes cached TTS/STT audio + text older than 10 minutes from the RAM-backed audio cache.
+        - name: audio-cache-sweeper
+          image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+          command: ["sh", "-c", "while :; do find /cache -type f -mmin +10 -delete; sleep 60; done"]
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts:
+            - { name: audio-cache, mountPath: /cache }
       volumes:
         - name: data
           persistentVolumeClaim: { claimName: openwebui-data }
+        - name: audio-cache
+          emptyDir: { medium: Memory, sizeLimit: 256Mi }
 ---
 apiVersion: v1
 kind: Service

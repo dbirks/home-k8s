@@ -112,6 +112,20 @@ data:
             model: Qwen3-ASR-1.7B
             types: [transcription]
             inputs: [audio]
+      # Gradium Phonon 31m-en q8 (Apache-2.0), CPU only on dave-droid (apps/phonon-tts.yaml, #160), POST
+      # /v1/audio/speech only; the server ignores `model`. Catalog voices only (GET /v1/audio/voices on the pod;
+      # OpenAI names alloy/echo/fable/onyx/nova/shimmer are aliased), mp3/opus/wav/pcm, speed must be 1.0,
+      # `instructions` ignored. ~0.45 s for a 3.4 s sentence, 33 s of speech in ~3.5 s (RTF ~0.11). The server
+      # runs 4 at once (more = immediate 429, no queue); 4 concurrent share the CPU (each ~4x slower, still
+      # faster than real time). prod 3 + dev 1 = the server's 4, so the contributor 429s before the server does.
+      - name: phonon
+        url: http://phonon-tts.default.svc.cluster.local:8880
+        protocols: [openai]
+        concurrency: 3
+        models:
+          - alias: phonon-31m-en
+            model: phonon-31m-en
+            types: [speech]
       # Qwen3.8-27B NVFP4 (nvidia ModelOpt) on STOCK vLLM v0.32.0 (apps/qwen38-27b-vllm.yaml), 2026-10-22, in place
       # of flint. Prefix caching + batched prefill; MTP 3; vision; tools (qwen3_coder) + reasoning (qwen3).
       # PARKED 2026-10-24: qwen38-27b at replicas 0 (Pennyroyal Flash-Next back). Rollback = uncomment, park pennyroyal, flip replicas.

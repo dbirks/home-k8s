@@ -18,6 +18,10 @@
 # PTTS_MAX_CONCURRENT_REQUESTS get an immediate 429 (no queue); keep the contributor's concurrency equal.
 # Voices: GET /v1/audio/voices. OpenAI's names (alloy, echo, ...) are aliased to catalog voices below, because
 # Open WebUI can't list the Collective's voices and falls back to offering OpenAI's names. speed must be 1.0.
+#
+# Measured on dave-droid 2026-10-26 (mp3, voice Harper): a 3.4 s sentence in 0.40-0.58 s, first audio after
+# ~0.2 s; 33 s of speech in 3.4-3.9 s (RTF ~0.11, ~9x real time). 2/3/4 concurrent long requests: 6.3/9.8/15 s
+# each (all still faster than real time); the 5th gets an instant 429. Skill: .agents/skills/phonon-tts.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -165,9 +169,11 @@ spec:
             httpGet: { path: /health, port: http }
             periodSeconds: 10
             timeoutSeconds: 5
+          # Measured 2026-10-26: RSS 139 MiB idle, ~490 MiB peak with 1 request, 769 MiB peak with 4 concurrent;
+          # one generation keeps ~4-6 cores busy (15 CPU-s per 33 s of speech).
           resources:
-            requests: { cpu: "1", memory: 256Mi }
-            limits: { cpu: "6", memory: 1Gi }
+            requests: { cpu: "1", memory: 512Mi }
+            limits: { cpu: "6", memory: 1536Mi }
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           volumeMounts:
             - { name: assets, mountPath: /assets, readOnly: true }
