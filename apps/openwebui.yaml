@@ -304,7 +304,7 @@ data:
     app.router.add_get('/healthz', health)
 
     if __name__ == '__main__':
-        web.run_app(app, host='0.0.0.0', port=int(os.environ.get('PORT', '8000')), access_log=None)
+        web.run_app(app, host='0.0.0.0', port=int(os.environ.get('SHIM_PORT', '8000')), access_log=None)
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -327,6 +327,8 @@ spec:
           env:
             - { name: UPSTREAM_BASE_URL, value: "https://llm-collective.e-gineering.com/v1" }
             - { name: SEGMENT_SECONDS, value: "600" }
+            # Not PORT: the image already sets PORT=8080 for Open WebUI itself.
+            - { name: SHIM_PORT, value: "8000" }
             - { name: TMPDIR, value: /tmp }
             - { name: HOME, value: /tmp }
           ports:
