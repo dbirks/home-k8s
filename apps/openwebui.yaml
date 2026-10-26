@@ -23,17 +23,31 @@
 # (map the FQDN to the idp-egress egress ClusterIP, infra/tailscale-egress-idp.yaml).
 # Update the IP if that egress Service is ever deleted/recreated.
 #
-# LLM: the browser never talks to the model directly; the Open WebUI backend calls
-# OPENAI_API_BASE_URL with OPENAI_API_KEY (both per-connection config, not model
-# choice — pick models in the UI). It points at the resident serving engine,
-# pennyroyal-flashnext (apps/pennyroyal-flashnext.yaml, model id "pennyroyal");
-# the old vllm deployment it referenced is retired and the KServe per-model
-# workload-svc are scale-to-zero (KEDA), so they cold-start ~2min on first hit.
-# To attach a different custom OpenAI-compatible endpoint, change
-# OPENAI_API_BASE_URL below and re-encrypt apps/openwebui-secrets.enc.yaml with
-# the real key:
-#   sops apps/openwebui-secrets.enc.yaml   # edit OPENAI_API_KEY in place
-# (or recreate per the AGENTS.md recipe).
+# LLM: the LLM Collective gateway (https://llm-collective.e-gineering.com/v1, OpenAI
+# compatible, `Authorization: Bearer` key). The browser never talks to it; the backend
+# does, with the key from apps/openwebui-llmc.enc.yaml (LLMC_API_KEY, a Collective key
+# minted under Keys in the gateway UI). Models come from the gateway's /v1/models, so
+# `auto` plus every contributed model shows up; qwen3-asr-1-7b also appears in the
+# picker but only answers /v1/audio/transcriptions (choosing it for chat errors).
+#
+# CONFIG IS ENV-AUTHORITATIVE: ENABLE_PERSISTENT_CONFIG=false. Open WebUI otherwise
+# seeds env vars into its DB on first boot and ignores them forever after, which is how
+# this pod kept the retired pennyroyal URL. With it off, everything in this file wins on
+# every restart and Admin Panel edits do NOT survive a restart: change settings here.
+#
+# STT (mic dictation + voice calls): AUDIO_STT_ENGINE=openai pointed at the Collective's
+# qwen3-asr-1-7b, THROUGH openwebui-stt-shim (below). The Collective's ASR backend
+# (speech.cpp) accepts WAV only and caps uploads at 25 MB, while Open WebUI sends the
+# browser's webm/opus or an mp3 it transcodes itself, which the gateway rejects with
+# "is not a WAV file". The shim converts anything to 16 kHz mono PCM WAV, splits it into
+# 10-minute (~19 MB) pieces and forwards each with the caller's Authorization header; it
+# holds no key and stores nothing. BYPASS_PYDUB_PREPROCESSING=true skips Open WebUI's own
+# lossy mp3 pass so the shim gets the original recording. If the Collective ever accepts
+# other formats, point AUDIO_STT_OPENAI_API_BASE_URL straight at it and drop the shim.
+#
+# No telemetry: the image already sets SCARF_NO_ANALYTICS/DO_NOT_TRACK/
+# ANONYMIZED_TELEMETRY; they are repeated below so they can't silently flip, and the
+# GitHub version check and community sharing are off.
 #
 # ENABLE_WEBSOCKET_SUPPORT stays off: single replica + sticky-free HTTP is fine.
 # persistence: /app/backend/data holds webui.db (SQLite) + uploads — one writer,
@@ -69,8 +83,9 @@ spec:
           hostnames: [idp.beluga-wyvern.ts.net]
       containers:
         - name: openwebui
-          # Pinned to v0.11.4 by digest (verified against GHCR 2026-10-07).
-          image: ghcr.io/open-webui/open-webui:v0.11.4@sha256:9591b13f13843c7721c2b8eaf7382846c81b3ffe126526d1888d1fed50c6a33f
+          # Pinned to v0.12.4 by index digest (GHCR, verified 2026-10-25). 0.12.x carries
+          # DB migrations: no downgrade below 0.12 without restoring a webui.db backup.
+          image: ghcr.io/open-webui/open-webui:v0.12.4@sha256:a5b9e403d19154796850679c8c5d1295301cee954be8b84ddd62af92426558f7
           env:
             # Must match the address people open (builds the OAuth redirect etc.).
             - { name: WEBUI_URL, value: "https://openwebui.beluga-wyvern.ts.net" }
@@ -94,15 +109,29 @@ spec:
             - { name: OAUTH_PICTURE_CLAIM, value: "picture" }
             # Keep env vars authoritative (Admin Panel OAuth section read-only).
             - { name: ENABLE_OAUTH_PERSISTENT_CONFIG, value: "false" }
-            # --- LLM: custom OpenAI-compatible endpoint (see header) ---
+            # Env wins over the DB on every boot (see header).
+            - { name: ENABLE_PERSISTENT_CONFIG, value: "false" }
+            # --- LLM: the LLM Collective gateway (see header) ---
+            - { name: ENABLE_OLLAMA_API, value: "false" }
             - { name: ENABLE_OPENAI_API, value: "true" }
-            - { name: OPENAI_API_BASE_URL, value: "http://pennyroyal-flashnext:8001/v1" }
+            - { name: OPENAI_API_BASE_URL, value: "https://llm-collective.e-gineering.com/v1" }
             - name: OPENAI_API_KEY
-              valueFrom: { secretKeyRef: { name: openwebui-secrets, key: OPENAI_API_KEY } }
-            # RAG (doc summarisation etc.) uses the same endpoint.
-            - { name: RAG_OPENAI_API_BASE_URL, value: "http://pennyroyal-flashnext:8001/v1" }
-            - name: RAG_OPENAI_API_KEY
-              valueFrom: { secretKeyRef: { name: openwebui-secrets, key: OPENAI_API_KEY } }
+              valueFrom: { secretKeyRef: { name: openwebui-llmc, key: LLMC_API_KEY } }
+            - { name: DEFAULT_MODELS, value: "auto" }
+            # --- STT: Collective qwen3-asr-1-7b via the WAV shim (see header) ---
+            - { name: AUDIO_STT_ENGINE, value: "openai" }
+            - { name: AUDIO_STT_OPENAI_API_BASE_URL, value: "http://openwebui-stt-shim/v1" }
+            # Must be set explicitly: Open WebUI only inherits OPENAI_API_KEY for api.openai.com.
+            - name: AUDIO_STT_OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: openwebui-llmc, key: LLMC_API_KEY } }
+            - { name: AUDIO_STT_MODEL, value: "qwen3-asr-1-7b" }
+            - { name: BYPASS_PYDUB_PREPROCESSING, value: "true" }
+            # --- no telemetry / phoning home ---
+            - { name: SCARF_NO_ANALYTICS, value: "true" }
+            - { name: DO_NOT_TRACK, value: "true" }
+            - { name: ANONYMIZED_TELEMETRY, value: "false" }
+            - { name: ENABLE_VERSION_UPDATE_CHECK, value: "false" }
+            - { name: ENABLE_COMMUNITY_SHARING, value: "false" }
           ports:
             - { name: http, containerPort: 8080 }
           readinessProbe:
@@ -153,3 +182,184 @@ spec:
                 name: openwebui
                 port:
                   number: 80
+---
+# openwebui-stt-shim: any-format -> 16 kHz mono PCM WAV proxy in front of the
+# Collective's /v1/audio/transcriptions (see header). Reuses the Open WebUI image
+# (already on the node; it ships python3, aiohttp and ffmpeg), so there is no extra
+# image to build or pin. ClusterIP only; it forwards the caller's own bearer key.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openwebui-stt-shim
+  namespace: default
+data:
+  stt_shim.py: |
+    """WAV-normalising proxy for OpenAI /v1/audio/transcriptions.
+
+    The LLM Collective's ASR (speech.cpp) reads WAV only; Open WebUI sends whatever the
+    browser recorded (webm/opus, mp4, ogg) or an mp3 it made itself. This accepts any
+    format ffmpeg can read, converts it to 16 kHz mono 16-bit PCM WAV, splits it into
+    chunks under the upstream size cap, forwards each with the caller's own
+    Authorization header, and joins the text. It stores nothing and holds no key.
+    """
+    import asyncio
+    import json
+    import os
+    import shutil
+    import sys
+    import tempfile
+
+    import aiohttp
+    from aiohttp import web
+
+    UPSTREAM = os.environ.get('UPSTREAM_BASE_URL', 'https://llm-collective.e-gineering.com/v1').rstrip('/')
+    SEGMENT_SECONDS = int(os.environ.get('SEGMENT_SECONDS', '600'))  # 600 s x 32 kB/s = 19.2 MB, under the 25 MB cap
+    MAX_UPLOAD = int(os.environ.get('MAX_UPLOAD_BYTES', str(200 * 1024 * 1024)))
+    TIMEOUT = aiohttp.ClientTimeout(total=int(os.environ.get('UPSTREAM_TIMEOUT', '600')))
+
+
+    def log(*a):
+        print(*a, file=sys.stderr, flush=True)
+
+
+    async def ffmpeg(*args):
+        p = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y', *args,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, err = await p.communicate()
+        if p.returncode != 0:
+            raise RuntimeError(err.decode(errors='replace').strip()[-500:] or 'ffmpeg failed')
+
+
+    def err(status, msg):
+        return web.json_response(
+            {'error': {'message': msg, 'type': 'invalid_request_error'}}, status=status)
+
+
+    async def transcribe(request: web.Request):
+        fields, src = {}, None
+        work = tempfile.mkdtemp(prefix='stt-')
+        try:
+            reader = await request.multipart()
+            size = 0
+            async for part in reader:
+                if part.name == 'file':
+                    src = os.path.join(work, 'in')
+                    with open(src, 'wb') as f:
+                        while chunk := await part.read_chunk(1 << 16):
+                            size += len(chunk)
+                            if size > MAX_UPLOAD:
+                                return err(413, 'audio file too large')
+                            f.write(chunk)
+                elif part.name:
+                    fields[part.name] = await part.text()
+            if not src:
+                return err(400, 'missing file field')
+
+            wav = os.path.join(work, 'audio.wav')
+            try:
+                await ffmpeg('-i', src, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'wav', wav)
+                await ffmpeg('-i', wav, '-f', 'segment', '-segment_time', str(SEGMENT_SECONDS),
+                             '-c', 'copy', os.path.join(work, 'seg%04d.wav'))
+            except RuntimeError as e:
+                return err(400, f'could not decode audio: {e}')
+            segs = sorted(n for n in os.listdir(work) if n.startswith('seg'))
+
+            headers = {}
+            if 'Authorization' in request.headers:
+                headers['Authorization'] = request.headers['Authorization']
+            texts = []
+            async with aiohttp.ClientSession(timeout=TIMEOUT) as s:
+                for i, name in enumerate(segs):
+                    form = aiohttp.FormData()
+                    for k, v in fields.items():
+                        form.add_field(k, v)
+                    form.add_field('file', open(os.path.join(work, name), 'rb'),
+                                   filename=f'audio-{i}.wav', content_type='audio/wav')
+                    async with s.post(f'{UPSTREAM}/audio/transcriptions', data=form, headers=headers) as r:
+                        body = await r.read()
+                        if r.status != 200:
+                            return web.Response(status=r.status, body=body,
+                                                content_type=r.content_type or 'application/json')
+                        if len(segs) == 1:
+                            return web.Response(status=200, body=body,
+                                                content_type=r.content_type or 'application/json')
+                        try:
+                            texts.append(json.loads(body).get('text', '').strip())
+                        except ValueError:
+                            texts.append(body.decode(errors='replace').strip())
+            log(f'transcribed {len(segs)} segments, {size} bytes in')
+            return web.json_response({'text': ' '.join(t for t in texts if t)})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+    async def health(_):
+        return web.Response(text='ok')
+
+
+    app = web.Application(client_max_size=MAX_UPLOAD + (1 << 20))
+    app.router.add_post('/v1/audio/transcriptions', transcribe)
+    app.router.add_post('/audio/transcriptions', transcribe)
+    app.router.add_get('/healthz', health)
+
+    if __name__ == '__main__':
+        web.run_app(app, host='0.0.0.0', port=int(os.environ.get('PORT', '8000')), access_log=None)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui-stt-shim
+  namespace: default
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: openwebui-stt-shim } }
+  template:
+    metadata: { labels: { app: openwebui-stt-shim } }
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext: { runAsUser: 65534, runAsGroup: 65534, runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: shim
+          image: ghcr.io/open-webui/open-webui:v0.12.4@sha256:a5b9e403d19154796850679c8c5d1295301cee954be8b84ddd62af92426558f7
+          command: ["python3", "-I", "/shim/stt_shim.py"]
+          env:
+            - { name: UPSTREAM_BASE_URL, value: "https://llm-collective.e-gineering.com/v1" }
+            - { name: SEGMENT_SECONDS, value: "600" }
+            - { name: TMPDIR, value: /tmp }
+            - { name: HOME, value: /tmp }
+          ports:
+            - { name: http, containerPort: 8000 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: script, mountPath: /shim, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: script
+          configMap: { name: openwebui-stt-shim }
+        - name: tmp
+          emptyDir: { sizeLimit: 2Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui-stt-shim
+  namespace: default
+spec:
+  selector: { app: openwebui-stt-shim }
+  ports:
+    - { name: http, port: 80, targetPort: 8000 }

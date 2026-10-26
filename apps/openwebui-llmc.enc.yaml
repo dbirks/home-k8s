@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    LLMC_API_KEY: ENC[AES256_GCM,data:q1OhTIeg2IRe/lo1BHieg2fKTWsQ4SC4HJJi4WN/h7S+ubacyQQcCgCHyGPY4fG9vHqc94tnPRyQ0bC4AYHtbg==,iv:/J1dVxrbfVLZTU2JD82/LO/T66GOG0/7DYptapIVRrY=,tag:QF0WHSw1bVR034IyJz+rcg==,type:str]
+kind: Secret
+metadata:
+    name: openwebui-llmc
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBWVStBSnNkNjA3WWcyaXJ4
+            OXp3U3VERXVtcUt5aXh2Z2tMSHdVQVpFaTI4CjB4NXZmUlFaQUNVT0xGSWVOa2JW
+            MURHM0p5c1ZISy9oczZMc3QzajZxL2cKLS0tIHF0S0tmZ0ZNV01zdE1TUTc4NGpZ
+            YWlwK21aMll6R0N6b2FrQ21hUnVvQUkKaNzZifm1jlsLtOpGPBj5R5kwrwgoAfxb
+            XHc3HhM9ID7kP0xRW3ql7Ld2Nz2JkUKGTSWODy4zxnejUQEqPYqVQQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-26T03:00:09Z"
+    mac: ENC[AES256_GCM,data:oC35IozHwhjvAG4GOUgCi/RxKAGyEAdHm7mhA3yPn7xkRHTnTzl3rnagu3SAVlxGyqNCDaI6dd8r5WJGL45PIV/XvVMUTgaOowPfg0wPlk7PBoLi6Qllwx2h8aYqrCVRlJ5i+Mpj/OIApD0ZtDix3omRajxapqr5guTj+E46kQU=,iv:UFhiqXvIKruhNtovhO2P4TXWGhExK9gcVf1PhjH3fjc=,tag:FV0BXzoLV+h+e8EffivulA==,type:str]
+    version: 3.13.3
