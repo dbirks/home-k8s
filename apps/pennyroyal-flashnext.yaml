@@ -16,6 +16,10 @@
 # (~1.17M total) overflowed GPU KV + host HiCache, and LRU evicted exactly the context needed next.
 # So: HiCache 8 -> 12GB, --schedule-policy lpm (was fcfs), contributor concurrency 12 -> 8.
 # Mamba slots are NOT the bottleneck: leave MAX_MAMBA_CACHE_SIZE alone.
+# NVFP4 KV was evaluated the same day and NOT applied: this fork's HiCache host transfer is
+# unaware of FP4 KV (copies head_dim bytes/token from head_dim/2-wide rows, never copies the
+# block-scale buffers), so every host backup/restore would corrupt KV. It also needs
+# --decode-attention-backend trtllm_mha. Details and the safer lever: the skill.
 #
 # Fixed by the upstream recipe (no env override): port 8001, --served-model-name pennyroyal, context
 # 524,288, FP8 KV, NEXTN 3/1/4 + FR-Spec, --reasoning-parser qwen3, --tool-call-parser qwen3_coder,
@@ -102,7 +106,9 @@ spec:
             - { name: SGLANG_FORWARD_UNKNOWN_TOOLS, value: "true" }
             - { name: MAX_RUNNING_REQUESTS, value: "6" }               # 2026-10-12: 4 -> 6 (Collective concurrency 6)
             - { name: MAX_MAMBA_CACHE_SIZE, value: "24" }
-            # MAX_TOTAL_TOKENS unset -> qualified 824,384 shared KV. 1,000,000 is a later, separate test.
+            # MAX_TOTAL_TOKENS unset -> recipe CAP of 824,384 fp8 tokens (not a memory limit: boot leaves
+            # ~4 GB VRAM free after graphs; upstream qualified 1,000,000). Raising it is the quality-neutral
+            # way to grow the shared prefix cache; not done yet (needs approval).
             - { name: PENNY_REASONING_EFFORT, value: medium }
             - { name: HF_HUB_OFFLINE, value: "1" }
           ports:

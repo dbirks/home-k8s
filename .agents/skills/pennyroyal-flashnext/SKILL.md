@@ -35,7 +35,7 @@ Manifests: `apps/pennyroyal-*.yaml(.hold)`, `apps/agentic-prefix-bench.yaml.hold
   closed). In-process GPU radix + host-RAM HiCache reuse still work; restart persistence is given up.
   /nixl is then a 64Mi RAM emptyDir (only namespace-identity.json lands there).
 - **Host RAM**: upstream default = 47.68GiB pinned PLE + 32GB pinned HiCache, impossible at 46GB. Use
-  `PENNY_PLE_BACKEND=nvme` and `PENNY_HICACHE_SIZE_GB` in single digits.
+  `PENNY_PLE_BACKEND=nvme` and a modest `PENNY_HICACHE_SIZE_GB` (12 since 2026-10-26; ~10.4 GiB node MemAvailable left).
 - **Driver**: toolchain is CUDA 13.3 (upstream qualified on driver 610.57.04) but the torch wheels are
   cu130, and the smoke Job PASSED on this node's 580.167.08 (2026-09-28): torch/matmul, sgl_kernel,
   flashinfer, triton imports, and a triton JIT kernel. Real-load nvcc-13.3 JIT is still unproven.
@@ -55,6 +55,56 @@ Manifests: `apps/pennyroyal-*.yaml(.hold)`, `apps/agentic-prefix-bench.yaml.hold
 - Agentic bench (70K prefix, 6 turns): cold TTFT 19.0s, warm TTFT 0.43s median, decode 165-217 tok/s.
 - Staging: rsync HDD to NVMe ~114MB/s (19 min for 137GB); prepare_ple_nvme.py took 2.5 min (48GB).
 
+## Prefix-cache capacity under multi-agent load (2026-10-26)
+Symptom: several agents with 190K-410K-token contexts (~1.17M total) take turns; cache hit collapses and
+every turn re-prefills from the shared 13,440-token system prompt (ReqTimeStats `cached_input_len=13440`).
+When the working set fits, hits are ~93% and TTFT ~0.2 s. Eviction is LRU, so it always drops the
+context needed next. Analyse a log with ReqTimeStats (token-weighted `cached_input_len / input_len`,
+queue/prefill ms) and `/metrics` deltas of `sglang:cached_tokens_total{cache_source=device|host}`.
+
+What is and is not the bottleneck:
+- **Mamba slots are not.** `max_running_requests` is clamped to 4 by 24 slots x 5 states/request, and
+  `mamba usage` stays low. Raising `MAX_MAMBA_CACHE_SIZE` only takes VRAM away from KV.
+- **The GPU KV pool is.** 824,384 fp8 tokens is a recipe **cap** (`configure_max_total_tokens 824384`,
+  overridable with `MAX_TOTAL_TOKENS`), not the memory limit. Boot leaves ~4.06 GB VRAM free after CUDA
+  graphs, and upstream qualified `MAX_TOTAL_TOKENS=1000000`. fp8 costs ~12.4 KB/token (target 9.44 GB +
+  MTP draft 0.78 GB for 824,384), so 1,000,000 needs ~2.2 GB more and leaves ~1.9 GB. That is the
+  quality-neutral next lever. Never lower it.
+- **The host HiCache tier is inclusive, not additive.** Write-through backs up every GPU node, and only
+  GPU-evicted leaves are host-evictable (`_is_host_leaf` requires `node.evicted`). So distinct cached
+  tokens are roughly max(device, host), not device + host. The boot log warns when the host is smaller
+  than the device pool. Host KV is ~13.3 KB/token (incl. the MTP layer) and gets ~83% of the setting, so
+  parity with 824K device tokens is `PENNY_HICACHE_SIZE_GB` ~13, and covering a ~1.2M-token working set
+  needs ~20. That is not affordable on 46 GB of RAM. Growing the GPU pool is the cheaper lever.
+  `--hicache-size` is split across host KV (+QSA) and host mamba in proportion to their GPU pool bytes
+  (`_split_hicache_size`). At 12: KV 750,656 tokens / 9.99 GB, mamba 1.42 GB, QSA 0.62 GB.
+- **Scheduling:** `--schedule-policy lpm` (sed-injected, fails closed) admits the waiting request with
+  the longest cached prefix first, instead of fcfs. Collective concurrency 8 (was 12) keeps fewer
+  contexts in flight.
+
+Applied 2026-10-26 (one restart): HiCache 8 to 12, lpm, contributor concurrency 12 to 8. Measured:
+- Boot ~6 min to "fired up". KV still 824,384 fp8. Server args showed `schedule_policy: lpm`,
+  `hicache_size: 12` and `hicache_storage_backend: None`.
+- Node MemAvailable was 13.1 GiB steady before. It rose to ~27 GiB while the old pod was gone, never
+  dipped during weight load, and fell to a 9.9 GiB minimum, ~10.4 GiB steady, once the pinned host pool
+  was allocated. Shmem went from 8.6 to 12.25 GiB. The 2026-09-28 "dip to 8.3 GB" was measured with
+  other pods resident.
+- fp8 quality probe: math 8/8, executed code 4/4, tools 3/3 (incl. round trip), and a 3-needle test at
+  256K tokens 3/3. Cold prefill 44 s; second turn 1.9 s with 256,000 cached. Spec accept length ~2.9-3.3.
+
+**NVFP4 KV: evaluated, NOT applied (do not enable on this fork without a fix).**
+- The access registry allows nvfp4 KV only with prefill=`flashinfer` (fp8 dequant workspace) and
+  decode=`trtllm_mha` (XQA native FP4 on SM120). The default backend here is flashinfer for both, which
+  fails `_handle_kv4_compatibility` and the decode access check, so you would need
+  `--decode-attention-backend trtllm_mha`. It also needs `MAX_TOTAL_TOKENS` raised (~1,465,536 at the
+  same bytes), or the pool stays capped at 824,384.
+- The blocker: `pool_host/mha.py` (MHATokenToKVPoolHost) assumes unpacked KV. It sizes tokens as
+  `head_num*head_dim*itemsize`, while FP4 rows are `head_dim/2` wide. `jit_transfer_hicache_one_layer`
+  moves only `k_buffer/v_buffer`, never `k_scale_buffer/v_scale_buffer`. With write-through HiCache,
+  every backup reads two tokens' worth and every host restore overwrites neighbours with stale scales:
+  silent KV corruption. Quick quality probes only hit GPU-resident prefixes, so they would not catch it.
+  Revisit only if upstream makes the HiCache host pool FP4-aware, or HiCache is disabled.
+
 ## Order of operations
 1. RadixArk download to HDD staging (`flashnext-radixark-download-*`), then retire that Job to `.hold`.
 2. Free NVMe space (user approves the list), unhold `pennyroyal-pvcs`.
@@ -66,5 +116,5 @@ Manifests: `apps/pennyroyal-*.yaml(.hold)`, `apps/agentic-prefix-bench.yaml.hold
 The llm.birks.dev KServe/Envoy/KEDA gateway stack is **gone** (history: issues #95/#135, teardown
 research #144). Consumers connect to the Service directly: the LLM Collective contributor runs
 `url: http://pennyroyal-flashnext.default.svc.cluster.local:8001` (protocols openai+anthropic,
-concurrency 4 = MAX_RUNNING_REQUESTS). Do not write Backend/AIServiceBackend/KEDA manifests — those
+concurrency 8 since 2026-10-26; SGLang runs 4 and queues the rest, the dev contributor runs 2). Do not write Backend/AIServiceBackend/KEDA manifests — those
 CRDs no longer exist on the cluster.
