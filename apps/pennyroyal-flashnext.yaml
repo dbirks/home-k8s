@@ -10,7 +10,12 @@
 #
 # HOST RAM (46GB, no swap) is the design constraint. Upstream's default profile pins a 47.68GiB PLE table
 # plus 32GB HiCache and cannot fit. So: PLE on NVMe (32MiB page pool + 2x16MiB staging + reclaimable
-# page cache), HiCache host tier 8GB (pinned) to start, then A/B 4/8/12.
+# page cache), HiCache host tier 12GB (pinned; 8 until 2026-10-26).
+#
+# 2026-10-26 tuning (see the pennyroyal-flashnext skill): several agents with 190K-410K contexts
+# (~1.17M total) overflowed GPU KV + host HiCache, and LRU evicted exactly the context needed next.
+# So: HiCache 8 -> 12GB, --schedule-policy lpm (was fcfs), contributor concurrency 12 -> 8.
+# Mamba slots are NOT the bottleneck: leave MAX_MAMBA_CACHE_SIZE alone.
 #
 # Fixed by the upstream recipe (no env override): port 8001, --served-model-name pennyroyal, context
 # 524,288, FP8 KV, NEXTN 3/1/4 + FR-Spec, --reasoning-parser qwen3, --tool-call-parser qwen3_coder,
@@ -50,7 +55,7 @@ spec:
           # NO PROMPT DATA ON DISK (user requirement, ZDR #98). The upstream recipe hard-codes
           # `--hicache-storage-backend nixl`, which persists prompt-derived KV/state to /nixl across
           # restarts; there is no env to turn it off. So run a copy of the recipe with exactly those
-          # three storage flags stripped. What remains: GPU radix prefix cache + an 8GB HOST-RAM HiCache
+          # three storage flags stripped. What remains: GPU radix prefix cache + a 12GB HOST-RAM HiCache
           # tier (both in-memory, gone on restart) -> multi-turn prefix reuse still works within the
           # process; only restart-survives-the-cache is given up. The patch FAILS CLOSED: if upstream
           # renames a flag, the grep below stops startup instead of silently persisting to disk.
@@ -66,10 +71,15 @@ spec:
               sed -i -e 's/ --hicache-storage-backend nixl//' \
                      -e '/--hicache-storage-prefetch-policy timeout/d' \
                      -e '/--hicache-storage-backend-extra-config/d' \
-                     -e 's/--enable-metrics /--enable-metrics --enable-cache-report /' "$R"
+                     -e 's/--enable-metrics /--enable-metrics --enable-cache-report /' \
+                     -e 's/--max-running-requests "\$MAX_RUNNING_REQUESTS"/& --schedule-policy lpm/' "$R"
               if grep -nE -- '--hicache-storage' "$R"; then
                 echo "[pennyroyal] FATAL: storage-backend flags still present; refusing to persist to disk" >&2; exit 1
               fi
+              # lpm (2026-10-26): admit the waiting request with the longest cached prefix first, so an
+              # agent whose context is still resident runs before one that would evict it. Fail closed.
+              grep -qF -- '--schedule-policy lpm' "$R" \
+                || { echo "[pennyroyal] FATAL: --schedule-policy lpm not applied (recipe changed?)" >&2; exit 1; }
               # SGLang hides usage.prompt_tokens_details unless asked, and LLM Collective meters
               # cached tokens per request: without this the gateway records a 0 that is
               # indistinguishable from a cold cache. Warn rather than fail: this is telemetry,
@@ -84,7 +94,8 @@ spec:
             - { name: TARGET_MODEL, value: /models/RadixArk-Qwen3.8-Flash-Next-NVFP4 }
             - { name: PENNY_PLE_BACKEND, value: nvme }
             - { name: PENNY_PLE_NVME_MODEL, value: /models/flash-next-ple }
-            - { name: PENNY_HICACHE_SIZE_GB, value: "8" }             # upstream 32 cannot fit; A/B 4/8/12
+            - { name: PENNY_HICACHE_SIZE_GB, value: "12" }            # upstream 32 cannot fit; 8 -> 12 on 2026-10-26.
+              # Split host KV vs host mamba in proportion to their GPU pool bytes (_split_hicache_size).
             - { name: CUDA_VISIBLE_DEVICES, value: "0" }
             - { name: SGLANG_SM120_ONLINE_MXFP8, value: "false" }     # A0 baseline; A1 flips to true
             - { name: SGLANG_MM_PREPROCESS_DEVICE, value: cpu }

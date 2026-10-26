@@ -154,8 +154,9 @@ data:
       - name: pennyroyal
         url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
         protocols: [openai, anthropic]   # SGLang serves /v1/chat/completions and /v1/messages natively
-        concurrency: 12        # SGLang runs 4 (mamba-slot cap; MAX_RUNNING_REQUESTS 6 is clamped) and queues the rest,
-                                # instead of the contributor 429ing at 6 (2026-10-24)
+        concurrency: 8         # SGLang runs 4 (MAX_RUNNING_REQUESTS 6 is clamped) and queues the rest. 12 -> 8 on
+                                # 2026-10-26: 12 agents' 190K-410K contexts overflowed GPU KV + host HiCache and thrashed
+                                # the prefix cache; fewer in flight keeps more of the working set resident.
         models:
           - alias: qwen3-8-flash-next
             model: pennyroyal
