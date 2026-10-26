@@ -1,6 +1,6 @@
 ---
 name: open-webui
-description: Operate the tailnet Open WebUI chat app (apps/openwebui.yaml, openwebui.beluga-wyvern.ts.net) - tsidp SSO login, the LLM Collective as its model backend, Collective qwen3-asr speech-to-text through the WAV shim, upgrades, and how to verify each piece headlessly. Use when changing Open WebUI settings, upgrading its image, rotating its Collective key, or when a setting in the manifest seems to be ignored or dictation fails.
+description: Operate the tailnet Open WebUI chat app (apps/openwebui.yaml, openwebui.beluga-wyvern.ts.net) - tsidp SSO login, the LLM Collective as its model backend, Collective qwen3-asr speech-to-text through the WAV shim, Collective phonon-31m-en text-to-speech, the RAM-only voice cache, upgrades, and how to verify each piece headlessly. Use when changing Open WebUI settings, upgrading its image, rotating its Collective key, or when a setting in the manifest seems to be ignored or dictation fails.
 ---
 
 # Open WebUI (tailnet chat app)
@@ -69,6 +69,40 @@ kubectl port-forward svc/openwebui-stt-shim 18000:80 &
 ffmpeg -loglevel error -i /usr/share/sounds/alsa/Front_Center.wav -c:a libopus /tmp/x.webm
 curl -s -H "Authorization: Bearer $LLMC_API_KEY" -F model=qwen3-asr-1-7b \
   -F file=@/tmp/x.webm http://127.0.0.1:18000/v1/audio/transcriptions   # {"text":"Front, center."}
+```
+
+## Text-to-speech: Collective phonon-31m-en (no shim)
+
+Read aloud and voice calls use `AUDIO_TTS_ENGINE=openai`, with the Collective as the base URL, the
+same `openwebui-llmc` key (it must be set explicitly, as for STT), `AUDIO_TTS_MODEL=phonon-31m-en`
+and `AUDIO_TTS_VOICE=Harper`. The engine is Gradium Phonon on CPU; see the phonon-tts skill.
+- Open WebUI posts `{model, input, voice}` and gets mp3 back, which is Phonon's default, so the
+  formats already match.
+- The voice list is OpenAI's six names. Open WebUI GETs `<base>/audio/voices` without the key, the
+  Collective answers 401 (logged as an ERROR, which is harmless), and it falls back to
+  alloy/echo/fable/onyx/nova/shimmer. The Phonon server aliases each of these to a catalog voice.
+  An unaliased name returns a 400.
+- `speed` must be 1.0: Phonon has no rate control. Open WebUI's frontend does not send it.
+- The call overlay fires one request per sentence without waiting for the previous one. A 429
+  (Collective concurrency is 3) shows as a toast and that sentence is skipped.
+
+## Zero data retention for voice: the audio cache is RAM
+
+Open WebUI writes every TTS result (the mp3 plus a JSON holding the spoken **text**) to
+`cache/audio/speech/` and every dictation upload plus its transcript to `cache/audio/transcriptions/`,
+and never deletes them. `/app/backend/data/cache/audio` is an `emptyDir` with `medium: Memory`
+(256Mi), and the `audio-cache-sweeper` sidecar deletes files older than 10 minutes. Nothing from voice
+reaches the PVC or survives a restart. Files written before 2026-10-26 still sit on the PVC, hidden
+under that mount.
+Check it:
+`kubectl exec deploy/openwebui -c openwebui -- grep cache/audio /proc/mounts` should show `tmpfs`.
+
+Verify TTS headlessly with the session JWT (see below):
+```bash
+curl -s -H "Authorization: Bearer $TOK" https://openwebui.beluga-wyvern.ts.net/api/v1/audio/config | jq '.tts|{ENGINE,MODEL,VOICE}'
+curl -s -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+  -d '{"input":"Voice check.","voice":"nova"}' -o t.mp3 https://openwebui.beluga-wyvern.ts.net/api/v1/audio/speech
+ffprobe -v error -show_entries format=format_name,duration -of csv=p=0 t.mp3   # mp3,1.2...
 ```
 
 ## SSO (tsidp)
