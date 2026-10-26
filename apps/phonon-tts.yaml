@@ -141,11 +141,13 @@ spec:
             - { name: PTTS_LANG, value: en }
             - { name: PTTS_QUANT, value: q8 }
             - { name: PTTS_DEVICE, value: cpu }
-            - { name: PTTS_MAX_CONCURRENT_REQUESTS, value: "2" }
+            - { name: PTTS_MAX_CONCURRENT_REQUESTS, value: "4" }
             # OpenAI's voice names -> catalog voices (Open WebUI only offers these names). Others -> Harper.
             - { name: PTTS_VOICE_ALIAS, value: "alloy=Harper,echo=Easton,fable=Toby,onyx=Miles,nova=Juniper,shimmer=Everly" }
             - { name: PTTS_OPENAI_VOICES, value: Harper }
-            - { name: RAYON_NUM_THREADS, value: "4" }   # trial: 4 physical cores (default 8 threads vs 6-CPU limit throttles)
+            # One shared 4-thread pool (the i7-6700K's physical cores). Default is 8 threads, which under the CPU
+            # limit throttled: 2 concurrent long requests took 8.2 s each vs 6.3 s with 4 threads; single is equal.
+            - { name: RAYON_NUM_THREADS, value: "4" }
             - { name: HF_HUB_OFFLINE, value: "1" }
             - { name: HF_HOME, value: /nonexistent }
           ports:
