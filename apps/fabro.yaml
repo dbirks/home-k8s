@@ -28,6 +28,8 @@
 # Docker daemon here and we do not mount one (never the node socket). Fabro's cron automations need
 # docker or daytona, so automations stay unavailable until an isolated executor is chosen (#161 M0).
 # flannel does not enforce NetworkPolicy, so none is declared (it would be decorative).
+# RESTARTS KILL IN-FLIGHT RUNS (they end failed: terminated; resume/rewind cannot recover local runs), so
+# do not roll this pod while something is running. A ConfigMap edit needs a manual pod delete to apply.
 apiVersion: v1
 kind: Namespace
 metadata:
