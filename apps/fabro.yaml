@@ -99,7 +99,7 @@ data:
     api_model = "qwen3-8-flash-next"
     aliases = ["pennyroyal"]
     limits = { context_tokens = 524288, max_output_tokens = 65536 }
-    capabilities = { text = true, images = true, tools = true, reasoning = true, caching = true, reasoning_effort = { low = true, medium = true, xhigh = true } }
+    capabilities = { text = true, images = true, tools = true, reasoning = true, caching = true, reasoning_effort = { low = true, medium = true, xhigh = true }, response_format = { json_object = true, json_schema = true }, tool_choice = { required = true, named = true } }
     protocol_options = { reasoning_effort_levels = true }
     small_default = true
 ---
@@ -146,7 +146,8 @@ spec:
             - { name: storage, mountPath: /storage }
       containers:
         - name: fabro
-          image: ghcr.io/fabro-sh/fabro:0.396.0-nightly.0@sha256:98c70fccb54468531003e6bfa0938bd7b4be0d95d3c5a7faf3dcc790d0eb33c7
+          # docker/fabro-local = upstream 0.396.0-nightly.0 (sha256:98c70fcc…) + bash/tools for the local sandbox.
+          image: ghcr.io/dbirks/fabro-local:0.396.0-nightly.0@sha256:1cebf183e2ed27623abb8948e87c1c4ce065bd43d9aa53157727195cd3c0bece
           # The image ENTRYPOINT (tini + entrypoint.sh) only chowns and drops to uid 1000 when started as root;
           # we start as 1000, so it goes straight to the CMD: `fabro server start --foreground --bind 0.0.0.0:$PORT`.
           env:
