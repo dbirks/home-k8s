@@ -96,6 +96,7 @@ data:
     # Pennyroyal (Qwen3.8-Flash-Next). The Collective declares levels none/low/medium/xhigh only.
     [llm.providers.collective.models."qwen3-8-flash-next"]
     display_name = "Qwen3.8 Flash-Next (Pennyroyal)"
+    api_model = "qwen3-8-flash-next"
     aliases = ["pennyroyal"]
     limits = { context_tokens = 524288, max_output_tokens = 65536 }
     capabilities = { text = true, images = true, tools = true, reasoning = true, caching = true, reasoning_effort = { low = true, medium = true, xhigh = true } }
