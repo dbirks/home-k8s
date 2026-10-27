@@ -1,0 +1,214 @@
+# Fabro (https://github.com/fabro-sh/fabro, MIT) — self-hosted "software factory": versioned DOT-graph
+# agent workflows (plan -> human gate -> implement -> test -> review) with run history. Issue #161.
+# EVALUATION deployment: tailnet-only, one trusted operator, no unattended automation yet.
+# Operate it via the fabro skill (.agents/skills/fabro).
+#
+# SHAPE: upstream's Kubernetes recommendation verbatim — one-replica StatefulSet, exclusive /storage PVC
+# (SQLite: runs, sessions, JWT keys, the VAULT), Service, Ingress. Never two replicas: the server assumes
+# sole ownership of /storage (hence OrderedReady + one replica; no surge pod during upgrades).
+# Lives on dave-droid (CPU only, plenty of RAM) so it never competes with Pennyroyal for the main node's 46GB.
+#
+# CONFIG IS IN GIT, NOT THE WIZARD: FABRO_CONFIG points at the ConfigMap below, which skips upstream's
+# browser install wizard (that wizard insists on a GitHub token/App step and writes settings onto the
+# PVC where Git can't see it). Edit settings here; a restart picks them up.
+#
+# AUTH: tailnet-only (Tailscale Ingress, fabro.beluga-wyvern.ts.net) + Fabro's `dev-token`. Fabro has no
+# generic OIDC (only dev-token and GitHub OAuth) and no RBAC: every authenticated user is a full admin.
+# Bootstrap secrets (SESSION_SECRET, FABRO_DEV_TOKEN) come from apps/fabro-secrets.enc.yaml. Read the
+# token from the cluster Secret when you need it; never paste it anywhere committed.
+#
+# MODEL: provider `collective` = the LLM Collective (OpenAI chat codec), model qwen3-8-flash-next
+# (Pennyroyal). Its key is NOT an env var: Fabro only reads provider keys from its vault
+# (`COLLECTIVE_API_KEY`, set once with `fabro secret set`, see the skill). Vault values are PLAINTEXT in
+# /storage/db/fabro.sqlite3 — treat this PVC like a secret.
+#
+# EXECUTION: only the `local` provider is enabled, i.e. agent tools run INSIDE this pod (non-root, no
+# service-account token, no privileges) with full egress and read access to /storage. Fine for trusted
+# smoke runs; NOT an isolation boundary for untrusted repo code. docker/daytona are off: there is no
+# Docker daemon here and we do not mount one (never the node socket). Fabro's cron automations need
+# docker or daytona, so automations stay unavailable until an isolated executor is chosen (#161 M0).
+# flannel does not enforce NetworkPolicy, so none is declared (it would be decorative).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fabro
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fabro-settings
+  namespace: fabro
+data:
+  settings.toml: |
+    _version = 1
+
+    [server.listen]
+    type = "tcp"
+    address = "0.0.0.0:32276"
+
+    [server.api]
+    url = "https://fabro.beluga-wyvern.ts.net/api/v1"
+
+    [server.web]
+    enabled = true
+    url = "https://fabro.beluga-wyvern.ts.net"
+
+    [server.auth]
+    methods = ["dev-token"]
+
+    [server.sandbox.providers.local]
+    enabled = true
+
+    [server.sandbox.providers.docker]
+    enabled = false
+
+    [server.sandbox.providers.daytona]
+    enabled = false
+
+    [server.artifacts]
+    provider = "local"
+    prefix = "artifacts"
+
+    [server.artifacts.local]
+    root = "/storage/objects"
+
+    # Pennyroyal serves the whole house at Collective concurrency 8; keep Fabro from taking most of it.
+    [server.scheduler]
+    max_concurrent_runs = 2
+
+    [server.logging]
+    level = "info"
+
+    [run.environment]
+    id = "local"
+
+    [run.model]
+    provider = "collective"
+    name = "qwen3-8-flash-next"
+
+    [llm.providers.collective]
+    display_name = "LLM Collective"
+    base_url = "https://llm-collective.e-gineering.com/v1"
+    auth = { type = "bearer" }     # key: vault COLLECTIVE_API_KEY
+    priority = 100
+    default_model = "qwen3-8-flash-next"
+
+    # Pennyroyal (Qwen3.8-Flash-Next). The Collective declares levels none/low/medium/xhigh only.
+    [llm.providers.collective.models."qwen3-8-flash-next"]
+    display_name = "Qwen3.8 Flash-Next (Pennyroyal)"
+    aliases = ["pennyroyal"]
+    limits = { context_tokens = 524288, max_output_tokens = 65536 }
+    capabilities = { text = true, images = true, tools = true, reasoning = true, caching = true, reasoning_effort = { low = true, medium = true, xhigh = true } }
+    protocol_options = { reasoning_effort_levels = true }
+    small_default = true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fabro
+  namespace: fabro
+spec:
+  selector: { app: fabro }
+  ports:
+    - { name: http, port: 80, targetPort: 32276 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: fabro
+  namespace: fabro
+  labels: { app: fabro }
+spec:
+  replicas: 1
+  serviceName: fabro
+  selector:
+    matchLabels: { app: fabro }
+  template:
+    metadata:
+      labels: { app: fabro }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # local-path is hostPath-backed, so fsGroup is NOT applied: chown once, as root, then run as 1000.
+        - name: chown
+          image: busybox:1.37
+          command: ["sh", "-c", "mkdir -p /storage/.home && chown -R 1000:1000 /storage && ls -ld /storage"]
+          securityContext: { runAsUser: 0 }
+          volumeMounts:
+            - { name: storage, mountPath: /storage }
+      containers:
+        - name: fabro
+          image: ghcr.io/fabro-sh/fabro:0.396.0-nightly.0@sha256:98c70fccb54468531003e6bfa0938bd7b4be0d95d3c5a7faf3dcc790d0eb33c7
+          # The image ENTRYPOINT (tini + entrypoint.sh) only chowns and drops to uid 1000 when started as root;
+          # we start as 1000, so it goes straight to the CMD: `fabro server start --foreground --bind 0.0.0.0:$PORT`.
+          env:
+            - { name: PORT, value: "32276" }
+            - { name: FABRO_CONFIG, value: /etc/fabro/settings.toml }
+            - { name: FABRO_WEB_URL, value: "https://fabro.beluga-wyvern.ts.net" }
+            - name: SESSION_SECRET
+              valueFrom: { secretKeyRef: { name: fabro-bootstrap, key: SESSION_SECRET } }
+            - name: FABRO_DEV_TOKEN
+              valueFrom: { secretKeyRef: { name: fabro-bootstrap, key: FABRO_DEV_TOKEN } }
+          ports:
+            - { name: http, containerPort: 32276 }
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "4", memory: 8Gi }      # local-provider runs build/test inside this pod
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          startupProbe:
+            httpGet: { path: /health, port: 32276 }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health, port: 32276 }
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /health, port: 32276 }
+            periodSeconds: 30
+            failureThreshold: 4
+          volumeMounts:
+            - { name: storage, mountPath: /storage }
+            - { name: settings, mountPath: /etc/fabro, readOnly: true }
+      volumes:
+        - { name: settings, configMap: { name: fabro-settings } }
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path      # binds on dave-droid; holds the plaintext vault -> back up encrypted only
+        resources: { requests: { storage: 20Gi } }
+---
+# Private tailnet ingress only (https://fabro.beluga-wyvern.ts.net), same pattern as openhands-ts / openwebui.
+# GitHub webhooks cannot reach this; any future webhook relay is a separate, path-restricted design.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fabro-ts
+  namespace: fabro
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [fabro]
+  rules:
+    - host: fabro
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fabro
+                port: { number: 80 }
