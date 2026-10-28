@@ -29,7 +29,7 @@
 # plaintext, issues, or skills). Until the account is registered the sidecar idles; registration is a
 # one-time `kubectl exec` (hermes-agent skill) that ends by touching /var/lib/signal-cli/hermes-registered.
 # signal-cli's dir holds the account's identity keys (and downloaded attachments): treat that PVC as a secret.
-# No SIGNAL_ALLOWED_USERS: unknown senders get a pairing code, approved with `hermes pairing approve signal CODE`.
+# Access: SIGNAL_ALLOWED_USERS (people) + SIGNAL_GROUP_ALLOWED_USERS (groups) from the secret; no pairing.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -107,6 +107,12 @@ spec:
             - { name: SIGNAL_HTTP_URL, value: "http://127.0.0.1:8080" }
             - name: SIGNAL_ACCOUNT
               valueFrom: { secretKeyRef: { name: hermes-signal, key: SIGNAL_ACCOUNT } }
+            # Allowlists (Signal UUIDs; group ID) live in the same SOPS secret. Setting SIGNAL_ALLOWED_USERS turns
+            # DM pairing OFF, so every person who may talk to Hermes (DM or group) must be listed there.
+            - name: SIGNAL_ALLOWED_USERS
+              valueFrom: { secretKeyRef: { name: hermes-signal, key: SIGNAL_ALLOWED_USERS } }
+            - name: SIGNAL_GROUP_ALLOWED_USERS
+              valueFrom: { secretKeyRef: { name: hermes-signal, key: SIGNAL_GROUP_ALLOWED_USERS } }
           ports:
             - { name: dashboard, containerPort: 9119 }
           resources:

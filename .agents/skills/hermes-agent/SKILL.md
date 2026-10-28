@@ -71,9 +71,15 @@ through `sops encrypt --filename-override apps/hermes-secrets.enc.yaml`.
      `touch /var/lib/signal-cli/hermes-registered`; the wrapper starts the daemon within a minute.
 - Hermes retries a failed platform with backoff up to 5 min, so it can take ~5 min after the daemon is up to see
   `signal` connect in `kubectl logs deploy/hermes -c hermes`. Check the daemon: `kubectl exec deploy/hermes -c hermes -- curl -s http://127.0.0.1:8080/api/v1/check`.
-- Access: no `SIGNAL_ALLOWED_USERS`, so unknown DMs get a pairing code. Approve with
-  `kubectl exec deploy/hermes -c hermes -- hermes pairing approve signal CODE` (the exec-shim already drops to uid
-  10000; there is no `s6-setuidgid` on PATH). `hermes pairing list` shows approved users (by Signal UUID). Groups are off (no `SIGNAL_GROUP_ALLOWED_USERS`).
+- Access (all values in `apps/hermes-signal.enc.yaml`, never plaintext): `SIGNAL_ALLOWED_USERS` = comma list of Signal
+  account UUIDs (numbers also work, but contacts with phone-number privacy only expose a UUID), `SIGNAL_GROUP_ALLOWED_USERS`
+  = group IDs. Setting the user allowlist DISABLES pairing, so list everyone, including the owner. Groups need BOTH the
+  group ID in the group list AND the sender in the user list. Find IDs over the daemon (the CLI can't run while it holds
+  the lock): `kubectl exec deploy/hermes -c hermes -- sh -c 'curl -s http://127.0.0.1:8080/api/v1/rpc -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"listGroups\",\"params\":{\"account\":\"$SIGNAL_ACCOUNT\"}}"'`
+  (`.result[].id` and `.members[].uuid`; write it to a chmod-600 scratch file, not the terminal log). The secret can't
+  be decrypted locally (no age private key), so a rebuild must re-supply every key in it.
+  Approving pairing without an allowlist: `kubectl exec deploy/hermes -c hermes -- hermes pairing approve signal CODE`
+  (the exec-shim drops to uid 10000). Group replies don't require an @mention (`SIGNAL_REQUIRE_MENTION` default false).
 - signal-cli logs the account number at daemon start; pod logs are not public, but don't paste them anywhere public.
 
 ## Gotcha: unsafe_control_permissions
