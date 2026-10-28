@@ -80,6 +80,7 @@ kubectl create secret generic sops-age --namespace=flux-system \
 - TTS: `apps/qwen3-tts.yaml` — Qwen3-TTS 1.7B Base + VoiceDesign on vLLM-Omni (#156); legacy `apps/vllm-tts.yaml.hold` parked
 - CPU TTS: `apps/phonon-tts.yaml` — Gradium Phonon 31m-en (Apache-2.0) on dave-droid, Collective `phonon-31m`, Open WebUI's voice (#160; phonon-tts skill)
 - Fabro (agent workflow server, #161): `apps/fabro.yaml`, tailnet-only `fabro.beluga-wyvern.ts.net`, dev-token auth, Collective model, local executor only (fabro skill)
+- Hermes Agent (#162): `apps/hermes-agent.yaml` on dave-droid, `hermes.beluga-wyvern.ts.net` with tsidp OIDC login, Collective model (hermes-agent skill)
 - Endpoints: `vllm.hoam.lan` (LLM). `speech.hoam.lan` is gone with granite-stt. TTS: `qwen3-tts-base` / `qwen3-tts-voicedesign` ClusterIP Services (apps/qwen3-tts.yaml, #156).
 - Qwen3.6-27B is a hybrid model (DeltaNet+Attention) — TurboQuant KV cache is NOT compatible, use fp8_e4m3
 - NVFP4 quantization leverages Blackwell FP4 tensor cores for native 4-bit compute
