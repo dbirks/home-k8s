@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    SIGNAL_ACCOUNT: ENC[AES256_GCM,data:Xfj2J8hgEuKPeZe6SR36HQ==,iv:z++pLsrX9pYKCAC+ughQrcHf5/TXAv8FybeDLRRVMsg=,tag:LhZmEBNQyrdASNSY+HySUQ==,type:str]
+kind: Secret
+metadata:
+    name: hermes-signal
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBieDhZdlJVVmYrYzRSR0xV
+            R044Zkc5b1VNRWIzNjA5RXJhdG5ZZHphS0RFCjFrVVgvTDU3eTcxR292KzZucVBu
+            UWNSa2cvZ3I5dWl4RGpwTUFQa3ZvOFEKLS0tIFZjb1cxak53YUYvRldCK2pGNFRQ
+            OTFBekZNeVBGK3IrZjR5Z3VQSE5RYzgKb1ODChSiX0yFjx8TDLxU0yprLK6jN9KE
+            pTQU6MajDf+xojYKzShQ172I98trRhL4RSjbGlo1dr5pNy99gEjbww==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-28T14:48:21Z"
+    mac: ENC[AES256_GCM,data:dn5+9COhU1L1j39kHq2gyr5m7go2SM51a/sGF3KELbX2nEkoXu8qA0WJ0rl5EGPFBGaaLg8iWg+zFo+TENk9N7MU3snqvNcoG4+ZCWLzJJ99oAAcAAeerwxAXTplY5p53r7uzExrYcTya1ShTvDHQEiTedLvwKu3OkZLerL6jhc=,iv:aDtCtHeQrmb237X0BjbZPMyAiyWfXzfs3YdJBkmGZXg=,tag:AJTNH62d5IGRDlQAAGrTEA==,type:str]
+    version: 3.13.3

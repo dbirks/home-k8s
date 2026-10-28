@@ -22,6 +22,14 @@
 # Server-side OIDC calls go to the tailnet-only issuer, which pods can't resolve: hostAliases maps it to the
 # idp egress ClusterIP (infra/tailscale-egress-idp.yaml; re-check if that egress is ever recreated).
 # flannel does not enforce NetworkPolicy, so none is declared.
+#
+# SIGNAL: official signal-cli sidecar (asamk/signal-cli, JVM build), HTTP daemon on 127.0.0.1:8080 inside the
+# pod only (never a Service). Hermes' own number is registered as a PRIMARY device (landline, voice code),
+# not linked to a phone. The number lives only in apps/hermes-signal.enc.yaml (public repo: never in
+# plaintext, issues, or skills). Until the account is registered the sidecar idles; registration is a
+# one-time `kubectl exec` (hermes-agent skill) that ends by touching /var/lib/signal-cli/hermes-registered.
+# signal-cli's dir holds the account's identity keys (and downloaded attachments): treat that PVC as a secret.
+# No SIGNAL_ALLOWED_USERS: unknown senders get a pairing code, approved with `hermes pairing approve signal CODE`.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -31,6 +39,16 @@ spec:
   accessModes: [ReadWriteOnce]
   storageClassName: local-path        # binds on dave-droid (WaitForFirstConsumer)
   resources: { requests: { storage: 20Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-signal-data
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path        # same node as hermes-data (one pod mounts both)
+  resources: { requests: { storage: 2Gi } }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -58,6 +76,14 @@ spec:
       terminationGracePeriodSeconds: 60
       securityContext:
         seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # local-path is hostPath-backed, so fsGroup is NOT applied: chown the signal-cli dir once.
+        - name: signal-chown
+          image: busybox:1.37
+          command: ["sh", "-c", "chown 999:999 /var/lib/signal-cli && chmod 700 /var/lib/signal-cli"]
+          securityContext: { runAsUser: 0 }
+          volumeMounts:
+            - { name: signal, mountPath: /var/lib/signal-cli }
       containers:
         - name: hermes
           image: docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
@@ -75,6 +101,9 @@ spec:
             # still boots before the key exists (the agent just can't answer until then).
             - name: COLLECTIVE_API_KEY
               valueFrom: { secretKeyRef: { name: hermes-secrets, key: COLLECTIVE_API_KEY, optional: true } }
+            - { name: SIGNAL_HTTP_URL, value: "http://127.0.0.1:8080" }
+            - name: SIGNAL_ACCOUNT
+              valueFrom: { secretKeyRef: { name: hermes-signal, key: SIGNAL_ACCOUNT } }
           ports:
             - { name: dashboard, containerPort: 9119 }
           resources:
@@ -100,6 +129,33 @@ spec:
           volumeMounts:
             - { name: data, mountPath: /opt/data }
             - { name: dshm, mountPath: /dev/shm }
+        - name: signal-cli
+          image: ghcr.io/asamk/signal-cli:0.14.9@sha256:a6b1fc309cd8e6bab1c239bd5afaffa978ae252921e6b529643e84e180e0c4aa
+          # Idle until registered (exec'ing register/verify needs the account unlocked), then the daemon.
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              C=/var/lib/signal-cli
+              until [ -f "$C/hermes-registered" ]; do
+                echo "[signal] account not registered yet; see the hermes-agent skill"; sleep 60
+              done
+              exec /opt/signal-cli/bin/signal-cli --config="$C" -a "$SIGNAL_ACCOUNT" daemon --http 127.0.0.1:8080
+          env:
+            - name: SIGNAL_ACCOUNT
+              valueFrom: { secretKeyRef: { name: hermes-signal, key: SIGNAL_ACCOUNT } }
+            - { name: JAVA_OPTS, value: "-Xmx384m" }
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          securityContext:
+            runAsUser: 999                       # image USER signal-cli (useradd --system)
+            runAsGroup: 999
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: signal, mountPath: /var/lib/signal-cli }
       volumes:
         - { name: data, persistentVolumeClaim: { claimName: hermes-data } }
+        - { name: signal, persistentVolumeClaim: { claimName: hermes-signal-data } }
         - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 1Gi } }
