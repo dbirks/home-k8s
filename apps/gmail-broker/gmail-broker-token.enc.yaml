@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    BROKER_TOKEN: ENC[AES256_GCM,data:MxDAK+ri0XgTZPD+PX16zHyyUobREHTaOkRQLJQCqqNhQ1HZUL3NIyrK3Va5j7n9C39O0zR9AV3SakH+JcYmqdlqUWznoY9HspG3MpLVIU/E3ZCjYykEzQ==,iv:YJmm1BXDgJ4RbWw9wdCrXuZSlwTpWIOio97oLB68vQ8=,tag:vpxdSb1vduZViEQ/KfW/+g==,type:str]
+kind: Secret
+metadata:
+    name: gmail-broker-token
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBxcXBFU2x2bFBhQjdlRlAv
+            RFk4QlR2S2RDb1FtOHlrbllJMVFwNDlpQlU4CjBTckdSSi84dm42RlplQ1RRa2Mw
+            bkZoVHpQMW9TVThKdjdUa2xVaHpMKzQKLS0tIEtRZlppb3VNYUFadGtrWXpzdFFV
+            bGJvUEJRYVlDTndwZTVlbkhTRk1IS0kKYuPLNyUTAAPz1nnig7Cal+S79JqUx3EQ
+            dHSqtYEAC6Ex1ORa/AZ4sVaiIPiqi3I6cKrcFp+WoceNhDshQvAKWw==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-28T17:21:37Z"
+    mac: ENC[AES256_GCM,data:sIYPQU8FMBCyLn6CRyVVPhsxm8wHxeuSqIHHU5QRK6FhRRmPyf47gBMKb/3E/R2RIXRNvrTvO3eJgzzuOjo1b5vfj/EgrzBLb7N8QwF1FMSuQqjKuaSpPjOIuBftj8Jdwg9vZmrKk+E/6f3Qrtn9W/NTbKhYIgNaYjtZKPyUggg=,iv:kTqHNCHzST1nlUOIQsLAYGFsKW7NyR/wHcxVq/E9mOE=,tag:M0lt8pwntK5eY2LwJecQUA==,type:str]
+    version: 3.13.3

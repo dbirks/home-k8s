@@ -113,6 +113,10 @@ spec:
               valueFrom: { secretKeyRef: { name: hermes-signal, key: SIGNAL_ALLOWED_USERS } }
             - name: SIGNAL_GROUP_ALLOWED_USERS
               valueFrom: { secretKeyRef: { name: hermes-signal, key: SIGNAL_GROUP_ALLOWED_USERS } }
+            # Bearer for the Gmail read+draft broker (apps/gmail-broker). It reaches ONLY the broker's tools;
+            # Hermes never holds a Google token. Used by config.yaml mcp_servers.gmail.headers.
+            - name: GMAIL_BROKER_TOKEN
+              valueFrom: { secretKeyRef: { name: gmail-broker-token, key: BROKER_TOKEN } }
           ports:
             - { name: dashboard, containerPort: 9119 }
           resources:

@@ -1,0 +1,89 @@
+# Gmail read + draft-only broker for Hermes (issue #162 Phase 5). Operate via the hermes-agent skill.
+#
+# WHY: Google has no draft-only scope (gmail.compose and gmail.modify both allow SEND), so Hermes must never
+# hold a Google token. This pod holds them and serves Hermes an MCP endpoint whose only tools are
+# search/read messages+threads and list/get/create/update drafts. Every outbound Gmail call passes one
+# method+path allowlist (no send, delete, import, modify) — see broker.py, the readable source.
+#
+# CODE: broker.py (stdlib only, no pip) shipped as ConfigMap gmail-broker-code.yaml. After editing broker.py
+# regenerate it:  kubectl create configmap gmail-broker-code -n default --from-file=broker.py=apps/gmail-broker/broker.py --dry-run=client -o yaml > apps/gmail-broker/gmail-broker-code.yaml
+#
+# SECRETS (all SOPS, all in this folder; nothing private in plaintext — this repo is public):
+#   gmail-broker-token        BROKER_TOKEN, the bearer Hermes presents (Hermes reads the same Secret)
+#   gmail-broker-oauth-client Google "Desktop app" OAuth client (client_id, client_secret)
+#   gmail-broker-acct-<alias> refresh_token + email for one Gmail account (written by the auth helper)
+# Adding an account = run the auth helper, then add its Secret to the `accounts` projected volume below.
+#
+# ISOLATION: separate pod + separate Secrets from Hermes; no SA token, non-root, read-only root fs.
+# Same namespace as Hermes (flannel enforces no NetworkPolicy, so a namespace would add nothing real);
+# the boundary is that Hermes only ever sees BROKER_TOKEN, which can do nothing but these tools.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gmail-broker
+  namespace: default
+  labels: { app: gmail-broker }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: gmail-broker }
+  template:
+    metadata:
+      labels: { app: gmail-broker }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: broker
+          image: docker.io/library/python:3.13.18-slim-trixie@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+          command: ["python3", "-I", "-u", "/app/broker.py"]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+            - name: BROKER_TOKEN
+              valueFrom: { secretKeyRef: { name: gmail-broker-token, key: BROKER_TOKEN } }
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: 10m, memory: 48Mi }
+            limits: { cpu: 500m, memory: 192Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 20
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 60
+          volumeMounts:
+            - { name: code, mountPath: /app, readOnly: true }
+            - { name: client, mountPath: /secrets/client, readOnly: true }
+            - { name: accounts, mountPath: /secrets/accounts, readOnly: true }
+      volumes:
+        - { name: code, configMap: { name: gmail-broker-code } }
+        - name: client
+          secret: { secretName: gmail-broker-oauth-client, optional: true }
+        # One source per authorized account: items map refresh_token/email to <alias>.refresh_token/<alias>.email.
+        - name: accounts
+          emptyDir: { sizeLimit: 1Mi }   # no accounts yet; replaced by a projected volume when the first is added
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gmail-broker
+  namespace: default
+spec:
+  selector: { app: gmail-broker }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
