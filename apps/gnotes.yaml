@@ -44,8 +44,10 @@ spec:
       enableServiceLinks: false
       containers:
         - name: gnotes
-          # Pinned to v1.3.0 by index digest (verified against GHCR 2026-10-07).
-          image: ghcr.io/justinmdickey/gnotes:1.3.0@sha256:e860cc5414436119fb8acdb5194d4f3b15c78e5bfbba11ae342a81c7fa1cef62
+          # Pinned to v1.8.0 by index digest (verified against GHCR 2026-10-28). 1.3.0 -> 1.8.0 ran the additive
+          # migrations 0011-0013 (tasks/inbox); 1.3.0 can't open the DB afterwards. Rollback copy of the 1.3.0 DB:
+          # /data/backup-v1.3.0-20261028/gnotes.db (scale to 0, copy it back over gnotes.db, pin 1.3.0).
+          image: ghcr.io/justinmdickey/gnotes:1.8.0@sha256:4357fdadd53e995b3fb7b251da949643628559509b6c0768083c9fa921ae1e6d
           env:
             # Websocket origin check + Secure cookie. Must match the address people open.
             - { name: GNOTES_PUBLIC_URL, value: "https://gnotes.beluga-wyvern.ts.net" }
