@@ -72,8 +72,8 @@ through `sops encrypt --filename-override apps/hermes-secrets.enc.yaml`.
 - Hermes retries a failed platform with backoff up to 5 min, so it can take ~5 min after the daemon is up to see
   `signal` connect in `kubectl logs deploy/hermes -c hermes`. Check the daemon: `kubectl exec deploy/hermes -c hermes -- curl -s http://127.0.0.1:8080/api/v1/check`.
 - Access: no `SIGNAL_ALLOWED_USERS`, so unknown DMs get a pairing code. Approve with
-  `kubectl exec deploy/hermes -c hermes -- hermes pairing approve signal CODE` (run as the hermes user if it complains
-  about file ownership). Groups are off (no `SIGNAL_GROUP_ALLOWED_USERS`).
+  `kubectl exec deploy/hermes -c hermes -- hermes pairing approve signal CODE` (the exec-shim already drops to uid
+  10000; there is no `s6-setuidgid` on PATH). `hermes pairing list` shows approved users (by Signal UUID). Groups are off (no `SIGNAL_GROUP_ALLOWED_USERS`).
 - signal-cli logs the account number at daemon start; pod logs are not public, but don't paste them anywhere public.
 
 ## Next phases (issue 162) — not done yet
