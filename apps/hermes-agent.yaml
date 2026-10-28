@@ -77,13 +77,16 @@ spec:
       securityContext:
         seccompProfile: { type: RuntimeDefault }
       initContainers:
-        # local-path is hostPath-backed, so fsGroup is NOT applied: chown the signal-cli dir once.
-        - name: signal-chown
+        # local-path is hostPath-backed (dirs created 0777, fsGroup NOT applied): own the signal-cli dir, and
+        # strip group/other write from /opt/data — Hermes refuses its gateway control socket otherwise
+        # ("unsafe_control_permissions"). s6 /init chowns /opt/data to hermes itself.
+        - name: perms
           image: busybox:1.37
-          command: ["sh", "-c", "chown 999:999 /var/lib/signal-cli && chmod 700 /var/lib/signal-cli"]
+          command: ["sh", "-c", "chown 999:999 /var/lib/signal-cli && chmod 700 /var/lib/signal-cli && chmod go-w /opt/data && ls -ld /opt/data /var/lib/signal-cli"]
           securityContext: { runAsUser: 0 }
           volumeMounts:
             - { name: signal, mountPath: /var/lib/signal-cli }
+            - { name: data, mountPath: /opt/data }
       containers:
         - name: hermes
           image: docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
