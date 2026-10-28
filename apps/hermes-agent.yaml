@@ -1,0 +1,101 @@
+# Hermes Agent (NousResearch, official image, raw manifests) — always-on personal agent. Issue #162.
+# Operate it via the hermes-agent skill (.agents/skills/hermes-agent).
+#
+# PROCESS MODEL: the image's ENTRYPOINT is s6-overlay's /init (PID 1 in this container). It starts as root
+# ONLY to chown /opt/data and seed config, then drops every supervised service (gateway, dashboard) to the
+# `hermes` user (uid 10000) via s6-setuidgid. So: runAsUser 0 at start, ALL caps dropped except the handful
+# that init/chown/setuid need, no privilege escalation, no SA token, no host mounts, no GPU.
+# `gateway run` is the CMD: the CMD itself is a heartbeat, s6 supervises the real gateway and restarts it.
+#
+# STATE: /opt/data (PVC on dave-droid, local-path): config.yaml, .env, state.db (SQLite WAL), memories,
+# skills, cron, logs. Hermes owns config.yaml (dashboard + `hermes config set` edit it), so it is NOT a
+# ConfigMap; what we set by hand is recorded in the skill. One replica + Recreate: never two gateways on
+# one data dir. Local-path is not a backup.
+#
+# DASHBOARD AUTH: Hermes' bundled self-hosted OIDC provider against tsidp (idp.beluga-wyvern.ts.net).
+# Hermes' docs say confidential clients are unsupported, but v0.22.5's code layers client_secret on top of
+# PKCE (HERMES_DASHBOARD_OIDC_CLIENT_SECRET), and tsidp only issues confidential clients — so it is direct,
+# no proxy. Any tsidp identity (= tailnet user) can log in; Hermes has no allowlist, so the tailnet ACL is
+# the user boundary. The dashboard binds 0.0.0.0 (in-pod), which force-engages the auth gate (fail closed).
+# The OpenAI-compatible API server (8642) stays off; only 9119 is exposed, via hermes-dashboard-tailscale-ingress.
+#
+# Server-side OIDC calls go to the tailnet-only issuer, which pods can't resolve: hostAliases maps it to the
+# idp egress ClusterIP (infra/tailscale-egress-idp.yaml; re-check if that egress is ever recreated).
+# flannel does not enforce NetworkPolicy, so none is declared.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-data
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path        # binds on dave-droid (WaitForFirstConsumer)
+  resources: { requests: { storage: 20Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes
+  namespace: default
+  labels: { app: hermes }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }          # one writer for state.db
+  selector:
+    matchLabels: { app: hermes }
+  template:
+    metadata:
+      labels: { app: hermes }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      hostAliases:
+        - ip: "10.109.232.240"           # ts-idp-egress ClusterIP
+          hostnames: [idp.beluga-wyvern.ts.net]
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: hermes
+          image: docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+          args: ["gateway", "run"]
+          env:
+            - { name: HERMES_DASHBOARD, value: "1" }
+            - { name: HERMES_DASHBOARD_HOST, value: "0.0.0.0" }
+            - { name: HERMES_DASHBOARD_PORT, value: "9119" }
+            - { name: HERMES_DASHBOARD_PUBLIC_URL, value: "https://hermes.beluga-wyvern.ts.net" }
+            - { name: HERMES_DASHBOARD_OIDC_ISSUER, value: "https://idp.beluga-wyvern.ts.net" }
+            - { name: HERMES_DASHBOARD_OIDC_CLIENT_ID, value: "49e3c44121567a4fab67116283f88af4" }   # tsidp client "hermes"
+            - name: HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: hermes-secrets, key: HERMES_DASHBOARD_OIDC_CLIENT_SECRET } }
+          ports:
+            - { name: dashboard, containerPort: 9119 }
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "2", memory: 4Gi }      # Chromium is the memory hog
+          securityContext:
+            runAsUser: 0                         # s6 /init: chown + setuid drop to uid 10000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+          # /api/status is unauthenticated by design (it reports auth_required). No liveness probe: s6 already
+          # restarts a crashed gateway/dashboard, and a liveness loop would kill the pod during OAuth setup or
+          # an LLM outage.
+          startupProbe:
+            httpGet: { path: /api/status, port: 9119 }
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /api/status, port: 9119 }
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - { name: data, mountPath: /opt/data }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: hermes-data } }
+        - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 1Gi } }
