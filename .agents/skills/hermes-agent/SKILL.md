@@ -76,6 +76,11 @@ through `sops encrypt --filename-override apps/hermes-secrets.enc.yaml`.
   10000; there is no `s6-setuidgid` on PATH). `hermes pairing list` shows approved users (by Signal UUID). Groups are off (no `SIGNAL_GROUP_ALLOWED_USERS`).
 - signal-cli logs the account number at daemon start; pod logs are not public, but don't paste them anywhere public.
 
+## Gotcha: unsafe_control_permissions
+`hermes chat` failing with `Gateway inaccessible: unsafe_control_permissions (/opt/data has mode 0777 ...)` means
+the data dir is group/other-writable (local-path creates 0777). The `perms` initContainer runs `chmod go-w /opt/data`
+on every start; if you see this, check that init ran. Smoke test: `kubectl exec deploy/hermes -c hermes -- hermes chat -q "run uname -s"`.
+
 ## Next phases (issue 162) — not done yet
 - **Gmail**: draft-only means a separate broker holding the tokens (gmail.compose can send at Google); never give Hermes a send-capable token.
 - **Bitwarden**: native browser_vault + `bw` CLI (needs a derived image), human unlock; no BW_SESSION/master password in env or PVC.
