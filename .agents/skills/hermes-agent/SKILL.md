@@ -1,6 +1,6 @@
 ---
 name: hermes-agent
-description: Operate the in-cluster NousResearch Hermes Agent (apps/hermes-agent.yaml, issue 162) - s6 process model and security context, tsidp OIDC dashboard login, config.yaml settings we set by hand, the LLM Collective provider and its key, how to exec in and verify, the Signal sidecar and its landline registration, and what is next (Gmail draft-only broker, Bitwarden). Use when changing, upgrading, debugging or extending Hermes.
+description: Operate the in-cluster NousResearch Hermes Agent (apps/hermes-agent.yaml, issue 162) - s6 process model and security context, tsidp OIDC dashboard login, config.yaml settings we set by hand, the LLM Collective provider and its key, how to exec in and verify, the Signal sidecar and its landline registration, the Gmail read+draft-only broker and its account helper, and what is next (Microsoft 365 read-only, Bitwarden). Use when changing, upgrading, debugging or extending Hermes.
 ---
 
 # Hermes Agent (in-cluster since 2026-10-28)
@@ -87,7 +87,34 @@ through `sops encrypt --filename-override apps/hermes-secrets.enc.yaml`.
 the data dir is group/other-writable (local-path creates 0777). The `perms` initContainer runs `chmod go-w /opt/data`
 on every start; if you see this, check that init ran. Smoke test: `kubectl exec deploy/hermes -c hermes -- hermes chat -q "run uname -s"`.
 
+## Gmail = read + draft-only broker (apps/gmail-broker/)
+- Why a broker: Google has no draft-only scope (`gmail.compose` and `gmail.modify` both SEND), and Hermes' own
+  docs say its deny rules are not a sandbox (anything the agent can read, it can use). Hermes' bundled options all
+  fail the no-send rule: Email platform (IMAP/SMTP, always replies), himalaya skill (CLI can send; creds readable
+  from the terminal), google-workspace skill (always requests gmail.send/modify, token under ~/.hermes), Nous managed
+  connectors (third party holds the grant).
+- `broker.py` (stdlib Python, MCP streamable-HTTP with JSON responses) holds the tokens and exposes 8 tools: list_accounts,
+  search_messages, get_message, get_thread, list_drafts, get_draft, create_draft (threaded replies keep threadId,
+  In-Reply-To, References), update_draft. All outbound Gmail calls pass `_gmail()`'s method+path allowlist (no
+  send/delete/import/modify; anything containing "send" is refused and logged `BLOCKED`). Logs never carry
+  addresses/subjects/bodies.
+- After editing broker.py, regenerate the ConfigMap (the command is in the header of gmail-broker.yaml) and commit both.
+- Hermes side: env `GMAIL_BROKER_TOKEN` (same Secret `gmail-broker-token`), and by hand:
+  `hermes config set mcp_servers.gmail '{url: "http://gmail-broker.default.svc.cluster.local:8080/mcp", headers: {Authorization: "Bearer ${GMAIL_BROKER_TOKEN}"}}'`
+  plus `mcp_servers.gmail.tools.include` = the 8 tool names. Check: `kubectl exec deploy/hermes -c hermes -- hermes mcp test gmail`.
+- Google Cloud (once): project, enable Gmail API, consent screen External + test users, then PUBLISH to "In production".
+  In Testing mode, refresh tokens for these restricted scopes expire after 7 days. Unverified-in-production just shows a
+  warning screen (Advanced, then continue). Create a "Desktop app" OAuth client; keep its JSON out of the repo.
+- Add an account: `SOPS=/path/to/sops python3 .agents/skills/hermes-agent/scripts/gmail-auth.py ALIAS [--client FILE]`
+  runs the loopback+PKCE consent and writes `apps/gmail-broker/gmail-broker-acct-ALIAS.enc.yaml` (and the client secret
+  the first time). Then turn the broker's `accounts` volume into a projected volume with one source per account
+  (`items: [{key: refresh_token, path: ALIAS.refresh_token}, {key: email, path: ALIAS.email}]`) and commit. Real
+  addresses stay inside the encrypted Secret, and aliases are the only names used anywhere else.
+- Token death (`invalid_grant` in broker logs): re-run the helper for that alias.
+
 ## Next phases (issue 162) — not done yet
-- **Gmail**: draft-only means a separate broker holding the tokens (gmail.compose can send at Google); never give Hermes a send-capable token.
+- **Microsoft 365 work mail/calendar, read-only**: plan is a Graph backend in the same broker (delegated Mail.Read +
+  Calendars.Read + offline_access, device-code). Microsoft enforces read-only by scope. IMAP OAuth (IMAP.AccessAsUser.All)
+  is read/write and has no calendar, so not that. Likely needs tenant-admin consent; check before building.
 - **Bitwarden**: native browser_vault + `bw` CLI (needs a derived image), human unlock; no BW_SESSION/master password in env or PVC.
 - Off-node encrypted backup of `/opt/data`.
