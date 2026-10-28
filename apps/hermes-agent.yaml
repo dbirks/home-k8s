@@ -71,6 +71,10 @@ spec:
             - { name: HERMES_DASHBOARD_OIDC_CLIENT_ID, value: "49e3c44121567a4fab67116283f88af4" }   # tsidp client "hermes"
             - name: HERMES_DASHBOARD_OIDC_CLIENT_SECRET
               valueFrom: { secretKeyRef: { name: hermes-secrets, key: HERMES_DASHBOARD_OIDC_CLIENT_SECRET } }
+            # Dedicated LLM Collective key, read by config.yaml providers.collective.key_env. Optional so the pod
+            # still boots before the key exists (the agent just can't answer until then).
+            - name: COLLECTIVE_API_KEY
+              valueFrom: { secretKeyRef: { name: hermes-secrets, key: COLLECTIVE_API_KEY, optional: true } }
           ports:
             - { name: dashboard, containerPort: 9119 }
           resources:
