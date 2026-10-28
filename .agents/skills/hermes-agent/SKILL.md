@@ -1,6 +1,6 @@
 ---
 name: hermes-agent
-description: Operate the in-cluster NousResearch Hermes Agent (apps/hermes-agent.yaml, issue 162) - s6 process model and security context, tsidp OIDC dashboard login, config.yaml settings we set by hand, the LLM Collective provider and its key, how to exec in and verify, and what is next (Signal sidecar, Gmail draft-only broker, Bitwarden). Use when changing, upgrading, debugging or extending Hermes.
+description: Operate the in-cluster NousResearch Hermes Agent (apps/hermes-agent.yaml, issue 162) - s6 process model and security context, tsidp OIDC dashboard login, config.yaml settings we set by hand, the LLM Collective provider and its key, how to exec in and verify, the Signal sidecar and its landline registration, and what is next (Gmail draft-only broker, Bitwarden). Use when changing, upgrading, debugging or extending Hermes.
 ---
 
 # Hermes Agent (in-cluster since 2026-10-28)
@@ -53,11 +53,30 @@ UI (/api-keys; there is no key API). Re-encrypting the secret needs BOTH values,
 workstation (it can't be decrypted locally): rebuild it with `kubectl create secret … --from-file` for each key, piped
 through `sops encrypt --filename-override apps/hermes-secrets.enc.yaml`.
 
+## Signal (signal-cli sidecar, Hermes has its OWN number)
+- Sidecar `signal-cli` in the hermes pod (official `ghcr.io/asamk/signal-cli:0.14.9`, JVM, uid 999), state on PVC
+  `hermes-signal-data` at `/var/lib/signal-cli` (identity keys: treat as a secret). HTTP daemon on
+  `127.0.0.1:8080`, pod-local only, no auth (Host header pinned to localhost). Hermes reads `SIGNAL_HTTP_URL` +
+  `SIGNAL_ACCOUNT`; the number is ONLY in `apps/hermes-signal.enc.yaml` (never in git plaintext, issues, skills).
+- The number is a LANDLINE registered as a PRIMARY device (not a linked device). The sidecar idles until the marker
+  file `/var/lib/signal-cli/hermes-registered` exists, so register/verify can run via exec with the account unlocked.
+- (Re-)registration (only after losing the PVC; it logs out any other primary on that number). Every command below
+  is `kubectl exec [-i] deploy/hermes -c signal-cli -- bash -c '/opt/signal-cli/bin/signal-cli --config=/var/lib/signal-cli -a "$SIGNAL_ACCOUNT" ...'`
+  (the number comes from the pod env, so it never appears on your command line):
+  1. Captcha: solve https://signalcaptchas.org/registration/generate.html in a desktop browser, copy the
+     `signalcaptcha://...` link. Put it in a scratch file and feed it on stdin (`read -r CAP; ... register --captcha "$CAP"`).
+  2. That attempt sends an SMS, which a landline ignores, but Signal requires it before voice. Wait ~60-90s, then `register --voice`
+     (no captcha needed the second time). The call can be re-requested if missed; it worked twice in a row.
+  3. `verify 123456` with the spoken code, then `updateProfile --given-name Hermes`, then
+     `touch /var/lib/signal-cli/hermes-registered`; the wrapper starts the daemon within a minute.
+- Hermes retries a failed platform with backoff up to 5 min, so it can take ~5 min after the daemon is up to see
+  `signal` connect in `kubectl logs deploy/hermes -c hermes`. Check the daemon: `kubectl exec deploy/hermes -c hermes -- curl -s http://127.0.0.1:8080/api/v1/check`.
+- Access: no `SIGNAL_ALLOWED_USERS`, so unknown DMs get a pairing code. Approve with
+  `kubectl exec deploy/hermes -c hermes -- hermes pairing approve signal CODE` (run as the hermes user if it complains
+  about file ownership). Groups are off (no `SIGNAL_GROUP_ALLOWED_USERS`).
+- signal-cli logs the account number at daemon start; pod logs are not public, but don't paste them anywhere public.
+
 ## Next phases (issue 162) — not done yet
-- **Signal**: sidecar `ghcr.io/asamk/signal-cli:0.14.9` (official; `-native` variant exists) running
-  `signal-cli --account +E164 daemon --http 127.0.0.1:8080`, its own PVC for linked-device state, link with
-  `signal-cli link -n HermesAgent` (QR -> phone's Linked Devices). Hermes env `SIGNAL_HTTP_URL`, `SIGNAL_ACCOUNT`,
-  `SIGNAL_ALLOWED_USERS`, `SIGNAL_HOME_CHANNEL`. Never commit the number or the link URI.
 - **Gmail**: draft-only means a separate broker holding the tokens (gmail.compose can send at Google); never give Hermes a send-capable token.
 - **Bitwarden**: native browser_vault + `bw` CLI (needs a derived image), human unlock; no BW_SESSION/master password in env or PVC.
 - Off-node encrypted backup of `/opt/data`.
