@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    MCP_TOKEN: ENC[AES256_GCM,data:BRc4V0/7yX/KtBXvs0moEEKgUX4w1qEJvWhavOtQwxsjYXeElKUtSJs+7hdGGwvK70o81ttgPiM2ltDiWSVwAzU0Y3Y7woFE4eDVFWtjdqfkZM+Wk1n7jQ==,iv:Tafni5aMf0kykYowQArM9XM+HKLwNYWatl35WnEhZT0=,tag:4ciKCwKz/ihgG5JrObTCug==,type:str]
+kind: Secret
+metadata:
+    name: gnotes-mcp-token
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA0dllPSDB0K0hhV1NiNGNy
+            ek9tZ0JrTnNqUHNXaHBPdnNpeFhoSjhSeldBCndtdHVLM0FtUjFYOWVrdTRTZHF0
+            RFp0bWZmcElaZ01VL2U2dHh3eVYrU1EKLS0tIHI3cmtKNHl1N0pXd0paVVluN0tF
+            QTd4S2xIb0pRb3ZyZldXSXp2ZElaWjgKLJq3ybwM180yh4jAjIWheF2I77I259si
+            3q6yw4ZKcVXgG75C8xalkc3Z7Uy1R+LMihc2qqpu3+18bgZg+HnMHg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-29T00:04:41Z"
+    mac: ENC[AES256_GCM,data:5GF9PPXFELtiGGinyAq6tfxRRAwvuagLcs+EHHky2l6TPnIksVNKY89V+8MfS1GOhH8fgD/8iik1Rpkm+ItwUJ30S1X5ga8YlNtDq/MzIPuT+1pgQ1rotrLBKJZeByNPh9PgYVKYlH2roE+bPKrj8cNESNADlNvxLdpewF830G8=,iv:LxFybJP1vG4VdLH3CVcUUJC3iJlImTRpSkDX77V5Nkk=,tag:KXON/ErE5JndJAMqDj9A/w==,type:str]
+    version: 3.13.3

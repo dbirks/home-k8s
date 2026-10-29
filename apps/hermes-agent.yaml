@@ -117,6 +117,9 @@ spec:
             # Hermes never holds a Google token. Used by config.yaml mcp_servers.gmail.headers.
             - name: GMAIL_BROKER_TOKEN
               valueFrom: { secretKeyRef: { name: gmail-broker-token, key: BROKER_TOKEN } }
+            # Bearer for the Gnotes MCP adapter (apps/gnotes-mcp, #163). config.yaml mcp_servers.gnotes.headers.
+            - name: GNOTES_MCP_TOKEN
+              valueFrom: { secretKeyRef: { name: gnotes-mcp-token, key: MCP_TOKEN } }
           ports:
             - { name: dashboard, containerPort: 9119 }
           resources:

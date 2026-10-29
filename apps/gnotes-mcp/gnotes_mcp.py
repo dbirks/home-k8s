@@ -1,0 +1,296 @@
+"""Gnotes MCP adapter for Hermes (issue #163).
+
+A tiny MCP server (streamable HTTP, JSON responses, stdlib only) that wraps the Gnotes REST API
+(/api/v1, docs/API.md upstream) for the dedicated `hermes` Gnotes user. Hermes only holds MCP_TOKEN;
+the gnk_ API key lives in this pod. The key acts as `hermes`, so it sees only notebooks shared with it.
+
+Deliberately NOT exposed: trashing notes (DELETE), anything outside /api/v1. Every upstream call passes
+_api()'s method+path allowlist. Rewrites that would drop an attachment line (att:<id>) are refused,
+since the API cannot re-upload attachments. Logs carry tool name and outcome only, never note text.
+"""
+
+import hmac
+import json
+import logging
+import os
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("gnotes-mcp")
+
+BASE = os.environ.get("GNOTES_URL", "http://gnotes.default.svc.cluster.local:8080").rstrip("/") + "/api/v1/"
+API_KEY = os.environ["GNOTES_API_KEY"].strip()
+MCP_TOKEN = os.environ["MCP_TOKEN"].strip()
+PORT = int(os.environ.get("PORT", "8080"))
+SERVER_INFO = {"name": "gnotes-mcp", "version": "1.0.0"}
+_ID = r"[A-Za-z0-9-]+"
+
+
+class ToolError(Exception):
+    pass
+
+
+_ALLOWED = [
+    ("GET", re.compile(r"^me$")),
+    ("GET", re.compile(r"^notebooks$")),
+    ("POST", re.compile(r"^notebooks$")),
+    ("GET", re.compile(r"^notes$")),
+    ("POST", re.compile(r"^notes$")),
+    ("GET", re.compile(rf"^notes/{_ID}$")),
+    ("PATCH", re.compile(rf"^notes/{_ID}$")),
+    ("POST", re.compile(rf"^notes/{_ID}/append$")),
+    ("GET", re.compile(r"^search$")),
+    ("GET", re.compile(r"^tasks$")),
+    ("POST", re.compile(r"^tasks$")),
+]
+
+
+def _api(method, path, query=None, body=None):
+    if not any(m == method and rx.match(path) for m, rx in _ALLOWED):
+        log.error("BLOCKED upstream call method=%s path=%s", method, path)
+        raise ToolError("Blocked: that Gnotes operation is not allowed by this adapter.")
+    q = {k: v for k, v in (query or {}).items() if v is not None}
+    url = BASE + path + ("?" + urllib.parse.urlencode(q) if q else "")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": "Bearer " + API_KEY, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read() or b"{}").get("message", "")
+        except ValueError:
+            msg = ""
+        raise ToolError(f"Gnotes API error {e.code}: {msg}")
+
+
+def _id(args, key):
+    v = str(args.get(key, "")).strip()
+    if not re.fullmatch(_ID, v):
+        raise ToolError(f"'{key}' is required and must be a Gnotes id.")
+    return v
+
+
+def _text(args, key="text"):
+    v = args.get(key)
+    if not isinstance(v, str) or not v:
+        raise ToolError(f"'{key}' is required.")
+    return v
+
+
+def _limit(args, default, maximum):
+    if args.get("limit") is None:
+        return None
+    return max(1, min(int(args["limit"]), maximum))
+
+
+_ATT = re.compile(r"att:[A-Za-z0-9-]+")
+
+
+def _keep_attachments(note_id, new_text):
+    old = _api("GET", f"notes/{note_id}").get("text", "")
+    lost = set(_ATT.findall(old)) - set(_ATT.findall(new_text))
+    if lost:
+        raise ToolError(f"Refused: the new text drops {len(lost)} attachment reference(s) (att:...). Keep those lines; "
+                        "the API cannot re-upload attachments.")
+
+
+def t_whoami(a):
+    return _api("GET", "me")
+
+
+def t_list_notebooks(a):
+    return _api("GET", "notebooks")
+
+
+def t_create_notebook(a):
+    return _api("POST", "notebooks", body={"name": _text(a, "name"),
+                                           **({"parent_id": _id(a, "parent_id")} if a.get("parent_id") else {})})
+
+
+def t_list_notes(a):
+    return _api("GET", "notes", {"notebook_id": _id(a, "notebook_id") if a.get("notebook_id") else None,
+                                 "limit": _limit(a, 100, 1000)})
+
+
+def t_search_notes(a):
+    mode = a.get("mode") or "words"
+    if mode not in ("words", "meaning"):
+        raise ToolError("mode must be 'words' or 'meaning'.")
+    return _api("GET", "search", {"q": _text(a, "query"), "mode": mode, "limit": _limit(a, 20, 50)})
+
+
+def t_get_note(a):
+    return _api("GET", f"notes/{_id(a, 'note_id')}")
+
+
+def t_create_note(a):
+    return _api("POST", "notes", body={"text": _text(a),
+                                       **({"notebook_id": _id(a, "notebook_id")} if a.get("notebook_id") else {})})
+
+
+def t_append_to_note(a):
+    return _api("POST", f"notes/{_id(a, 'note_id')}/append", body={"text": _text(a)})
+
+
+def t_update_note(a):
+    nid, text, version = _id(a, "note_id"), _text(a), _text(a, "version")
+    _keep_attachments(nid, text)
+    return _api("PATCH", f"notes/{nid}", body={"text": text, "version": version})
+
+
+def t_move_note(a):
+    return _api("PATCH", f"notes/{_id(a, 'note_id')}", body={"notebook_id": _id(a, "notebook_id"),
+                                                             "version": _text(a, "version")})
+
+
+def t_list_tasks(a):
+    done = a.get("done")
+    return _api("GET", "tasks", {"done": None if done is None else str(bool(done)).lower(),
+                                 "due_before": a.get("due_before")})
+
+
+def t_add_task(a):
+    due = a.get("due")
+    if due and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(due)):
+        raise ToolError("due must be YYYY-MM-DD.")
+    return _api("POST", "tasks", body={"text": _text(a), **({"due": due} if due else {})})
+
+
+def t_set_task_done(a):
+    """Flip the checkbox on one line of a note, merge-safe. `line` is list_tasks' 0-based index into the note's
+    lines (server/src/tasks.rs enumerates body.lines()); `text` (the task text from list_tasks) must still be on it."""
+    nid, line = _id(a, "note_id"), int(a.get("line", -1))
+    done = bool(a.get("done", True))
+    note = _api("GET", f"notes/{nid}")
+    lines = note.get("text", "").split("\n")
+    m = re.match(r"^(\s*[-*+][ \t]+\[)[ xX](\].*)$", lines[line].rstrip("\r")) if 0 < line < len(lines) else None
+    if not m or (a.get("text") and str(a["text"]).strip() not in lines[line]):
+        raise ToolError("That line is no longer that checkbox task; call list_tasks again for current line numbers.")
+    lines[line] = m.group(1) + ("x" if done else " ") + m.group(2)
+    return _api("PATCH", f"notes/{nid}", body={"text": "\n".join(lines), "version": note["version"]})
+
+
+S = lambda **p: {"type": "string", **p}
+TOOLS = {
+    "whoami": (t_whoami, "Which Gnotes user this connection acts as, and its key scope.", {}, []),
+    "list_notebooks": (t_list_notebooks, "Notebooks shared with Hermes, A-Z.", {}, []),
+    "create_notebook": (t_create_notebook, "Create a notebook (owned by Hermes).",
+                        {"name": S(), "parent_id": S()}, ["name"]),
+    "list_notes": (t_list_notes, "Notes Hermes can see, newest change first.",
+                   {"notebook_id": S(), "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, []),
+    "search_notes": (t_search_notes, "Search notes. mode 'words' (default, all words as prefixes) or 'meaning' "
+                     "(semantic; may be unavailable).",
+                     {"query": S(), "mode": S(enum=["words", "meaning"]),
+                      "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, ["query"]),
+    "get_note": (t_get_note, "Get a note's Markdown text and its current `version` (needed for edits).",
+                 {"note_id": S()}, ["note_id"]),
+    "create_note": (t_create_note, "Create a note. Its first line is its title (e.g. '# Groceries').",
+                    {"text": S(), "notebook_id": S()}, ["text"]),
+    "append_to_note": (t_append_to_note, "Add text at the end of a note. Safest way to add; never overwrites.",
+                       {"note_id": S(), "text": S()}, ["note_id", "text"]),
+    "update_note": (t_update_note, "Replace a note's text. Requires the `version` from get_note so concurrent "
+                    "human edits are merged, not overwritten. Keep any att: attachment lines.",
+                    {"note_id": S(), "text": S(), "version": S()}, ["note_id", "text", "version"]),
+    "move_note": (t_move_note, "Move a note to another notebook (needs `version` from get_note).",
+                  {"note_id": S(), "notebook_id": S(), "version": S()}, ["note_id", "notebook_id", "version"]),
+    "list_tasks": (t_list_tasks, "Checkbox tasks across visible notes, soonest due first.",
+                   {"done": {"type": "boolean"}, "due_before": S(description="YYYY-MM-DD")}, []),
+    "add_task": (t_add_task, "Add a task to Hermes' Inbox note.", {"text": S(), "due": S(description="YYYY-MM-DD")},
+                 ["text"]),
+    "set_task_done": (t_set_task_done, "Check (or uncheck with done=false) a task, using note_id and line from list_tasks.",
+                      {"note_id": S(), "line": {"type": "integer"}, "text": S(description="task text from list_tasks"),
+                       "done": {"type": "boolean"}}, ["note_id", "line", "text"]),
+}
+
+
+def handle_rpc(msg):
+    method, mid = msg.get("method"), msg.get("id")
+    if mid is None:
+        return None
+    if method == "initialize":
+        pv = (msg.get("params") or {}).get("protocolVersion", "2025-06-18")
+        result = {"protocolVersion": pv, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": SERVER_INFO,
+                  "instructions": "Gnotes (the household Markdown notes app) as the 'hermes' user: it sees only "
+                                  "notebooks shared with it. Prefer append_to_note; edit with the version from get_note."}
+    elif method == "ping":
+        result = {}
+    elif method == "tools/list":
+        result = {"tools": [{"name": n, "description": d,
+                             "inputSchema": {"type": "object", "properties": p, **({"required": r} if r else {})}}
+                            for n, (_, d, p, r) in TOOLS.items()]}
+    elif method == "tools/call":
+        p = msg.get("params") or {}
+        name, args = p.get("name"), p.get("arguments") or {}
+        if name not in TOOLS:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"Unknown tool: {name}"}}
+        try:
+            out = TOOLS[name][0](args)
+            log.info("tool=%s ok", name)
+            result = {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False)}], "isError": False}
+        except (ToolError, ValueError, TypeError) as e:
+            log.info("tool=%s error", name)
+            result = {"content": [{"type": "text", "text": str(e)}], "isError": True}
+        except Exception:
+            log.exception("tool=%s crashed", name)
+            result = {"content": [{"type": "text", "text": "Internal adapter error."}], "isError": True}
+    else:
+        return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj=None, extra=None):
+        body = b"" if obj is None else json.dumps(obj).encode()
+        self.send_response(code)
+        if obj is not None:
+            self.send_header("Content-Type", "application/json")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/healthz":
+            return self._send(200, {"ok": True})
+        self._send(405, extra={"Allow": "POST"})
+
+    def do_DELETE(self):
+        self._send(405, extra={"Allow": "POST"})
+
+    def do_POST(self):
+        if self.path.split("?")[0] != "/mcp":
+            return self._send(404, {"error": "not found"})
+        auth = self.headers.get("Authorization", "")
+        if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip().encode(), MCP_TOKEN.encode())):
+            log.warning("unauthorized request")
+            return self._send(401, {"error": "unauthorized"})
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            if n > 2_000_000:
+                return self._send(413, {"error": "too large"})
+            payload = json.loads(self.rfile.read(n) or b"null")
+        except (ValueError, json.JSONDecodeError):
+            return self._send(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+        batch = payload if isinstance(payload, list) else [payload]
+        replies = [r for r in (handle_rpc(m) for m in batch if isinstance(m, dict)) if r is not None]
+        if not replies:
+            return self._send(202)
+        self._send(200, replies if isinstance(payload, list) else replies[0])
+
+
+if __name__ == "__main__":
+    log.info("gnotes-mcp starting: upstream %s", BASE)
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

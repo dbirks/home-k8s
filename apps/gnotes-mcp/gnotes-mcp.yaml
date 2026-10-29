@@ -1,0 +1,76 @@
+# Gnotes MCP adapter for Hermes (issue #163). Operate via the hermes-agent skill.
+# Gnotes has a REST API (/api/v1) but no MCP server; this pod wraps it (gnotes_mcp.py, stdlib Python, no pip)
+# for the dedicated non-admin `hermes` Gnotes user, which sees only notebooks shared with it.
+# No trash/delete tool; rewrites that would drop att: attachment lines are refused.
+#
+# CODE: regenerate the ConfigMap after editing gnotes_mcp.py:
+#   kubectl create configmap gnotes-mcp-code -n default --from-file=gnotes_mcp.py=apps/gnotes-mcp/gnotes_mcp.py --dry-run=client -o yaml > apps/gnotes-mcp/gnotes-mcp-code.yaml
+# SECRETS (SOPS; public repo, never plaintext):
+#   gnotes-hermes-credentials  GNOTES_API_KEY (gnk_, write scope) + GNOTES_HERMES_PASSWORD (recovery only, not mounted)
+#   gnotes-mcp-token           MCP_TOKEN, the bearer Hermes presents (Hermes reads the same Secret)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gnotes-mcp
+  namespace: default
+  labels: { app: gnotes-mcp }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: gnotes-mcp }
+  template:
+    metadata:
+      labels: { app: gnotes-mcp }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: adapter
+          image: docker.io/library/python:3.13.18-slim-trixie@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+          command: ["python3", "-I", "-u", "/app/gnotes_mcp.py"]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+            - { name: GNOTES_URL, value: "http://gnotes.default.svc.cluster.local:8080" }
+            - name: GNOTES_API_KEY
+              valueFrom: { secretKeyRef: { name: gnotes-hermes-credentials, key: GNOTES_API_KEY } }
+            - name: MCP_TOKEN
+              valueFrom: { secretKeyRef: { name: gnotes-mcp-token, key: MCP_TOKEN } }
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 20
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 60
+          volumeMounts:
+            - { name: code, mountPath: /app, readOnly: true }
+      volumes:
+        - { name: code, configMap: { name: gnotes-mcp-code } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gnotes-mcp
+  namespace: default
+spec:
+  selector: { app: gnotes-mcp }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
