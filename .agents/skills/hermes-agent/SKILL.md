@@ -1,6 +1,6 @@
 ---
 name: hermes-agent
-description: Operate the in-cluster NousResearch Hermes Agent (apps/hermes-agent.yaml, issue 162) - s6 process model and security context, tsidp OIDC dashboard login, config.yaml settings we set by hand, the LLM Collective provider and its key, how to exec in and verify, the Signal sidecar and its landline registration, the Gmail read+draft-only broker and its account helper, and what is next (Microsoft 365 read-only, Bitwarden). Use when changing, upgrading, debugging or extending Hermes.
+description: Operate the in-cluster NousResearch Hermes Agent (apps/hermes-agent.yaml, issue 162) - s6 process model and security context, tsidp OIDC dashboard login, config.yaml settings we set by hand, the LLM Collective provider and its key, how to exec in and verify, the Signal sidecar and its landline registration, the Gmail read+draft-only broker and its account helper, the Gnotes MCP adapter, and what is next (Microsoft 365 read-only, Bitwarden). Use when changing, upgrading, debugging or extending Hermes.
 ---
 
 # Hermes Agent (in-cluster since 2026-10-28)
@@ -111,6 +111,24 @@ on every start; if you see this, check that init ran. Smoke test: `kubectl exec 
   (`items: [{key: refresh_token, path: ALIAS.refresh_token}, {key: email, path: ALIAS.email}]`) and commit. Real
   addresses stay inside the encrypted Secret, and aliases are the only names used anywhere else.
 - Token death (`invalid_grant` in broker logs): re-run the helper for that alias.
+
+## Gnotes = notes/tasks via apps/gnotes-mcp/ (issue 163)
+- Gnotes (apps/gnotes.yaml) has a REST API but no MCP server and no OIDC. `gnotes_mcp.py` (stdlib MCP, same shape as the
+  Gmail broker) wraps `/api/v1` as the dedicated NON-admin Gnotes user `hermes`, which sees only notebooks shared with it
+  (share from the Gnotes UI as viewer or editor). There are 13 tools and no trash/delete. `update_note`/`move_note` need the `version`
+  from get_note (merge, not clobber), and rewrites that drop `att:` attachment lines are refused. Task `line` is
+  0-based (server/src/tasks.rs enumerates body.lines()).
+- Secrets: `gnotes-hermes-credentials` (GNOTES_API_KEY, a write-scope gnk_ key named hermes-mcp; GNOTES_HERMES_PASSWORD for
+  recovery only, never mounted), `gnotes-mcp-token` (MCP_TOKEN; Hermes env GNOTES_MCP_TOKEN). Created without anyone
+  seeing them: a script generated the password, ran `gnotes-server create-user hermes` (password on stdin), logged in at
+  `/api/auth/login`, POSTed `/api/me/keys {"name","scope":"write"}`, and piped the values through 0600 temp files into sops.
+  To rotate: revoke the key in Gnotes (log in as hermes with the recovery password, Account then API Keys), mint a new
+  one the same way, re-encrypt BOTH fields, and roll gnotes-mcp.
+- Hermes config (by hand): `mcp_servers.gnotes = {url: "http://gnotes-mcp.default.svc.cluster.local:8080/mcp", headers:
+  {Authorization: "Bearer ${GNOTES_MCP_TOKEN}"}}` + `tools.include` with the 13 names. Check with `hermes mcp test gnotes`.
+- Gotcha: a `hermes chat` started within seconds of `hermes config set mcp_servers...` may not have the new server yet.
+  The model then calls manage_connections and hangs about 4 min. Wait for `MCP servers reconciled ... added=[...]` in
+  agent.log, then retry.
 
 ## Next phases (issue 162) — not done yet
 - **Microsoft 365 work mail/calendar, read-only**: plan is a Graph backend in the same broker (delegated Mail.Read +
