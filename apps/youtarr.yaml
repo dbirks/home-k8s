@@ -91,13 +91,15 @@ spec:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
+          # Bound to 127.0.0.1, so kubelet can't TCP-probe the pod IP; the image's healthcheck.sh uses the socket.
           startupProbe:
-            tcpSocket: { port: 3306 }
+            exec: { command: ["healthcheck.sh", "--connect"] }
             periodSeconds: 5
             failureThreshold: 60
           livenessProbe:
-            tcpSocket: { port: 3306 }
+            exec: { command: ["healthcheck.sh", "--connect"] }
             periodSeconds: 30
+            timeoutSeconds: 10
           volumeMounts:
             - { name: data, mountPath: /var/lib/mysql, subPath: mysql }
             - { name: mysql-run, mountPath: /run/mysqld }
