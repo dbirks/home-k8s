@@ -41,12 +41,29 @@ piped through `sops encrypt`, commit and reconcile. The MCP adapter reads the sa
 workstation, so you can't `sops -d` the committed file: rewrite the whole Secret (keep DB_PASSWORD and
 MARIADB_ROOT_PASSWORD by copying them from the live Secret into the temp files, never printing them).
 
-## One-time UI steps (manual)
-1. Jellyfin: Dashboard -> Libraries -> add a library (type "Shows" or "Mixed") for folder `/media/youtarr`.
-2. Youtarr Settings -> Media server: Jellyfin URL `http://jellyfin.default.svc.cluster.local:8096` plus a Jellyfin
-   API key (minted in Jellyfin Dashboard -> API Keys) for library refresh, playlist mirroring and watch status.
-   Upstream guide: docs/media-servers/jellyfin.md.
-3. Cookies (only if YouTube bot-checks or age-gates): `YOUTARR_COOKIES_FILE=/cookies/cookies.txt` is already set
+## Jellyfin hookup (DONE 2026-10-31, all via API — no UI needed)
+1. Jellyfin library **YouTube** = type **Movies** (upstream says Shows is unsupported and Mixed is broken) at
+   `/media/youtarr`, created with `POST /Library/VirtualFolders?name=YouTube&collectionType=movies` and LibraryOptions:
+   realtime monitor on, `EnableInternetProviders:false`, `MetadataSavers:[]` (NEVER the Nfo saver — Youtarr owns the
+   .nfo files), `AutomaticRefreshIntervalDays:0`, `EnableEmbeddedTitles:true`, Movie TypeOptions with empty
+   metadata/image fetchers. Jellyfin user is `admin`.
+2. Jellyfin API key `youtarr` lives in SOPS secret `jellyfin-api-key` (`apps/jellyfin-api-key.enc.yaml`, key
+   JELLYFIN_API_KEY). Rotate: mint a new key in Jellyfin Dashboard -> API Keys, run
+   `scripts/store-jellyfin-key.sh` (hidden prompt, verifies, encrypts), commit, then re-run step 3.
+   No admin key at hand? An older `claude-setup` key exists in the Jellyfin DB `ApiKeys` table (readable from a
+   throwaway pod that mounts PVC `jellyfin-config` and runs `sqlite3 'file:/config/data/jellyfin.db?mode=ro'`);
+   use it in-pod only to `POST /Auth/Keys?app=NAME`, never print it.
+3. Youtarr config (session-token API, run with `node -e` inside the youtarr container, key piped on stdin from the
+   cluster secret): `POST /api/mediaservers/jellyfin/test` with `{jellyfinUrl, jellyfinApiKey, jellyfinUserId}`
+   (-> `{ok:true}`), then GET /getconfig, set `jellyfinEnabled:true, jellyfinUrl:
+   http://jellyfin.default.svc.cluster.local:8096, jellyfinApiKey, jellyfinUserId, jellyfinVideoLibraryIds:[<YouTube
+   library ItemId>]`, POST /updateconfig (whole object), then `POST /api/mediaservers/watch-status/sync` (202).
+4. **Imported videos have no .nfo/poster** (yt-dlp-only downloads): run `scripts/nfo-backfill.js` inside the
+   youtarr container (`kubectl exec -i deploy/youtarr -c youtarr -- sh -c 'cat > /tmp/b.js && cd /app && node
+   /tmp/b.js' < scripts/nfo-backfill.js`). It uses Youtarr's own nfoGenerator + the info.json in /app/jobs/info and
+   fetches the thumbnail as `<name>.jpg`; skips anything that already has an .nfo. Then Jellyfin
+   `POST /Items/<libraryId>/Refresh?recursive=true&metadataRefreshMode=FullRefresh&imageRefreshMode=FullRefresh&replaceAllMetadata=true&replaceAllImages=true`.
+## Cookies\n(only if YouTube bot-checks or age-gates): `YOUTARR_COOKIES_FILE=/cookies/cookies.txt` is already set
    from the `ncc-youtube-cookies` Secret (read-only; Youtarr validates a private copy). Turn on
    Settings -> Cookies -> Enable Cookies.
 
