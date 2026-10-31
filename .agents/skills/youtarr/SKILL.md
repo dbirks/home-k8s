@@ -63,7 +63,8 @@ MARIADB_ROOT_PASSWORD by copying them from the live Secret into the temp files, 
    /tmp/b.js' < scripts/nfo-backfill.js`). It uses Youtarr's own nfoGenerator + the info.json in /app/jobs/info and
    fetches the thumbnail as `<name>.jpg`; skips anything that already has an .nfo. Then Jellyfin
    `POST /Items/<libraryId>/Refresh?recursive=true&metadataRefreshMode=FullRefresh&imageRefreshMode=FullRefresh&replaceAllMetadata=true&replaceAllImages=true`.
-## Cookies\n(only if YouTube bot-checks or age-gates): `YOUTARR_COOKIES_FILE=/cookies/cookies.txt` is already set
+## Cookies
+Only if YouTube bot-checks, age-gates or for members-only videos: `YOUTARR_COOKIES_FILE=/cookies/cookies.txt` is already set
    from the `ncc-youtube-cookies` Secret (read-only; Youtarr validates a private copy). Turn on
    Settings -> Cookies -> Enable Cookies.
 
