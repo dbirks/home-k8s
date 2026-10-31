@@ -6,8 +6,9 @@
 # (re-applied on every restart, so it is GitOps-owned; change it by rotating the SOPS secret).
 #
 # STORAGE (all on the HDD, local-path-hdd, so pinned to talos-210-73x where the disk lives):
-#   videos  -> jellyfin-media-hdd subPath `youtarr`  (Jellyfin sees it at /media/youtarr). Kept apart from the
-#              youtube-media-capture CronJob's folders and its .youtube-capture-archive.
+#   videos  -> jellyfin-media-hdd subPath `youtarr`  (Jellyfin sees it at /media/youtarr). The retired
+#              youtube-media-capture CronJob's library was IMPORTED here 2026-10-31 (hard links + merged
+#              archive ids); see the youtarr skill for the import procedure.
 #   youtarr-data PVC -> config/ (config.json, logs, setup-token), jobs/, images/ (thumbnails), mysql/ (MariaDB)
 #
 # DB: MariaDB 10.11 LTS as a native sidecar on 127.0.0.1 only. NEVER bump MariaDB and Youtarr in the same
