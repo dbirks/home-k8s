@@ -57,6 +57,10 @@
 # PLACEMENT: dave-droid (64 GB, no GPU needed) — the main node runs ~80% of its
 # 46 GB without swap. ClusterIP only for the app; humans get the tailnet Ingress.
 #
+# MEASURED ENGINE BEHAVIOUR from this IP (2026-10-31): bing + brave + "google cse"
+# answer; `duckduckgo` comes back CAPTCHA and plain `google` "access denied" (they
+# are still enabled as asked, SearXNG just suspends them per search). See the skill.
+#
 # Skill: .agents/skills/openwebui-web-search
 ---
 apiVersion: v1
@@ -160,8 +164,11 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
           resources:
-            requests: { cpu: 50m, memory: 192Mi }
-            limits: { cpu: "1", memory: 512Mi }
+            # ~120 MiB per granian worker measured on 2026-10-31 (2 workers, 238 MiB
+            # after real searches). Roomy limit on purpose: dave-droid has 60 GB free,
+            # the main node does not.
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

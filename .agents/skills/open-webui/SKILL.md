@@ -1,6 +1,6 @@
 ---
 name: open-webui
-description: Operate the tailnet Open WebUI chat app (apps/openwebui.yaml, openwebui.beluga-wyvern.ts.net) - tsidp SSO login, the LLM Collective as its model backend, Collective qwen3-asr speech-to-text through the WAV shim, Collective phonon-31m text-to-speech, the RAM-only voice cache, upgrades, and how to verify each piece headlessly. Use when changing Open WebUI settings, upgrading its image, rotating its Collective key, or when a setting in the manifest seems to be ignored or dictation fails.
+description: Operate the tailnet Open WebUI chat app (apps/openwebui.yaml, openwebui.beluga-wyvern.ts.net) - tsidp SSO login, the LLM Collective as its model backend, Collective qwen3-asr speech-to-text through the WAV shim, Collective phonon-31m text-to-speech, SearXNG web search, the RAM-only voice cache, upgrades, and how to verify each piece headlessly. Use when changing Open WebUI settings, upgrading its image, rotating its Collective key, or when a setting in the manifest seems to be ignored or dictation fails.
 ---
 
 # Open WebUI (tailnet chat app)
@@ -85,6 +85,14 @@ and `AUDIO_TTS_VOICE=Harper`. The engine is Gradium Phonon on CPU; see the phono
 - `speed` must be 1.0: Phonon has no rate control. Open WebUI's frontend does not send it.
 - The call overlay fires one request per sentence without waiting for the previous one. A 429
   (Collective concurrency is 3) shows as a toast and that sentence is skipped.
+
+## Web search: self-hosted SearXNG
+
+`ENABLE_WEB_SEARCH=true` + `WEB_SEARCH_ENGINE=searxng` point the app at `apps/searxng.yaml`
+(ClusterIP `http://searxng.default.svc.cluster.local:8080/search`, tailnet UI
+`search.beluga-wyvern.ts.net`). Users switch it on per chat with the globe toggle. Queries leave the
+house to google/bing/brave/... through SearXNG, which keeps no logs. All env names, the whole
+`<query>`-vs-endpoint gotcha, engine CAPTCHA/rate-limit behaviour and upgrades: **openwebui-web-search**.
 
 ## Zero data retention for voice: the audio cache is RAM
 

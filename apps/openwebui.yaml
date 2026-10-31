@@ -178,12 +178,14 @@ spec:
             - { name: ENABLE_WEB_LOADER_SSL_VERIFICATION, value: "true" }
             # false = never route the page fetches through an HTTP(S)_PROXY env var (we have none).
             - { name: WEB_SEARCH_TRUST_ENV, value: "false" }
-            # No embedding model is configured in this instance, and the non-bypass path embeds every fetched
-            # page into an ephemeral Chroma collection with EMBEDDING_MODEL — whose default
-            # (sentence-transformers/all-MiniLM-L6-v2) means an on-demand ~90 MB Hugging Face download into the
-            # container filesystem plus CPU inference on a node that is short on RAM. With bypass on, the loaded
-            # pages go straight into the prompt as context, which is cheap at 262k context. Flip to "false" only
-            # together with an explicit EMBEDDING_MODEL/EMBEDDING_API_BASE_URL.
+            # No EMBEDDING_* is configured here, so the non-bypass path would embed every fetched page with
+            # the default sentence-transformers/all-MiniLM-L6-v2 (already cached on the PVC under
+            # data/cache/embedding/models and loaded at startup for RAG) into a throwaway `web-search-*` Chroma
+            # collection per search, then retrieve top-k chunks — CPU work plus vector-DB churn on the 46 GB node,
+            # for one user who reads all five results anyway. With bypass on, the loaded pages go straight into
+            # the prompt as context (measured 2026-10-31: 5 pages, ~20k chars each), which is cheap at 262k
+            # context. Flip to "false" only together with an explicit EMBEDDING_MODEL/EMBEDDING_API_BASE_URL,
+            # or set BYPASS_WEB_SEARCH_WEB_LOADER=true to paste snippets only and skip page fetching.
             - { name: BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL, value: "true" }
             # --- no telemetry / phoning home ---
             - { name: SCARF_NO_ANALYTICS, value: "true" }
