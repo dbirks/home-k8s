@@ -1,4 +1,10 @@
 ---
+# RETIRED 2026-10-31, replaced by Youtarr (#166). Existing capture output was
+# imported into Youtarr (hard-linked + archive ids merged) — see the youtarr
+# skill "Migrating youtube-media-capture content". Secrets kept: youtube-capture-queue
+# (historical record) and ncc-youtube-cookies (shared with Youtarr).
+# To revive: rename back to .yaml AND remove `suspend: true` below.
+#
 # YouTube media capture: a durable, reusable, idempotent downloader for the
 # home-k8s media library.
 #
@@ -44,6 +50,7 @@ metadata:
   labels:
     app.kubernetes.io/name: youtube-media-capture
 spec:
+  suspend: true
   # hourly
   schedule: "0 * * * *"
   # if the previous run is still going, don't start a new one (no overlap)
