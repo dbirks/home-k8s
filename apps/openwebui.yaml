@@ -56,6 +56,14 @@
 # PVC. That directory is a RAM-backed emptyDir here, and the audio-cache-sweeper sidecar deletes anything older
 # than 10 minutes, so no voice audio or spoken text reaches disk or outlives a restart.
 #
+# WEB SEARCH: ENABLE_WEB_SEARCH + WEB_SEARCH_ENGINE=searxng pointed at our own SearXNG
+# (apps/searxng.yaml, ClusterIP http://searxng.default.svc.cluster.local:8080/search). Users
+# turn it on per chat with the globe toggle. PRIVACY TRADE-OFF: queries are no longer only
+# inside the house — SearXNG forwards the query text to google/duckduckgo/bing/brave/wikipedia
+# (from dave-droid's IP, without your browser's cookies), and Open WebUI then fetches the result
+# pages themselves. SearXNG keeps no query logs here (limiter off, no valkey, its cache dir is an
+# emptyDir), so this pod is not a second search log; the engines still keep theirs.
+#
 # No telemetry: the image already sets SCARF_NO_ANALYTICS/DO_NOT_TRACK/
 # ANONYMIZED_TELEMETRY; they are repeated below so they can't silently flip, and the
 # GitHub version check and community sharing are off.
@@ -144,6 +152,39 @@ spec:
               valueFrom: { secretKeyRef: { name: openwebui-llmc, key: LLMC_API_KEY } }
             - { name: AUDIO_TTS_MODEL, value: "phonon-31m" }
             - { name: AUDIO_TTS_VOICE, value: "Harper" }
+            # --- WEB SEARCH: self-hosted SearXNG (apps/searxng.yaml, search.beluga-wyvern.ts.net) ---
+            # Names verified against backend/open_webui/config.py + routers/retrieval.py at tag v0.12.4
+            # (the old ENABLE_RAG_WEB_SEARCH / ENABLE_RAG_LOCAL_WEB_FETCH generation is gone; these are the
+            # web.search.* settings). Skill: openwebui-web-search.
+            - { name: ENABLE_WEB_SEARCH, value: "true" }
+            - { name: WEB_SEARCH_ENGINE, value: "searxng" }
+            # v0.12.4 posts q/format=json/pageno/etc. as params itself: SEARXNG_QUERY_URL is the ENDPOINT,
+            # not a template (a legacy "?q=<query>" URL still works — it is normalised by stripping the query).
+            # SearXNG answers 403 for json unless the format is listed in its settings.yml.
+            - { name: SEARXNG_QUERY_URL, value: "http://searxng.default.svc.cluster.local:8080/search" }
+            - { name: SEARXNG_LANGUAGE, value: "all" }
+            - { name: WEB_SEARCH_RESULT_COUNT, value: "5" }          # upstream default is 3
+            # 0 = fire every query in the turn at once; 3 caps the fan-out onto our own instance.
+            - { name: WEB_SEARCH_CONCURRENT_REQUESTS, value: "3" }
+            # false = a chat with the globe on searches immediately; true = ask first each message.
+            - { name: ENABLE_WEB_SEARCH_CONFIRMATION, value: "false" }
+            # Fetch the result pages instead of pasting only SearXNG snippets.
+            - { name: BYPASS_WEB_SEARCH_WEB_LOADER, value: "false" }
+            # '' = the built-in SafeWebBaseLoader (plain HTTP + readability): no Playwright/Firecrawl/Tavily
+            # sidecar, and playwright is not in this image flavour anyway.
+            - { name: WEB_LOADER_ENGINE, value: "" }
+            - { name: WEB_LOADER_CONCURRENT_REQUESTS, value: "3" }   # NB: this maps to requests_PER_SECOND
+            - { name: WEB_LOADER_TIMEOUT, value: "15" }
+            - { name: ENABLE_WEB_LOADER_SSL_VERIFICATION, value: "true" }
+            # false = never route the page fetches through an HTTP(S)_PROXY env var (we have none).
+            - { name: WEB_SEARCH_TRUST_ENV, value: "false" }
+            # No embedding model is configured in this instance, and the non-bypass path embeds every fetched
+            # page into an ephemeral Chroma collection with EMBEDDING_MODEL — whose default
+            # (sentence-transformers/all-MiniLM-L6-v2) means an on-demand ~90 MB Hugging Face download into the
+            # container filesystem plus CPU inference on a node that is short on RAM. With bypass on, the loaded
+            # pages go straight into the prompt as context, which is cheap at 262k context. Flip to "false" only
+            # together with an explicit EMBEDDING_MODEL/EMBEDDING_API_BASE_URL.
+            - { name: BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL, value: "true" }
             # --- no telemetry / phoning home ---
             - { name: SCARF_NO_ANALYTICS, value: "true" }
             - { name: DO_NOT_TRACK, value: "true" }

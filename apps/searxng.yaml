@@ -1,0 +1,215 @@
+# SearXNG — self-hosted metasearch engine, the web-search backend for Open WebUI
+# (apps/openwebui.yaml) and a tailnet-only search page for browsing.
+#
+# WHAT IT IS: SearXNG proxies one query out to several upstream engines (google,
+# duckduckgo, bing, brave, wikipedia, ...) and merges the results. It stores no
+# logs of queries in this configuration (limiter off, no valkey, no result cache
+# on disk — /var/cache/searxng is an emptyDir). PRIVACY TRADE-OFF: turning web
+# search on means the *query text* leaves the house to those engines and their
+# infrastructure; only our instance front-ends it, so the engines see SearXNG's
+# IP (dave-droid's), not each browser's, and Open WebUI talks only to this pod.
+# Outbound HTTPS only — upstream engines are contacted over the internet.
+#
+# WHY A SECOND INSTANCE: apps/shepherd.yaml already runs `shepherd-searxng` for
+# the Shepherd app (unpinned `latest`, no auth, its own settings). It is left
+# alone — different consumer, different lifecycle. This one is pinned, hardened,
+# and the one Open WebUI uses. If a third consumer shows up, reuse THIS service.
+#
+# OPEN WEBUI NEEDS `format=json`: SearXNG 403s every JSON/API request whose
+# format is not listed under search.formats in settings.yml, so `[html, json]`
+# below is load-bearing, not decoration.
+#
+# IMAGE: official, multi-arch, pinned tag + OCI index digest (docker.io, verified
+# 2026-10-31). SearXNG ships date-stamped rolling tags (2026.10.30-<sha>), not
+# semver; `latest` floats, so bump by hand:
+#   docker buildx imagetools inspect docker.io/searxng/searxng:<tag>   # index digest
+# The image's searxng user is uid/gid 977, but it has no USER directive — it
+# starts as root so the entrypoint can chown /etc/searxng + /var/cache/searxng and
+# run update-ca-certificates. We run it as 977 instead: the entrypoint then only
+# prints a harmless "not owned by searxng:searxng" WARNING per mounted volume and
+# continues, so BOTH writable paths must be volumes the kubelet makes group-
+# writable for fsGroup=977 (emptyDir), and the rootfs is read-only.
+#
+# PORT: the entrypoint execs granian with GRANIAN_HOST/:: + GRANIAN_PORT (8080 is
+# baked in; SEARXNG_PORT is an alias for it). settings.yml's server.port: 8888 is
+# upstream's bare-metal default and is NOT what the container binds.
+#
+# SECRET: server.secret_key comes from apps/searxng-secret.enc.yaml (SOPS+age) via
+# env SEARXNG_SECRET — searx/settings_defaults.py maps that env var onto
+# server.secret_key, which is why settings.yml can carry a placeholder. Rotate:
+#   umask 077; F=$(mktemp); printf '%s' "$(openssl rand -hex 32)" > "$F"; chmod 600 "$F"
+#   kubectl create secret generic searxng-secret -n default \
+#     --from-file=SEARXNG_SECRET="$F" --dry-run=client -o yaml \
+#   | sops encrypt --filename-override apps/searxng-secret.enc.yaml \
+#       --input-type yaml --output-type yaml /dev/stdin > apps/searxng-secret.enc.yaml
+#   rm -f "$F"     # never print the value
+# The key signs SearXNG session cookies only — a change logs nobody out of anything
+# that matters, but a *missing* one makes the app refuse to start.
+#
+# ENGINES: with use_default_settings the `engines:` list MERGES by engine name
+# (it does not replace the list), and upstream ships google + bing `disabled: true`
+# while duckduckgo, brave and wikipedia are already on — the explicit
+# `disabled: false` lines are what make the five the task asks for, and keep them
+# from silently drifting. ~120 engines stay enabled in total (only the ones in the
+# requested category are queried per search). If upstreams start rate-limiting or
+# CAPTCHAing us, trim with `use_default_settings: {engines: {keep_only: [...]}}`.
+#
+# PLACEMENT: dave-droid (64 GB, no GPU needed) — the main node runs ~80% of its
+# 46 GB without swap. ClusterIP only for the app; humans get the tailnet Ingress.
+#
+# Skill: .agents/skills/openwebui-web-search
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: searxng-settings
+  namespace: default
+data:
+  settings.yml: |
+    use_default_settings: true
+
+    server:
+      # Placeholder: overwritten at runtime by the SEARXNG_SECRET env var
+      # (searx/settings_defaults.py: secret_key <- SEARXNG_SECRET). The real key
+      # lives in the SOPS secret apps/searxng-secret.enc.yaml.
+      secret_key: "set-by-searxng-secret-env"
+      # Internal-only instance: no bot limiter, no public-instance hardening.
+      limiter: false
+      public_instance: false
+      # Off: image results go straight from the browser to the engines' URLs.
+      image_proxy: false
+      # GET keeps the query out of browser history and is what Open WebUI expects.
+      method: "GET"
+
+    search:
+      # json is REQUIRED for Open WebUI (it POSTs/GETs format=json); SearXNG
+      # answers 403 for any format not listed here.
+      formats:
+        - html
+        - json
+      safe_search: 0
+      # Blank = no autocomplete round-trip to a third party while typing in the
+      # browser UI (Open WebUI never uses it).
+      autocomplete: ""
+      favicon_resolver: ""
+
+    engines:
+      # Merged into the upstream defaults by name; see header.
+      - name: google
+        disabled: false
+      - name: duckduckgo
+        disabled: false
+      - name: bing
+        disabled: false
+      - name: brave
+        disabled: false
+      - name: wikipedia
+        disabled: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: searxng
+  namespace: default
+  labels: { app: searxng }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }        # nothing to Surge on a 2-node lab; RWO-free but keep it simple
+  selector:
+    matchLabels: { app: searxng }
+  template:
+    metadata:
+      labels: { app: searxng }
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      securityContext:
+        # uid/gid of the "searxng" user inside the image (see header).
+        runAsUser: 977
+        runAsGroup: 977
+        fsGroup: 977
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: searxng
+          image: docker.io/searxng/searxng:2026.10.30-ffa88e3ba@sha256:f4aa660c54d062dedb268be84e821ea24e39f48c7a496af8dd02cc9eedb93847
+          env:
+            - name: SEARXNG_SECRET
+              valueFrom: { secretKeyRef: { name: searxng-secret, key: SEARXNG_SECRET } }
+            # Canonical public URL: makes the HTML UI's links/citations point at
+            # the tailnet name instead of a pod IP. Does not affect format=json.
+            - { name: SEARXNG_BASE_URL, value: "https://search.beluga-wyvern.ts.net" }
+            # 8080 is already the image default (GRANIAN_PORT); set explicitly so
+            # the alias in entrypoint.sh can't drift.
+            - { name: SEARXNG_PORT, value: "8080" }
+            # granian defaults to one worker per core; two x 4 blocking threads is
+            # plenty for one household and keeps memory bounded.
+            - { name: GRANIAN_WORKERS, value: "2" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            # The entrypoint requires this to be a DIRECTORY and settings.yml to be
+            # in it; mounting the ConfigMap whole gives the file a fixed location and
+            # keeps the pod from ever falling back to the image template.
+            - { name: settings, mountPath: /etc/searxng, readOnly: true }
+            # __SEARXNG_DATA_PATH: writable scratch the app uses (declared a VOLUME
+            # in the image, so it must be an explicit volume for us too).
+            - { name: data, mountPath: /var/cache/searxng }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: settings
+          configMap: { name: searxng-settings, defaultMode: 0444 }
+        - name: data
+          emptyDir: { sizeLimit: 256Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: searxng
+  namespace: default
+  labels: { app: searxng }
+spec:
+  selector: { app: searxng }
+  ports:
+    # 8080:8080 so the in-cluster URL Open WebUI uses is the plain container port.
+    - { name: http, port: 8080, targetPort: http }
+---
+# Tailnet-only search page (search.beluga-wyvern.ts.net, auto TLS) — same pattern
+# as apps/jellyfin.yaml / apps/openwebui.yaml. Never on the LAN, never public.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: searxng-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [search]
+  rules:
+    - host: search
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: searxng, port: { number: 8080 } } }
