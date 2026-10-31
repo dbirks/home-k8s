@@ -1,0 +1,434 @@
+apiVersion: v1
+data:
+  kiwix_mcp.py: |
+    """Kiwix MCP broker for Hermes (issue #164).
+
+    A tiny MCP server (streamable HTTP, JSON responses, stdlib only) that lets an agent:
+      * search the public Kiwix OPDS catalog (library.kiwix.org) for ZIM archives, with sizes,
+      * queue an approved archive for download into the HDD-backed library,
+      * watch the queue, and list / full-text search what is already on disk.
+
+    One worker thread downloads ONE archive at a time: resumable (.part + HTTP Range), size and sha-256
+    checked against the archive's .meta4 metalink, atomic rename, then `kiwix-manage library.xml add`.
+    kiwix-serve (apps/kiwix/kiwix.yaml) runs with --monitorLibrary, so a new book appears without a restart.
+
+    Guardrails: only https://download.kiwix.org/zim/ archives are accepted; a download is refused if it would
+    leave less than MIN_FREE_GIB free on the volume; nothing is ever deleted (no delete tool, and the worker
+    never removes a finished .zim). Queue state lives on the PVC (/library/.queue/queue.json), so it survives
+    restarts; an interrupted download resumes from its .part file.
+    """
+
+    import hashlib
+    import hmac
+    import json
+    import logging
+    import os
+    import re
+    import shutil
+    import subprocess
+    import threading
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    import xml.etree.ElementTree as ET
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    log = logging.getLogger("kiwix-mcp")
+
+    MCP_TOKEN = os.environ["MCP_TOKEN"].strip()
+    PORT = int(os.environ.get("PORT", "8080"))
+    LIB = os.environ.get("LIBRARY_DIR", "/library")
+    ZIM_DIR = os.path.join(LIB, "zim")
+    LIBRARY_XML = os.path.join(LIB, "library.xml")
+    QUEUE_FILE = os.path.join(LIB, ".queue", "queue.json")
+    KIWIX_MANAGE = os.environ.get("KIWIX_MANAGE", "/tools/kiwix-manage")
+    KIWIX_SERVE = os.environ.get("KIWIX_SERVE_URL", "http://kiwix.default.svc.cluster.local:8080").rstrip("/")
+    CATALOG = os.environ.get("CATALOG_URL", "https://library.kiwix.org").rstrip("/")
+    DOWNLOAD_BASE = "https://download.kiwix.org/zim/"
+    MIN_FREE = int(os.environ.get("MIN_FREE_GIB", "100")) * 1024 ** 3
+    SERVER_INFO = {"name": "kiwix-mcp", "version": "1.0.0"}
+    UA = {"User-Agent": "home-k8s-kiwix-mcp/1.0 (+https://github.com/dbirks/home-k8s)"}
+    GIB = 1024 ** 3
+
+    # <category>/<file>.zim under download.kiwix.org/zim/ -- nothing else is ever fetched.
+    _ZIM_PATH = re.compile(r"^([a-z0-9_-]+)/([A-Za-z0-9][A-Za-z0-9_.-]*\.zim)$")
+    NS = {"a": "http://www.w3.org/2005/Atom", "ml": "urn:ietf:params:xml:ns:metalink"}
+
+    _lock = threading.Lock()
+    _wake = threading.Event()
+
+
+    class ToolError(Exception):
+        pass
+
+
+    # ---------------------------------------------------------------- queue state (on the PVC)
+
+    def _load():
+        try:
+            with open(QUEUE_FILE) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+
+
+    def _save(q):
+        tmp = QUEUE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(q, f, indent=1)
+        os.replace(tmp, QUEUE_FILE)
+
+
+    def _update(name, **kw):
+        with _lock:
+            q = _load()
+            for j in q:
+                if j["file"] == name:
+                    j.update(kw)
+            _save(q)
+
+
+    # ---------------------------------------------------------------- helpers
+
+    def _get(url, timeout=60):
+        req = urllib.request.Request(url, headers=UA)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+
+
+    def _zim_path(url):
+        """Normalise an OPDS acquisition link / download URL to '<category>/<file>.zim', or refuse."""
+        u = urllib.parse.urlparse(str(url).strip())
+        if u.scheme != "https" or u.hostname not in ("download.kiwix.org", "lb.download.kiwix.org") or u.query:
+            raise ToolError("Only https://download.kiwix.org/zim/... archives are accepted (use a search_catalog result).")
+        path = u.path
+        if path.endswith(".meta4"):
+            path = path[: -len(".meta4")]
+        if not path.startswith("/zim/") or not _ZIM_PATH.match(path[5:]):
+            raise ToolError("Not a ZIM archive URL under /zim/<category>/<name>.zim.")
+        return path[5:]
+
+
+    def _metalink(zpath):
+        """Exact size + sha-256 from the archive's .meta4 (MirrorBrain metalink)."""
+        root = ET.fromstring(_get(DOWNLOAD_BASE + zpath + ".meta4"))
+        f = root.find("ml:file", NS)
+        size = int(f.findtext("ml:size", namespaces=NS))
+        sha = next((h.text.strip() for h in f.findall("ml:hash", NS) if h.get("type") == "sha-256"), None)
+        return size, sha
+
+
+    def _free():
+        return shutil.disk_usage(LIB).free
+
+
+    def _pending_bytes(q):
+        return sum(max(0, j["size"] - j.get("done_bytes", 0)) for j in q if j["status"] in ("queued", "downloading"))
+
+
+    def _library_files():
+        try:
+            return sorted(f for f in os.listdir(ZIM_DIR) if f.endswith(".zim"))
+        except FileNotFoundError:
+            return []
+
+
+    # ---------------------------------------------------------------- worker (one download at a time)
+
+    def _download(job):
+        name, dest = job["file"], os.path.join(ZIM_DIR, job["file"])
+        part = dest + ".part"
+        if os.path.exists(dest):
+            return  # already complete on disk; just (re)register it
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        if have > job["size"]:
+            os.replace(part, part + ".oversize")  # keep evidence, never delete; restart cleanly
+            have = 0
+        if have < job["size"]:
+            hdr = dict(UA, **({"Range": f"bytes={have}-"} if have else {}))
+            req = urllib.request.Request(DOWNLOAD_BASE + job["path"], headers=hdr)
+            with urllib.request.urlopen(req, timeout=120) as r:
+                mode = "ab"
+                if have and r.status != 206:
+                    mode, have = "wb", 0  # server ignored Range: start over
+                last = time.time()
+                with open(part, mode) as f:
+                    while True:
+                        chunk = r.read(4 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        have += len(chunk)
+                        if time.time() - last > 10:
+                            _update(name, done_bytes=have)
+                            last = time.time()
+            _update(name, done_bytes=have)
+        if os.path.getsize(part) != job["size"]:
+            raise RuntimeError(f"size mismatch: got {os.path.getsize(part)} expected {job['size']} (will resume on retry)")
+        if job.get("sha256"):
+            _update(name, status="verifying")
+            h = hashlib.sha256()
+            with open(part, "rb") as f:
+                for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                    h.update(chunk)
+            if h.hexdigest() != job["sha256"]:
+                os.replace(part, part + ".badhash")  # keep, never delete
+                raise RuntimeError("sha-256 mismatch; kept as .part.badhash, retry downloads afresh")
+        os.replace(part, dest)
+
+
+    def _register(name):
+        dest = os.path.join(ZIM_DIR, name)
+        r = subprocess.run([KIWIX_MANAGE, LIBRARY_XML, "add", dest], capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            raise RuntimeError(f"kiwix-manage add failed: {(r.stderr or r.stdout).strip()[:300]}")
+
+
+    def worker():
+        while True:
+            with _lock:
+                q = _load()
+                job = next((j for j in q if j["status"] in ("queued", "downloading", "verifying")), None)
+            if not job:
+                _wake.wait(60)
+                _wake.clear()
+                continue
+            name = job["file"]
+            try:
+                _update(name, status="downloading", started=job.get("started") or time.strftime("%FT%TZ", time.gmtime()))
+                log.info("download start %s (%d bytes)", name, job["size"])
+                _download(job)
+                _register(name)
+                _update(name, status="done", done_bytes=job["size"], finished=time.strftime("%FT%TZ", time.gmtime()),
+                        error=None)
+                log.info("download done %s", name)
+            except Exception as e:  # noqa: BLE001 - recorded on the job, retried with backoff
+                tries = job.get("tries", 0) + 1
+                status = "failed" if tries >= 5 else "queued"
+                _update(name, status=status, tries=tries, error=str(e)[:300])
+                log.warning("download %s attempt %d: %s", name, tries, e)
+                time.sleep(min(600, 30 * tries))
+
+
+    # ---------------------------------------------------------------- tools
+
+    def t_search_catalog(a):
+        q = {"q": str(a.get("query") or "").strip() or None,
+             "lang": str(a.get("lang") or "").strip() or None,
+             "category": str(a.get("category") or "").strip() or None,
+             "count": max(1, min(int(a.get("limit") or 20), 100))}
+        max_mb = a.get("max_size_mb")
+        url = CATALOG + "/catalog/v2/entries?" + urllib.parse.urlencode({k: v for k, v in q.items() if v is not None})
+        root = ET.fromstring(_get(url))
+        have = set(_library_files())
+        out = []
+        for e in root.findall("a:entry", NS):
+            acq = next((l for l in e.findall("a:link", NS) if l.get("rel", "").endswith("/acquisition/open-access")), None)
+            if acq is None:
+                continue
+            size = int(acq.get("length") or 0)
+            if max_mb and size > float(max_mb) * 1024 * 1024:
+                continue
+            href = acq.get("href")
+            try:
+                zpath = _zim_path(href)
+            except ToolError:
+                continue
+            out.append({"title": e.findtext("a:title", namespaces=NS), "name": e.findtext("a:name", namespaces=NS),
+                        "flavour": e.findtext("a:flavour", namespaces=NS), "language": e.findtext("a:language", namespaces=NS),
+                        "category": e.findtext("a:category", namespaces=NS), "summary": e.findtext("a:summary", namespaces=NS),
+                        "articles": e.findtext("a:articleCount", namespaces=NS), "date": e.findtext("a:updated", namespaces=NS),
+                        "size_mb": round(size / 1024 / 1024, 1), "url": DOWNLOAD_BASE + zpath,
+                        "already_downloaded": zpath.split("/")[1] in have})
+        return {"total_matches": root.findtext("a:totalResults", namespaces=NS), "results": out,
+                "free_gib": round(_free() / GIB, 1)}
+
+
+    def t_queue_download(a):
+        zpath = _zim_path(a.get("url", ""))
+        name = zpath.split("/")[1]
+        try:
+            size, sha = _metalink(zpath)
+        except (urllib.error.URLError, ET.ParseError, AttributeError, TypeError, ValueError):
+            raise ToolError("Could not read that archive's metalink (.meta4); is the URL current? Search again.")
+        with _lock:
+            q = _load()
+            if os.path.exists(os.path.join(ZIM_DIR, name)):
+                return {"queued": False, "reason": "already downloaded", "file": name}
+            old = next((j for j in q if j["file"] == name), None)
+            if old and old["status"] != "failed":
+                return {"queued": False, "reason": f"already in queue ({old['status']})", "file": name}
+            left = _free() - _pending_bytes(q) - size
+            if left < MIN_FREE:
+                raise ToolError(f"Refused: would leave {left / GIB:.0f} GiB free (< {MIN_FREE // GIB} GiB guardrail). "
+                                f"Archive is {size / GIB:.1f} GiB.")
+            job = {"file": name, "path": zpath, "size": size, "sha256": sha, "status": "queued", "done_bytes": 0,
+                   "tries": 0, "queued": time.strftime("%FT%TZ", time.gmtime())}
+            q = [j for j in q if j["file"] != name] + [job]
+            _save(q)
+        _wake.set()
+        log.info("queued %s (%d bytes)", name, size)
+        return {"queued": True, "file": name, "size_mb": round(size / 1024 ** 2, 1), "position": sum(
+            1 for j in q if j["status"] in ("queued", "downloading", "verifying"))}
+
+
+    def t_list_queue(a):
+        with _lock:
+            q = _load()
+        rows = [{"file": j["file"], "status": j["status"], "size_mb": round(j["size"] / 1024 ** 2, 1),
+                 "progress_pct": round(100 * j.get("done_bytes", 0) / j["size"], 1) if j["size"] else None,
+                 "tries": j.get("tries", 0), "error": j.get("error"), "queued": j.get("queued"),
+                 "finished": j.get("finished")} for j in q]
+        return {"jobs": rows, "free_gib": round(_free() / GIB, 1), "pending_gib": round(_pending_bytes(q) / GIB, 2)}
+
+
+    def t_list_library(a):
+        files = _library_files()
+        return {"archives": [{"file": f, "size_mb": round(os.path.getsize(os.path.join(ZIM_DIR, f)) / 1024 ** 2, 1),
+                              "book": f[:-4]} for f in files],
+                "free_gib": round(_free() / GIB, 1), "browse": "https://kiwix.beluga-wyvern.ts.net/"}
+
+
+    def t_search_library(a):
+        pattern = str(a.get("query") or "").strip()
+        if not pattern:
+            raise ToolError("'query' is required.")
+        q = {"pattern": pattern, "format": "xml", "pageLength": max(1, min(int(a.get("limit") or 10), 50))}
+        if a.get("book"):
+            q["books.name"] = str(a["book"])
+        raw = _get(KIWIX_SERVE + "/search?" + urllib.parse.urlencode(q), timeout=30)
+        root = ET.fromstring(raw)
+        items = [{"title": i.findtext("title"), "book": (i.findtext("book/title") or ""),
+                  "link": "https://kiwix.beluga-wyvern.ts.net" + (i.findtext("link") or ""),
+                  "snippet": re.sub(r"<[^>]+>", "", i.findtext("description") or "")[:400]}
+                 for i in root.iter("item")]
+        return {"results": items}
+
+
+    S = lambda **p: {"type": "string", **p}  # noqa: E731
+    TOOLS = {
+        "search_catalog": (t_search_catalog,
+                           "Search the public Kiwix catalog of offline archives (Wikipedia, Wiktionary, Stack Exchange, "
+                           "Gutenberg, TED, ...). Returns title, language, flavour (mini/nopic/maxi), size_mb and the url "
+                           "to pass to queue_download. lang is ISO-639-3 (eng, fra, deu...).",
+                           {"query": S(), "lang": S(), "category": S(description="e.g. wikipedia, stack_exchange, gutenberg"),
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                            "max_size_mb": {"type": "number"}}, []),
+        "queue_download": (t_queue_download,
+                           "Queue ONE archive for download to the home Kiwix library. BEFORE calling this, show the user "
+                           "the exact title, flavour, language and size (and the total if several) and get their explicit "
+                           "yes for these specific archives. Never queue anything they did not approve. Large archives "
+                           "(Wikipedia maxi is ~100+ GiB) take hours.",
+                           {"url": S(description="url from search_catalog")}, ["url"]),
+        "list_queue": (t_list_queue, "Download queue with status (queued/downloading/verifying/done/failed), progress "
+                       "and errors, plus free disk space.", {}, []),
+        "list_library": (t_list_library, "Archives already downloaded and served by the home Kiwix server.", {}, []),
+        "search_library": (t_search_library, "Full-text search the downloaded archives (optionally one `book`, the "
+                           "name shown by list_library). Returns titles, snippets and links.",
+                           {"query": S(), "book": S(), "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
+                           ["query"]),
+    }
+
+
+    def handle_rpc(msg):
+        method, mid = msg.get("method"), msg.get("id")
+        if mid is None:
+            return None
+        if method == "initialize":
+            pv = (msg.get("params") or {}).get("protocolVersion", "2025-06-18")
+            result = {"protocolVersion": pv, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": SERVER_INFO,
+                      "instructions": "Home offline library (Kiwix). Search the catalog, present options with sizes, and "
+                                      "only queue_download archives the user explicitly approved."}
+        elif method == "ping":
+            result = {}
+        elif method == "tools/list":
+            result = {"tools": [{"name": n, "description": d,
+                                 "inputSchema": {"type": "object", "properties": p, **({"required": r} if r else {})}}
+                                for n, (_, d, p, r) in TOOLS.items()]}
+        elif method == "tools/call":
+            p = msg.get("params") or {}
+            name, args = p.get("name"), p.get("arguments") or {}
+            if name not in TOOLS:
+                return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"Unknown tool: {name}"}}
+            try:
+                out = TOOLS[name][0](args)
+                log.info("tool=%s ok", name)
+                result = {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False)}], "isError": False}
+            except (ToolError, ValueError, TypeError) as e:
+                log.info("tool=%s error: %s", name, e)
+                result = {"content": [{"type": "text", "text": str(e)}], "isError": True}
+            except (urllib.error.URLError, ET.ParseError, OSError) as e:
+                log.warning("tool=%s upstream error: %s", name, e)
+                result = {"content": [{"type": "text", "text": f"Upstream error: {e}"}], "isError": True}
+            except Exception:
+                log.exception("tool=%s crashed", name)
+                result = {"content": [{"type": "text", "text": "Internal broker error."}], "isError": True}
+        else:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+        return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, obj=None, extra=None):
+            body = b"" if obj is None else json.dumps(obj).encode()
+            self.send_response(code)
+            if obj is not None:
+                self.send_header("Content-Type", "application/json")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/healthz":
+                return self._send(200, {"ok": True})
+            self._send(405, extra={"Allow": "POST"})
+
+        def do_DELETE(self):
+            self._send(405, extra={"Allow": "POST"})
+
+        def do_POST(self):
+            if self.path.split("?")[0] != "/mcp":
+                return self._send(404, {"error": "not found"})
+            auth = self.headers.get("Authorization", "")
+            if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip().encode(), MCP_TOKEN.encode())):
+                log.warning("unauthorized request")
+                return self._send(401, {"error": "unauthorized"})
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                if n > 1_000_000:
+                    return self._send(413, {"error": "too large"})
+                payload = json.loads(self.rfile.read(n) or b"null")
+            except (ValueError, json.JSONDecodeError):
+                return self._send(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+            batch = payload if isinstance(payload, list) else [payload]
+            replies = [r for r in (handle_rpc(m) for m in batch if isinstance(m, dict)) if r is not None]
+            if not replies:
+                return self._send(202)
+            self._send(200, replies if isinstance(payload, list) else replies[0])
+
+
+    if __name__ == "__main__":
+        os.makedirs(ZIM_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
+        with _lock:  # a job interrupted mid-download resumes from its .part
+            q = _load()
+            for j in q:
+                if j["status"] in ("downloading", "verifying"):
+                    j["status"] = "queued"
+            _save(q)
+        threading.Thread(target=worker, daemon=True).start()
+        log.info("kiwix-mcp starting: library %s, min free %d GiB", LIB, MIN_FREE // GIB)
+        ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+kind: ConfigMap
+metadata:
+  name: kiwix-mcp-code
+  namespace: default

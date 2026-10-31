@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    MCP_TOKEN: ENC[AES256_GCM,data:/zHXxyhKZ8d2iQdrOIdHKRMjKTS0955w3RkcDW+fh7bWETop8teALAgfqB6eGRT3aDKi2LFSmjXppAZE0tk7L4F8xNz4fJ0X7gju/oo1KaQ6tKm9AiX3tw==,iv:qs8HEt/PRolQlygtR4blZca+kxgm2YPNZ/7UMmvEmSo=,tag:Q9vsfdzhv+xK8qz6BMJPVg==,type:str]
+kind: Secret
+metadata:
+    name: kiwix-mcp-token
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA0UGNTM3Ftd1FNSktWVXk4
+            ay9kb0RuLzB6VDhBdVdGNDZlZDhlUCtjTjJjClNwV0VaaG5KWVloeXdsR09rY29N
+            azdyTEZTdlNPYUZqcUM4TzVjNnl6WEkKLS0tICtlSW5zaEtkRVpERVdOeDhOeHBS
+            NTVLMFFqbmhyWTM4UW41QWF0V2x5UjAKA+kkGnf1NeZjUCr/M2ysXDM75qa2z6KQ
+            P2Vx7LG82WUMrnuR+y8/G0WnRwyCO0IrbMblxsrpS2r3FgrPZDOKXg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-31T16:21:48Z"
+    mac: ENC[AES256_GCM,data:aCyK7bflFpGBJWFxPvdM63ftqdA7G6jLNiweYuTzH238bSQ7BqxF0pWd2k9xY92oBnbyQo4RZmc6eRG3lIimxgK52yEqzSHK5Fv8cj+6Xv1fplYA215Rj3IJvR+u8PGbqmAYzpRAmm7lz2mf49Ae26ylkLS4nw/YxnM25OBjkEQ=,iv:tSVu/bRHBQrn4+OEn5qiKzjLq+86mYr0UGDtWyfOw9g=,tag:08RFFVtlI6X9kVNJkIL/4w==,type:str]
+    version: 3.13.3

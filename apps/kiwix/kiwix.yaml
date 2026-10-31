@@ -1,0 +1,118 @@
+# Kiwix offline library (issue #164). Operate via the kiwix-library skill.
+#
+# kiwix-serve serves every ZIM listed in /library/library.xml at kiwix.<tailnet>.ts.net (tailnet only), and
+# --monitorLibrary reloads that file when it changes, so newly downloaded books appear without a restart.
+# Archives are fetched by the kiwix-mcp broker (kiwix-mcp.yaml), which Hermes drives: search the catalog ->
+# user approves -> queue -> download/verify -> `kiwix-manage add`. This pod only READS the library.
+#
+# Storage: kiwix-library on the spinning disk (local-path-hdd lives only on talos-210-73x). Layout:
+#   /library/library.xml   the book index (written only by kiwix-manage in the broker)
+#   /library/zim/*.zim     archives (never deleted by anything here)
+#   /library/.queue/       broker queue state
+# Image: kiwix-tools ships the static kiwix-serve/kiwix-manage binaries (the kiwix-serve image is the same
+# binaries plus a start.sh we don't need).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kiwix-library
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]   # single node: the broker pod on the same node shares it
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 500Gi             # not enforced by local-path; the broker keeps >=100GiB of the HDD free
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kiwix
+  namespace: default
+  labels: { app: kiwix }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: kiwix }
+  template:
+    metadata:
+      labels: { app: kiwix }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      initContainers:
+        # Root only to lay out the volume and hand it to uid 65534 (local-path ignores fsGroup).
+        - name: layout
+          image: ghcr.io/kiwix/kiwix-tools:3.8.2@sha256:2914a200ff64e0861c82733010eb7583d17334dde4d7248b9d9aa7b2f7b5a36d
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              mkdir -p /library/zim /library/.queue
+              [ -s /library/library.xml ] || printf '<?xml version="1.0" encoding="UTF-8"?>\n<library version="20110515">\n</library>\n' > /library/library.xml
+              chown 65534:65534 /library /library/zim /library/.queue /library/library.xml
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL], add: [CHOWN] }
+            seccompProfile: { type: RuntimeDefault }
+          volumeMounts:
+            - { name: library, mountPath: /library }
+      containers:
+        - name: kiwix-serve
+          image: ghcr.io/kiwix/kiwix-tools:3.8.2@sha256:2914a200ff64e0861c82733010eb7583d17334dde4d7248b9d9aa7b2f7b5a36d
+          command: ["/usr/local/bin/kiwix-serve", "--port=8080", "--threads=4", "--monitorLibrary",
+                    "--library", "/library/library.xml"]
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: "2", memory: 512Mi }
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 20
+          livenessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 60
+          volumeMounts:
+            - { name: library, mountPath: /library, readOnly: true }
+      volumes:
+        - name: library
+          persistentVolumeClaim: { claimName: kiwix-library }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kiwix
+  namespace: default
+spec:
+  selector: { app: kiwix }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+# Tailnet only: kiwix.<tailnet>.ts.net (same pattern as jellyfin-ts).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kiwix-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [kiwix]
+  rules:
+    - host: kiwix
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: kiwix, port: { number: 8080 } } }

@@ -1,0 +1,92 @@
+# Kiwix MCP broker for Hermes (issue #164). Operate via the kiwix-library skill.
+# Tools: search_catalog, queue_download, list_queue, list_library, search_library (kiwix_mcp.py, stdlib Python).
+# Its worker thread downloads one approved ZIM at a time into the kiwix-library PVC (resumable, size+sha256
+# checked from the .meta4), then `kiwix-manage add`s it; kiwix-serve picks it up via --monitorLibrary.
+# Only https://download.kiwix.org/zim/ is fetched; >=100GiB free is kept; nothing is ever deleted.
+#
+# CODE: regenerate the ConfigMap after editing kiwix_mcp.py:
+#   kubectl create configmap kiwix-mcp-code -n default --from-file=kiwix_mcp.py=apps/kiwix/kiwix_mcp.py --dry-run=client -o yaml > apps/kiwix/kiwix-mcp-code.yaml
+# SECRET (SOPS; public repo): kiwix-mcp-token MCP_TOKEN, the bearer Hermes presents (Hermes reads the same Secret).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kiwix-mcp
+  namespace: default
+  labels: { app: kiwix-mcp }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # never two workers on one queue
+  selector:
+    matchLabels: { app: kiwix-mcp }
+  template:
+    metadata:
+      labels: { app: kiwix-mcp }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }   # the HDD PVC lives here
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # kiwix-manage is a static binary; copy it out of the kiwix-tools image for the Python broker to run.
+        - name: tools
+          image: ghcr.io/kiwix/kiwix-tools:3.8.2@sha256:2914a200ff64e0861c82733010eb7583d17334dde4d7248b9d9aa7b2f7b5a36d
+          command: ["cp", "/usr/local/bin/kiwix-manage", "/tools/kiwix-manage"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tools, mountPath: /tools }
+      containers:
+        - name: broker
+          image: docker.io/library/python:3.13.18-slim-trixie@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+          command: ["python3", "-I", "-u", "/app/kiwix_mcp.py"]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+            - { name: LIBRARY_DIR, value: /library }
+            - { name: KIWIX_MANAGE, value: /tools/kiwix-manage }
+            - { name: KIWIX_SERVE_URL, value: "http://kiwix.default.svc.cluster.local:8080" }
+            - { name: MIN_FREE_GIB, value: "100" }
+            - name: MCP_TOKEN
+              valueFrom: { secretKeyRef: { name: kiwix-mcp-token, key: MCP_TOKEN } }
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: 10m, memory: 48Mi }
+            limits: { cpu: "1", memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 20
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 60
+          volumeMounts:
+            - { name: code, mountPath: /app, readOnly: true }
+            - { name: tools, mountPath: /tools, readOnly: true }
+            - { name: library, mountPath: /library }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: code, configMap: { name: kiwix-mcp-code } }
+        - { name: tools, emptyDir: { sizeLimit: 64Mi } }
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        - name: library
+          persistentVolumeClaim: { claimName: kiwix-library }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kiwix-mcp
+  namespace: default
+spec:
+  selector: { app: kiwix-mcp }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
