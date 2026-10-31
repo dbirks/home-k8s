@@ -1,0 +1,273 @@
+"""Youtarr MCP adapter for Hermes.
+
+A tiny MCP server (streamable HTTP, JSON responses, stdlib only) that wraps Youtarr's web API. Youtarr API keys
+can only queue single videos, so this pod logs in as the single Youtarr account (AUTH_PRESET_PASSWORD from the
+youtarr-secrets Secret) and keeps the 7-day session token in memory, re-logging in on a 401. Hermes only holds
+MCP_TOKEN; it never sees the Youtarr password or session.
+
+Deliberately NOT exposed: deleting/trashing videos, removing channels or playlists, config, auth, API keys,
+cookies, maintenance and logs. Every upstream call passes _api()'s method+path allowlist. Logs carry the tool
+name and outcome only.
+"""
+
+import hmac
+import json
+import logging
+import os
+import re
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("youtarr-mcp")
+
+BASE = os.environ.get("YOUTARR_URL", "http://youtarr.default.svc.cluster.local:3011").rstrip("/") + "/"
+USERNAME = os.environ.get("YOUTARR_USERNAME", "david").strip()
+PASSWORD = os.environ["YOUTARR_PASSWORD"].strip()
+MCP_TOKEN = os.environ["MCP_TOKEN"].strip()
+PORT = int(os.environ.get("PORT", "8080"))
+SERVER_INFO = {"name": "youtarr-mcp", "version": "1.0.0"}
+_YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+_RESOLUTIONS = {"360", "480", "720", "1080", "1440", "2160"}
+
+
+class ToolError(Exception):
+    pass
+
+
+_ALLOWED = [
+    ("POST", re.compile(r"^auth/login$")),
+    ("POST", re.compile(r"^api/videos/download$")),
+    ("GET", re.compile(r"^getchannels$")),
+    ("POST", re.compile(r"^addchannelinfo$")),
+    ("POST", re.compile(r"^updatechannels$")),
+    ("POST", re.compile(r"^triggerchanneldownloads$")),
+    ("GET", re.compile(r"^api/playlists$")),
+    ("POST", re.compile(r"^api/playlists$")),
+    ("GET", re.compile(r"^getVideos$")),
+    ("GET", re.compile(r"^api/jobs/current-activity$")),
+    ("GET", re.compile(r"^runningjobs$")),
+]
+
+_lock = threading.Lock()
+_session = {"token": None}
+
+
+def _raw(method, path, query=None, body=None, token=None):
+    if not any(m == method and rx.match(path) for m, rx in _ALLOWED):
+        log.error("BLOCKED upstream call method=%s path=%s", method, path)
+        raise ToolError("Blocked: that Youtarr operation is not allowed by this adapter.")
+    q = {k: v for k, v in (query or {}).items() if v is not None}
+    url = BASE + path + ("?" + urllib.parse.urlencode(q) if q else "")
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["x-access-token"] = token
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else {}
+
+
+def _login():
+    try:
+        tok = _raw("POST", "auth/login", body={"username": USERNAME, "password": PASSWORD}).get("token")
+    except urllib.error.HTTPError as e:
+        log.error("login failed: HTTP %s", e.code)
+        raise ToolError(f"Adapter could not log in to Youtarr (HTTP {e.code}).")
+    if not tok:
+        raise ToolError("Adapter could not log in to Youtarr (no token).")
+    _session["token"] = tok
+    return tok
+
+
+def _api(method, path, query=None, body=None):
+    for attempt in (1, 2):
+        with _lock:
+            tok = _session["token"] or _login()
+        try:
+            return _raw(method, path, query, body, tok)
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt == 1:
+                with _lock:
+                    if _session["token"] == tok:
+                        _session["token"] = None
+                continue
+            try:
+                j = json.loads(e.read() or b"{}")
+                msg = j.get("error") or j.get("message") or ""
+            except ValueError:
+                msg = ""
+            raise ToolError(f"Youtarr API error {e.code}: {msg}")
+    raise ToolError("Youtarr rejected the adapter's session.")
+
+
+def _yt_url(args, key="url"):
+    v = str(args.get(key, "")).strip()
+    u = urllib.parse.urlparse(v)
+    if u.scheme != "https" or (u.hostname or "").lower() not in _YT_HOSTS:
+        raise ToolError(f"'{key}' must be an https YouTube URL (youtube.com or youtu.be).")
+    return v
+
+
+def _int(args, key, default, lo, hi):
+    v = args.get(key)
+    return default if v is None else max(lo, min(int(v), hi))
+
+
+def t_queue_video(a):
+    res = a.get("resolution")
+    if res is not None and str(res) not in _RESOLUTIONS:
+        raise ToolError("resolution must be one of 360, 480, 720, 1080, 1440, 2160.")
+    return _api("POST", "api/videos/download", body={"url": _yt_url(a), **({"resolution": str(res)} if res else {})})
+
+
+def t_list_channels(a):
+    return _api("GET", "getchannels", {"page": _int(a, "page", 1, 1, 10000), "pageSize": _int(a, "page_size", 50, 1, 100),
+                                       "search": a.get("search") or None})
+
+
+def t_add_channel(a):
+    url = _yt_url(a)
+    info = _api("POST", "addchannelinfo", body={"url": url}).get("channelInfo") or {}
+    summary = {k: info.get(k) for k in ("channel_id", "title", "url")}
+    if info.get("enabled"):
+        return {"status": "already_subscribed", "channel": summary}
+    item = {"url": info.get("url") or url, **({"channel_id": info["channel_id"]} if info.get("channel_id") else {})}
+    _api("POST", "updatechannels", body={"add": [item]})
+    return {"status": "subscribed", "channel": summary,
+            "note": "New uploads download on Youtarr's channel schedule; call run_channel_downloads to fetch now."}
+
+
+def t_run_channel_downloads(a):
+    return _api("POST", "triggerchanneldownloads", body={})
+
+
+def t_list_playlists(a):
+    return _api("GET", "api/playlists", {"page": _int(a, "page", 1, 1, 10000), "pageSize": _int(a, "page_size", 50, 1, 100)})
+
+
+def t_add_playlist(a):
+    out = _api("POST", "api/playlists", body={"url": _yt_url(a)})
+    p = out.get("playlist") or {}
+    return {"status": "subscribed", "restored": out.get("restored"), "warning": out.get("warning"),
+            "playlist": {k: p.get(k) for k in ("id", "playlist_id", "title", "url") if k in p}}
+
+
+def t_list_videos(a):
+    return _api("GET", "getVideos", {"page": _int(a, "page", 1, 1, 10000), "limit": _int(a, "limit", 25, 1, 100),
+                                     "search": a.get("search") or None, "sortBy": "added", "sortOrder": "desc"})
+
+
+def t_download_status(a):
+    return {"current_activity": _api("GET", "api/jobs/current-activity"), "running_jobs": _api("GET", "runningjobs")}
+
+
+S = lambda **p: {"type": "string", **p}
+I = lambda lo, hi: {"type": "integer", "minimum": lo, "maximum": hi}
+TOOLS = {
+    "queue_video": (t_queue_video, "Download ONE YouTube video into the Jellyfin library (Youtarr). Duplicates of a "
+                    "queued/active video are ignored.", {"url": S(), "resolution": S(enum=sorted(_RESOLUTIONS, key=int))},
+                    ["url"]),
+    "list_channels": (t_list_channels, "Subscribed YouTube channels.",
+                      {"search": S(), "page": I(1, 10000), "page_size": I(1, 100)}, []),
+    "add_channel": (t_add_channel, "Subscribe to a YouTube channel so its new uploads auto-download. Uses disk space "
+                    "over time: confirm with the user first.", {"url": S()}, ["url"]),
+    "run_channel_downloads": (t_run_channel_downloads, "Run the subscribed-channel download job now instead of "
+                              "waiting for the schedule.", {}, []),
+    "list_playlists": (t_list_playlists, "Subscribed YouTube playlists.", {"page": I(1, 10000), "page_size": I(1, 100)}, []),
+    "add_playlist": (t_add_playlist, "Subscribe to a YouTube playlist (default settings). Confirm with the user first.",
+                     {"url": S()}, ["url"]),
+    "list_videos": (t_list_videos, "Downloaded videos, newest first.",
+                    {"search": S(), "page": I(1, 10000), "limit": I(1, 100)}, []),
+    "download_status": (t_download_status, "What Youtarr is downloading right now, and running/queued jobs.", {}, []),
+}
+
+
+def handle_rpc(msg):
+    method, mid = msg.get("method"), msg.get("id")
+    if mid is None:
+        return None
+    if method == "initialize":
+        pv = (msg.get("params") or {}).get("protocolVersion", "2025-06-18")
+        result = {"protocolVersion": pv, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": SERVER_INFO,
+                  "instructions": "Youtarr downloads YouTube videos, channels and playlists into the household "
+                                  "Jellyfin library. Subscriptions keep downloading: confirm before adding one."}
+    elif method == "ping":
+        result = {}
+    elif method == "tools/list":
+        result = {"tools": [{"name": n, "description": d,
+                             "inputSchema": {"type": "object", "properties": p, **({"required": r} if r else {})}}
+                            for n, (_, d, p, r) in TOOLS.items()]}
+    elif method == "tools/call":
+        p = msg.get("params") or {}
+        name, args = p.get("name"), p.get("arguments") or {}
+        if name not in TOOLS:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"Unknown tool: {name}"}}
+        try:
+            out = TOOLS[name][0](args)
+            log.info("tool=%s ok", name)
+            result = {"content": [{"type": "text", "text": json.dumps(out, ensure_ascii=False)}], "isError": False}
+        except (ToolError, ValueError, TypeError) as e:
+            log.info("tool=%s error", name)
+            result = {"content": [{"type": "text", "text": str(e)}], "isError": True}
+        except Exception:
+            log.exception("tool=%s crashed", name)
+            result = {"content": [{"type": "text", "text": "Internal adapter error."}], "isError": True}
+    else:
+        return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj=None, extra=None):
+        body = b"" if obj is None else json.dumps(obj).encode()
+        self.send_response(code)
+        if obj is not None:
+            self.send_header("Content-Type", "application/json")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/healthz":
+            return self._send(200, {"ok": True})
+        self._send(405, extra={"Allow": "POST"})
+
+    def do_DELETE(self):
+        self._send(405, extra={"Allow": "POST"})
+
+    def do_POST(self):
+        if self.path.split("?")[0] != "/mcp":
+            return self._send(404, {"error": "not found"})
+        auth = self.headers.get("Authorization", "")
+        if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip().encode(), MCP_TOKEN.encode())):
+            log.warning("unauthorized request")
+            return self._send(401, {"error": "unauthorized"})
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            if n > 2_000_000:
+                return self._send(413, {"error": "too large"})
+            payload = json.loads(self.rfile.read(n) or b"null")
+        except (ValueError, json.JSONDecodeError):
+            return self._send(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+        batch = payload if isinstance(payload, list) else [payload]
+        replies = [r for r in (handle_rpc(m) for m in batch if isinstance(m, dict)) if r is not None]
+        if not replies:
+            return self._send(202)
+        self._send(200, replies if isinstance(payload, list) else replies[0])
+
+
+if __name__ == "__main__":
+    log.info("youtarr-mcp starting: upstream %s", BASE)
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

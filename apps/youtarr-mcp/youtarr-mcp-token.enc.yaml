@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    MCP_TOKEN: ENC[AES256_GCM,data:Ke430gva/wFqmwJqTqqwQX10Z3nPztzHG9/W/lVr5K2vPTRvORGuQg8wzPm50kmGZFCJiQ/cgp8pAPNgXsLBLA==,iv:UnkrkZpRpcKvAOmWM3Ap/rljNqu0aGH5Np+vcxmIp2M=,tag:hDiFJ61eKDz9+tKh204HSA==,type:str]
+kind: Secret
+metadata:
+    name: youtarr-mcp-token
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBEVS9scElTTlNtVzQ0dktl
+            MXl4N0wva0JEVE0xdVBMQnI0Vk1UN1lrbUV3CjZYdjZRQTNtdUlRbWZSK0tEOGxK
+            UlU2L0wvS0p4SjhlTDdOcG1QdTJ4aTQKLS0tIGVRbkJZd2JzY0E2dXBSUjVkSkJL
+            QkZuYkR0SFE4dW0vTDVUTVNjdjlwem8Ko+vhXDpRAGOrglyCBzNgwS89JClxrhg/
+            SU2PvOGGiHsbQKArj3Fe21wmUiShnFyaBrVi/JC2VEfDch51l5ti8g==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-10-31T16:13:17Z"
+    mac: ENC[AES256_GCM,data:1LUjxTnCz04KAwqn8iyMkTXbHU5OVpn5LqQqJxNVomkE3CWQJWGjoFytSuoH+QZiwEssDInnlxMWQf5TcIBv6G4JT3nJqjWDRb+nNdAs2GrY+cinDnLSOQRmDEnt3X5es6+bkj/eYLhKUT96MHhi43QsyHT7Klw5bAzBDF3kYYo=,iv:u0Hnhwj0IVKfBO4t2KLc4GaoD7IbuKISfLTxZ9qh4hg=,tag:hDoC3Mwa/lYkHM93KqeiTg==,type:str]
+    version: 3.13.3

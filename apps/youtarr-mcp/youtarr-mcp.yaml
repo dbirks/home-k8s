@@ -1,0 +1,77 @@
+# Youtarr MCP adapter for Hermes. Operate via the youtarr skill.
+# Youtarr API keys can only queue single videos, so this pod (youtarr_mcp.py, stdlib Python, no pip) logs in as
+# the Youtarr account and exposes an allowlisted set of tools: queue a video, list/subscribe channels and
+# playlists, list downloads, download status. No delete/unsubscribe/config/auth/key/maintenance endpoints.
+#
+# CODE: regenerate the ConfigMap after editing youtarr_mcp.py:
+#   kubectl create configmap youtarr-mcp-code -n default --from-file=youtarr_mcp.py=apps/youtarr-mcp/youtarr_mcp.py --dry-run=client -o yaml > apps/youtarr-mcp/youtarr-mcp-code.yaml
+# SECRETS (SOPS; public repo, never plaintext):
+#   youtarr-secrets    AUTH_PRESET_PASSWORD (the Youtarr login; apps/youtarr-secrets.enc.yaml)
+#   youtarr-mcp-token  MCP_TOKEN, the bearer Hermes presents (Hermes reads the same Secret)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: youtarr-mcp
+  namespace: default
+  labels: { app: youtarr-mcp }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: youtarr-mcp }
+  template:
+    metadata:
+      labels: { app: youtarr-mcp }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: adapter
+          image: docker.io/library/python:3.13.18-slim-trixie@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+          command: ["python3", "-I", "-u", "/app/youtarr_mcp.py"]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+            - { name: YOUTARR_URL, value: "http://youtarr.default.svc.cluster.local:3011" }
+            - { name: YOUTARR_USERNAME, value: david }
+            - name: YOUTARR_PASSWORD
+              valueFrom: { secretKeyRef: { name: youtarr-secrets, key: AUTH_PRESET_PASSWORD } }
+            - name: MCP_TOKEN
+              valueFrom: { secretKeyRef: { name: youtarr-mcp-token, key: MCP_TOKEN } }
+          ports:
+            - { name: http, containerPort: 8080 }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 20
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 60
+          volumeMounts:
+            - { name: code, mountPath: /app, readOnly: true }
+      volumes:
+        - { name: code, configMap: { name: youtarr-mcp-code } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: youtarr-mcp
+  namespace: default
+spec:
+  selector: { app: youtarr-mcp }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

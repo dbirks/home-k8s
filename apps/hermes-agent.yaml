@@ -120,6 +120,9 @@ spec:
             # Bearer for the Gnotes MCP adapter (apps/gnotes-mcp, #163). config.yaml mcp_servers.gnotes.headers.
             - name: GNOTES_MCP_TOKEN
               valueFrom: { secretKeyRef: { name: gnotes-mcp-token, key: MCP_TOKEN } }
+            # Bearer for the Youtarr MCP adapter (apps/youtarr-mcp). config.yaml mcp_servers.youtarr.headers.
+            - name: YOUTARR_MCP_TOKEN
+              valueFrom: { secretKeyRef: { name: youtarr-mcp-token, key: MCP_TOKEN } }
           ports:
             - { name: dashboard, containerPort: 9119 }
           resources:

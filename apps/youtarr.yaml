@@ -1,0 +1,194 @@
+# Youtarr (https://github.com/DialmasterOrg/Youtarr, ISC): subscribe to YouTube channels/playlists and
+# download them with yt-dlp into the Jellyfin library. Operate via the youtarr skill.
+#
+# Reachable ONLY over the tailnet as youtarr.beluga-wyvern.ts.net (Tailscale Ingress below).
+# Login: single local account `david`, password = AUTH_PRESET_PASSWORD in the youtarr-secrets Secret
+# (re-applied on every restart, so it is GitOps-owned; change it by rotating the SOPS secret).
+#
+# STORAGE (all on the HDD, local-path-hdd, so pinned to talos-210-73x where the disk lives):
+#   videos  -> jellyfin-media-hdd subPath `youtarr`  (Jellyfin sees it at /media/youtarr). Kept apart from the
+#              youtube-media-capture CronJob's folders and its .youtube-capture-archive.
+#   youtarr-data PVC -> config/ (config.json, logs, setup-token), jobs/, images/ (thumbnails), mysql/ (MariaDB)
+#
+# DB: MariaDB 10.11 LTS as a native sidecar on 127.0.0.1 only. NEVER bump MariaDB and Youtarr in the same
+# commit: let MariaDB finish its own data upgrade, then roll Youtarr (upstream docs/platforms/external-db.md).
+#
+# AGENTS: API keys (Settings -> API Keys) can only queue single videos; Hermes uses apps/youtarr-mcp instead.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: youtarr-data
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: youtarr
+  namespace: default
+  labels: { app: youtarr }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: youtarr }
+  template:
+    metadata:
+      labels: { app: youtarr }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # local-path hostPath dirs and kubelet-created subPaths start root-owned: hand them to the app users.
+        - name: perms
+          image: docker.io/dialmaster/youtarr:v1.90.2@sha256:b50bf3ddf4887abfb3a0adfbb7984bd25a422abe10fb71a58a326caa2d971bf4
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /data/config /data/jobs /data/images /data/mysql /media/youtarr
+              chown 1000:1000 /data/config /data/jobs /data/images /media/youtarr
+              chown 999:999 /data/mysql
+              chmod 700 /data/config /data/mysql
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL], add: [CHOWN, FOWNER, DAC_OVERRIDE] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: media, mountPath: /media }
+        # Native sidecar: starts (and passes its startupProbe) before youtarr, stops after it.
+        - name: mariadb
+          image: docker.io/library/mariadb:10.11.19@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae
+          restartPolicy: Always
+          args:
+            - --bind-address=127.0.0.1
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_unicode_ci
+            - --innodb-file-per-table=1
+            - --innodb-buffer-pool-size=128M
+          env:
+            - { name: MARIADB_DATABASE, value: youtarr }
+            - { name: MARIADB_USER, value: youtarr }
+            - name: MARIADB_PASSWORD
+              valueFrom: { secretKeyRef: { name: youtarr-secrets, key: DB_PASSWORD } }
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: youtarr-secrets, key: MARIADB_ROOT_PASSWORD } }
+          resources:
+            requests: { cpu: 20m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          startupProbe:
+            tcpSocket: { port: 3306 }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            tcpSocket: { port: 3306 }
+            periodSeconds: 30
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/mysql, subPath: mysql }
+            - { name: mysql-run, mountPath: /run/mysqld }
+            - { name: mysql-tmp, mountPath: /tmp }
+      containers:
+        - name: youtarr
+          image: docker.io/dialmaster/youtarr:v1.90.2@sha256:b50bf3ddf4887abfb3a0adfbb7984bd25a422abe10fb71a58a326caa2d971bf4
+          env:
+            - { name: TZ, value: America/Indiana/Indianapolis }
+            - { name: DB_HOST, value: "127.0.0.1" }
+            - { name: DB_PORT, value: "3306" }
+            - { name: DB_USER, value: youtarr }
+            - { name: DB_NAME, value: youtarr }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: youtarr-secrets, key: DB_PASSWORD } }
+            - { name: AUTH_PRESET_USERNAME, value: david }
+            - name: AUTH_PRESET_PASSWORD
+              valueFrom: { secretKeyRef: { name: youtarr-secrets, key: AUTH_PRESET_PASSWORD } }
+            # One proxy hop (the Tailscale ingress proxy).
+            - { name: TRUST_PROXY, value: "1" }
+            - { name: YOUTUBE_OUTPUT_DIR, value: /media/youtarr }
+            # Same logged-in YouTube cookies the youtube-media-capture CronJob uses. Youtarr only reads this file
+            # (it validates a private copy), so a read-only Secret mount is safe. Still needs Settings -> Cookies
+            # -> Enable Cookies in the UI to take effect.
+            - { name: YOUTARR_COOKIES_FILE, value: /cookies/cookies.txt }
+          ports:
+            - { name: http, containerPort: 3011 }
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 2Gi }
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          startupProbe:
+            httpGet: { path: /api/health, port: 3011 }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3011 }
+            periodSeconds: 20
+          livenessProbe:
+            httpGet: { path: /api/health, port: 3011 }
+            periodSeconds: 60
+            timeoutSeconds: 10
+          volumeMounts:
+            - { name: media, mountPath: /usr/src/app/data, subPath: youtarr }
+            - { name: data, mountPath: /app/config, subPath: config }
+            - { name: data, mountPath: /app/jobs, subPath: jobs }
+            - { name: data, mountPath: /app/server/images, subPath: images }
+            - { name: cookies, mountPath: /cookies, readOnly: true }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: youtarr-data }
+        - name: media
+          persistentVolumeClaim: { claimName: jellyfin-media-hdd }
+        - name: cookies
+          secret:
+            secretName: ncc-youtube-cookies
+            optional: true
+            items: [{ key: cookies.txt, path: cookies.txt, mode: 0444 }]
+        - { name: mysql-run, emptyDir: {} }
+        - { name: mysql-tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: youtarr
+  namespace: default
+spec:
+  selector: { app: youtarr }
+  ports:
+    - { name: http, port: 3011, targetPort: 3011 }
+---
+# Tailscale Ingress: youtarr.beluga-wyvern.ts.net, tailnet only, never public.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: youtarr-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts:
+        - youtarr
+  rules:
+    - host: youtarr
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: youtarr, port: { number: 3011 } } }
