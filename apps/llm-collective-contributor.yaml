@@ -112,6 +112,19 @@ data:
             model: Qwen3-ASR-1.7B
             types: [transcription]
             inputs: [audio]
+      # LFM3-Omni-2B Q4_K_M (+ Q8_0 mmproj), llama.cpp b12030 Vulkan on dave-droid's GTX 1070 (apps/lfm3-omni.yaml,
+      # #167). Speech-to-speech on the realtime door only: GET /v1/realtime?model=lfm3-omni-2b (16 kHz PCM16 in,
+      # 24 kHz PCM16 out, text+audio events). One llama-server slot shared by prod and dev, and a realtime WS holds
+      # it for the whole session, so concurrency 1 each. Warm time-to-first-audio ~0.3 s (lfm3-omni skill).
+      - name: lfm3-omni
+        url: http://lfm3-omni.default.svc.cluster.local:8080
+        protocols: [openai]
+        concurrency: 1
+        models:
+          - alias: lfm3-omni-2b
+            model: lfm3-omni-2b
+            types: [realtime]
+            inputs: [audio, text]
       # Gradium Phonon 31m-en q8 (Apache-2.0), CPU only on dave-droid (apps/phonon-tts.yaml, #160), POST
       # /v1/audio/speech only; the server ignores `model`. Catalog voices only (GET /v1/audio/voices on the pod;
       # OpenAI names alloy/echo/fable/onyx/nova/shimmer are aliased), mp3/opus/wav/pcm, speed must be 1.0,
