@@ -1,0 +1,130 @@
+# LiquidAI LFM3-Omni-2B (Q4_K_M + Q8_0 mmproj) on llama.cpp llama-server, Vulkan, on dave-droid's GTX 1070
+# (Pascal sm_61), issue #167. Speech-to-speech: the Collective publishes it as a `realtime` model on its
+# OpenAI-style `GET /v1/realtime?model=...` WebSocket door (contributor backend `lfm3-omni`).
+#
+# Why Vulkan: CUDA 13 dropped Pascal, and the upstream server-cuda images can't be trusted to carry sm_61.
+# The Vulkan build is the same one qwen3-asr already runs on this card (see apps/qwen3-asr.yaml for the
+# ICD notes). HAMi's gpumem only limits CUDA, so 4000 MiB here is accounting, not enforcement: the real
+# co-residency headroom was measured by hand (lfm3-omni skill).
+#
+# Weights: pinned HF revision, fetched once into the PVC and sha256-checked; restarts skip the download.
+# mmproj Q8_0 (not Q4_K_M): it carries the audio encoder AND the speech decoder, Liquid's own llama-tts
+# example pairs Q4_K_M weights with the Q8_0 mmproj, and it only costs ~215 MB more.
+#
+# llama-server has NO auth: ClusterIP only, reached by the LLM Collective contributor (concurrency 1,
+# one slot). --reasoning off is required (LFM3-Omni is not a reasoning model). Rollback: replicas 0 here
+# and drop the `lfm3-omni` backend from both contributor ConfigMaps; qwen3-asr is untouched either way.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lfm3-omni-models
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path        # binds on dave-droid (WaitForFirstConsumer)
+  resources: { requests: { storage: 10Gi } }   # Q4_K_M 1.10 GB + mmproj Q8_0 0.51 GB, room for a Q8_0 pair later
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lfm3-omni
+  namespace: default
+  labels: { app: lfm3-omni }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: lfm3-omni }
+  template:
+    metadata:
+      labels: { app: lfm3-omni }
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      initContainers:
+        - name: fetch-weights
+          image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+          command:
+            - sh
+            - -ec
+            - |
+              REV=3d29af2ad166f8299c2d820937e47dc0add20ffc
+              d=/data/models/$REV
+              mkdir -p "$d" && cd "$d"
+              fetch() {   # file sha256
+                if [ -f "$1" ] && echo "$2  $1" | sha256sum -c -s -; then echo "$1 ok"; return; fi
+                wget -q -O "$1.part" "https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/$REV/$1"
+                echo "$2  $1.part" | sha256sum -c -
+                mv "$1.part" "$1"
+              }
+              fetch LFM3-Omni-2B-Q4_K_M.gguf     9f8d30e9d4fd7a9349d586e077988229b3ca0a0e4ad730897563d1eccc9893e2
+              fetch mmproj-LFM3-Omni-2B-Q8_0.gguf 8a25f9d1931244429de404fccacfb7fb933970a36aa5688d2f5069f29c6b27b1
+              ls -la "$d"
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      containers:
+        - name: llama
+          # llama.cpp b12030 (>= b11960 / v0.8.0, which added LFM3-Omni realtime speech), Vulkan server build.
+          image: ghcr.io/ggml-org/llama.cpp:server-vulkan-b12030@sha256:dfb1ba32020a962b4aba4eab5de587907b044daff0d043b3652e15ca3b8895a1
+          args:
+            - --model
+            - /data/models/3d29af2ad166f8299c2d820937e47dc0add20ffc/LFM3-Omni-2B-Q4_K_M.gguf
+            - --mmproj
+            - /data/models/3d29af2ad166f8299c2d820937e47dc0add20ffc/mmproj-LFM3-Omni-2B-Q8_0.gguf
+            - --alias
+            - lfm3-omni-2b
+            - --reasoning
+            - "off"
+            - --temp
+            - "0"                    # text greedy; the audio sampling (temp 0.4, rep-pen 1.2) comes from the GGUF
+            - --ctx-size
+            - "8192"
+            - --parallel
+            - "1"
+            - --n-gpu-layers
+            - all
+            - --no-webui
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8080"
+          env:
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }          # graphics = the Vulkan ICD
+            - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
+          ports:
+            - { name: http, containerPort: 8080 }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 4
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { cpu: "6", memory: 6Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "4000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: lfm3-omni-models }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lfm3-omni
+  namespace: default
+spec:
+  selector: { app: lfm3-omni }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
