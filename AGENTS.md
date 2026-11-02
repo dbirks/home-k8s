@@ -83,6 +83,7 @@ kubectl create secret generic sops-age --namespace=flux-system \
 - Hermes Agent (#162): `apps/hermes-agent.yaml` on dave-droid, `hermes.beluga-wyvern.ts.net` with tsidp OIDC login, Collective model (hermes-agent skill)
 - Kiwix offline library (#164): `apps/kiwix/` — kiwix-serve on the HDD PVC `kiwix-library` (talos-210-73x), tailnet-only `kiwix.beluga-wyvern.ts.net`; `kiwix-mcp` broker for Hermes (catalog search, approved ZIM downloads, full-text search) (kiwix-library skill)
 - Youtarr (#166): `apps/youtarr.yaml` + `apps/youtarr-mcp/` — YouTube channel/playlist downloader into the Jellyfin media PVC `jellyfin-media-hdd` at `/media/youtarr` (talos-210-73x), MariaDB native sidecar, tailnet-only `youtarr.beluga-wyvern.ts.net`; `youtarr-mcp` adapter on dave-droid for Hermes (youtarr skill). Replaces the retired `youtube-media-capture` CronJob (`.yaml.hold`)
+- LFM3-Omni-2B realtime voice (#167): `apps/lfm3-omni.yaml` — llama.cpp b12030 Vulkan on dave-droid's GTX 1070 beside qwen3-asr (~4.9 GiB of 8 GiB together), Collective `lfm3-omni-2b` on the `/v1/realtime` WebSocket door only (lfm3-omni skill)
 - Endpoints: `vllm.hoam.lan` (LLM). `speech.hoam.lan` is gone with granite-stt. TTS: `qwen3-tts-base` / `qwen3-tts-voicedesign` ClusterIP Services (apps/qwen3-tts.yaml, #156).
 - Qwen3.6-27B is a hybrid model (DeltaNet+Attention) — TurboQuant KV cache is NOT compatible, use fp8_e4m3
 - NVFP4 quantization leverages Blackwell FP4 tensor cores for native 4-bit compute
