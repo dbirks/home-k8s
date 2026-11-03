@@ -1,3 +1,7 @@
+# PARKED 2026-11-02: replicas 0. Host-RAM boot failures (8/40 mamba slots, then 6/24 at HiCache 12 also failed the
+# host-memory check; HiCache 10 booted). Primary moved to Qwen3.8-27B on stock vLLM (apps/qwen38-27b-vllm.yaml) for
+# ~3x the KV pool. Rollback = qwen38-27b to 0 first, then this to 1, and swap the Collective backend back.
+#
 # Pennyroyal v2.5.3 (SGLang fork, jpezzulli/sglang-rtxpro6000) serving Qwen3.8-Flash-Next NVFP4 with
 # NVMe-backed PLE + in-memory HiCache prefix reuse; NIXL disk persistence DISABLED (issue #135). A PARALLEL canary beside the
 # existing apps/flashnext-serve.yaml (Primitive/vLLM, the rollback): nothing routes here yet.
@@ -34,7 +38,7 @@ metadata:
   namespace: default
   labels: { app: pennyroyal-flashnext }
 spec:
-  replicas: 1                         # LIVE again 2026-10-24 (qwen38-27b, CLEF, 2x TTS at 0). Was down 2026-10-16 for #156.
+  replicas: 0                         # PARKED 2026-11-02: primary moved to qwen38-27b on vLLM (nvfp4 KV, whole card). Was LIVE 2026-10-24..11-02.
   strategy: { type: Recreate }        # never two whole-card pods
   selector:
     matchLabels: { app: pennyroyal-flashnext }
