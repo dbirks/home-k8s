@@ -98,9 +98,10 @@ API CRDs are all gone. History: issues #95, #105, #135, #144 and git history.
 What serves models today:
 
 - **Qwen3.8-27B on stock vLLM** (`apps/qwen38-27b-vllm.yaml`, `nvidia/Qwen3.8-27B-NVFP4`, vLLM
-  v0.32.0, no patches) is the primary engine since 2026-10-23: model `qwen3-8-27b`, context 262,144,
-  MTP 3, fp8 KV, prefix caching, vision, reasoning default medium. It shares the card with CLEF and
-  2x Qwen3-TTS via HAMi slices (56800 MiB). Operate it via the qwen38-27b-vllm skill.
+  v0.32.0, no patches) is the primary engine (again since 2026-11-02; Pennyroyal parked): model
+  `qwen3-8-27b`, context 262,144, MTP 3, NVFP4 KV (~2.97M-token pool), prefix caching, vision, reasoning
+  default medium. It holds the WHOLE card (HAMi 97800 MiB), so CLEF and both Qwen3-TTS stay at 0.
+  Collective prod concurrency 24 / dev 4 over vLLM max-num-seqs 32. Operate it via the qwen38-27b-vllm skill.
 - **LLM Collective contributor** (`apps/llm-collective-contributor*.yaml`) is the consumer and it
   talks to engines DIRECTLY over the cluster Service (e.g.
   `http://qwen38-27b.default.svc.cluster.local:8000`). This direct pattern is the only

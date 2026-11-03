@@ -10,6 +10,27 @@ alternating with decode, so one long prompt dragged every agent). Stock image, n
 `vllm/vllm-openai:v0.32.0` (digest-pinned). Weights `nvidia/Qwen3.8-27B-NVFP4` @ 482ca0f3 on the HDD PVC
 `qwen38-27b-models-hdd` (apps/qwen38-27b-models.yaml: pinned, sha-checked download Job + image pre-pull Job).
 
+## Current shape: whole card (2026-11-02, primary again; Pennyroyal parked)
+Pennyroyal kept failing SGLang's host-memory check on boot (46 GB RAM, 10 GiB reserve), and the 27B's ~21 GiB of
+weights leave ~65 GB of the card for KV vs ~12 GB under Flash-Next. Flags changed from the 2026-10-23 shape below:
+HAMi `gpumem 97800` (CLEF + both Qwen3-TTS must be at 0), `--gpu-memory-utilization 0.93`, `--max-num-seqs 32`,
+`--max-num-batched-tokens 16384` (fewer prefill chunks = fewer DeltaNet snapshots), env
+`VLLM_PREFIX_CACHE_RETENTION_INTERVAL=16384` (thins align-mode intermediate snapshots, PR #45845; a guess, A/B it).
+Collective: prod concurrency 24, dev 4 (both alias `qwen3-8-27b`).
+Measured at boot / first hour:
+- `Available KV cache memory: 63.51 GiB`, `GPU KV cache size: 2,966,110 tokens`, 11.31x full 262K requests.
+  24 concurrent assumes ~125K average with prefix sharing; full-262K requests only fit ~11 at once, so watch
+  `vllm:num_preemptions_total` and lower the Collective concurrency if it climbs.
+- Weights 20.78 GiB, ~107 s off the HDD; Ready ~8 min after pod start.
+- nvidia-smi 95.5 / 97.9 GB used, 300 W (at the cap). Node RAM 51% (~24 GB of 46) with vLLM up.
+- Through the prod Collective: single stream 85 tok/s, TTFT 0.5 s; 24 parallel (256-token stories) all OK,
+  537 tok/s aggregate, TTFT median 3.1 s. Chat 0.34 s, tool call (qwen3_coder) OK.
+- Prefix cache: 123,920-token prompt 59.6 s cold (~2.1K tok/s, beside live agent traffic), 3.7 s resent.
+  Live hit rate ~82% (prefix_cache_hits/queries) in the first hour, 0 preemptions.
+Consumers repointed from `qwen3-8-flash-next`: apps/fabro.yaml (needs a pod delete to load), apps/communication,
+Hermes (runtime `hermes config set`, see the hermes-agent skill), pi `~/.pi/agent/settings.json` defaultModel.
+Rollback: this to 0, then pennyroyal to 1 (HiCache 10 boots), swap the Collective blocks back.
+
 ## Why this checkpoint
 NVIDIA ModelOpt, Local-Hessian calibrated: NVFP4 MLPs + lm_head, FP8 attention and linear-attention, BF16
 MTP head and vision tower. Published GPQA-D 88.92 -> 88.01, Terminal-Bench 75.56 -> 74.02, AA-LCR 72.63 ->

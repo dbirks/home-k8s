@@ -31,7 +31,7 @@ no RBAC: anyone logged in is a full admin.
 
 ## Model + vault
 Provider `collective` (custom lithos provider, OpenAI chat codec) -> `https://llm-collective.e-gineering.com/v1`,
-model `qwen3-8-flash-next` (Pennyroyal). Its key is vault secret `COLLECTIVE_API_KEY` (a provider named X reads
+model `qwen3-8-27b` (vLLM; was `qwen3-8-flash-next`/Pennyroyal until 2026-11-02). Its key is vault secret `COLLECTIVE_API_KEY` (a provider named X reads
 `X_API_KEY`). Fabro NEVER reads provider keys from env; set it via the API (value never echoed):
 ```bash
 kubectl port-forward -n fabro svc/fabro 18080:80 &
@@ -50,7 +50,7 @@ the title call's token budget is small: cosmetic, titles fall back.
 kubectl exec -it -n fabro fabro-0 -c fabro -- sh
 fabro auth login --server http://127.0.0.1:32276/api/v1 --dev-token "$FABRO_DEV_TOKEN"
 cd /tmp/smoke && git init -q . && git -c user.email=a@b -c user.name=a commit -q --allow-empty -m init
-fabro model test --model qwen3-8-flash-next --server http://127.0.0.1:32276/api/v1
+fabro model test --model qwen3-8-27b --server http://127.0.0.1:32276/api/v1
 fabro run hello.fabro --environment local --server http://127.0.0.1:32276/api/v1      # -d to detach
 fabro events <run> / fabro logs <run> / fabro inspect <run>   # same --server
 ```

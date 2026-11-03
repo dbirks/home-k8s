@@ -40,9 +40,9 @@ layers `client_secret` on PKCE (`HERMES_DASHBOARD_OIDC_CLIENT_SECRET`), and tsid
 ## config.yaml is Hermes-owned state (on the PVC), set by hand — re-apply after a PVC loss
 ```bash
 kubectl exec deploy/hermes -- hermes config set dashboard.trusted_proxies '["10.244.0.0/16"]'   # ts proxy pods -> trust X-Forwarded-Proto
-kubectl exec deploy/hermes -- hermes config set providers.collective "{api: \"https://llm-collective.e-gineering.com/v1\", key_env: COLLECTIVE_API_KEY, transport: openai_chat, default_model: qwen3-8-flash-next, models: {qwen3-8-flash-next: {context_length: 524288}}}"
+kubectl exec deploy/hermes -- hermes config set providers.collective "{api: \"https://llm-collective.e-gineering.com/v1\", key_env: COLLECTIVE_API_KEY, transport: openai_chat, default_model: qwen3-8-27b, models: {qwen3-8-27b: {context_length: 262144}}}"
 kubectl exec deploy/hermes -- hermes config set model.provider collective
-kubectl exec deploy/hermes -- hermes config set model.default qwen3-8-flash-next
+kubectl exec deploy/hermes -- hermes config set model.default qwen3-8-27b
 ```
 (`hermes config set model '{…}'` is refused; set `model.*` keys individually.) Restart to apply dashboard changes:
 `kubectl delete pod -l app=hermes`.
