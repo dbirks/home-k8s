@@ -53,7 +53,7 @@ spec:
             - "--max-model-len"
             - "262144"
             - "--max-num-seqs"
-            - "32"                        # 2026-11-02: 24 -> 32 (Collective 28 in front; ~100K avg tokens/agent on ~3M KV)
+            - "32"                        # 2026-11-02: 24 -> 32 (Collective prod 24 + dev 4 in front, plus preemption headroom)
             - "--max-num-batched-tokens"
             - "16384"                     # 2026-11-02: 8192 -> 16384 (fewer prefill chunks = fewer DeltaNet snapshots)
             - "--gpu-memory-utilization"

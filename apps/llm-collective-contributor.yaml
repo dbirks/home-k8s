@@ -1,5 +1,5 @@
-# LLM Collective contributor. Contributes Pennyroyal Flash-Next (qwen3-8-flash-next, live again 2026-10-24;
-# qwen38-27b parked) to the company LLM Collective at
+# LLM Collective contributor. Contributes Qwen3.8-27B on vLLM (qwen3-8-27b, primary again 2026-11-02;
+# Pennyroyal Flash-Next parked) to the company LLM Collective at
 # https://llm-collective.e-gineering.com over one outbound WebSocket tunnel.
 #
 # Backend target is the ninfer Service directly. NOTE: ninfer scales to zero via
@@ -141,29 +141,31 @@ data:
             types: [speech]
       # Qwen3.8-27B NVFP4 (nvidia ModelOpt) on STOCK vLLM v0.32.0 (apps/qwen38-27b-vllm.yaml), 2026-10-22, in place
       # of flint. Prefix caching + batched prefill; MTP 3; vision; tools (qwen3_coder) + reasoning (qwen3).
-      # PARKED 2026-10-24: qwen38-27b at replicas 0 (Pennyroyal Flash-Next back). Rollback = uncomment, park pennyroyal, flip replicas.
-      # - name: qwen38-27b
-      #   url: http://qwen38-27b.default.svc.cluster.local:8000
-      #   protocols: [openai, anthropic]
-      #   concurrency: 16         # vLLM --max-num-seqs 24 behind it
-      #   models:
-      #     - alias: qwen3-8-27b
-      #       model: qwen3-8-27b
-      #       limits:
-      #         context: 262144
-      #       # Probed live 2026-10-23 on vLLM v0.32.0: reasoning_effort low/medium/xhigh think; `none` turns thinking
-      #       # off (vLLM maps it to enable_thinking=false); high/minimal/max are rejected (400) by Qwen's template.
-      #       # Server default is medium (--default-chat-template-kwargs). The gateway web chat's "off" sends
-      #       # chat_template_kwargs.thinking_enabled, which Qwen ignores (its key is enable_thinking); API clients
-      #       # sending reasoning_effort=none or Anthropic thinking.type=disabled do get thinking off (llm-collective#84).
-      #       reasoning:
-      #         levels:
-      #           - none
-      #           - low
-      #           - medium
-      #           - xhigh
-      #       # Vision verified (data-URI PNG, colors read correctly).
-      #       inputs: [text, image]
+      # PRIMARY again 2026-11-02: whole card, nvfp4 KV (~3M tokens), max-num-seqs 32. Pennyroyal parked (host-RAM boot failures).
+      - name: qwen38-27b
+        url: http://qwen38-27b.default.svc.cluster.local:8000
+        protocols: [openai, anthropic]
+        concurrency: 24         # 2026-11-02: ~3.0M nvfp4 KV / ~270K per full-262K request = ~11 guaranteed-full; 24 assumes
+                                # ~125K average with prefix sharing. vLLM --max-num-seqs 32 behind it (headroom for dev 4 +
+                                # preemption). Watch vllm:num_preemptions_total; lower this if it climbs.
+        models:
+          - alias: qwen3-8-27b
+            model: qwen3-8-27b
+            limits:
+              context: 262144
+            # Probed live 2026-10-23 on vLLM v0.32.0: reasoning_effort low/medium/xhigh think; `none` turns thinking
+            # off (vLLM maps it to enable_thinking=false); high/minimal/max are rejected (400) by Qwen's template.
+            # Server default is medium (--default-chat-template-kwargs). The gateway web chat's "off" sends
+            # chat_template_kwargs.thinking_enabled, which Qwen ignores (its key is enable_thinking); API clients
+            # sending reasoning_effort=none or Anthropic thinking.type=disabled do get thinking off (llm-collective#84).
+            reasoning:
+              levels:
+                - none
+                - low
+                - medium
+                - xhigh
+            # Vision verified (data-URI PNG, colors read correctly).
+            inputs: [text, image]
       # PARKED 2026-10-22: flint on vLLM with our SM120 + fp8 KV patches (apps/flint-vllm.yaml). Rollback = uncomment,
       # drop qwen38-27b, flip both replicas. Always thinks (glm47), no levels; text only.
       # - name: flint
@@ -177,32 +179,32 @@ data:
       #         context: 262144
       #       reasoning: true
       #       inputs: [text]
-      # Pennyroyal Flash-Next (apps/pennyroyal-flashnext.yaml), LIVE again 2026-10-24 (whole card; qwen38-27b, CLEF, TTS at 0).
-      - name: pennyroyal
-        url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
-        protocols: [openai, anthropic]   # SGLang serves /v1/chat/completions and /v1/messages natively
-        concurrency: 8         # SGLang runs 4 (24 mamba slots // 5; 8/40 failed host-RAM check 2026-11-02) and queues the rest. 12 -> 8 on
+      # PARKED 2026-11-02: Pennyroyal Flash-Next at replicas 0 (host-RAM boot failures; qwen38-27b is primary). Rollback = uncomment, drop qwen38-27b, flip replicas.
+      # - name: pennyroyal
+      #   url: http://pennyroyal-flashnext.default.svc.cluster.local:8001
+      #   protocols: [openai, anthropic]   # SGLang serves /v1/chat/completions and /v1/messages natively
+      #   concurrency: 8         # SGLang runs 4 (24 mamba slots // 5; 8/40 failed host-RAM check 2026-11-02) and queues the rest. 12 -> 8 on
                                 # 2026-10-26: 12 agents' 190K-410K contexts overflowed GPU KV + host HiCache and thrashed
                                 # the prefix cache; fewer in flight keeps more of the working set resident.
-        models:
-          - alias: qwen3-8-flash-next
-            model: pennyroyal
-            limits:
-              context: 524288
+      #   models:
+      #     - alias: qwen3-8-flash-next
+      #       model: pennyroyal
+      #       limits:
+      #         context: 524288
             # Probed live 2026-10-24: the froggeric template accepts all of none/minimal/low/medium/high/xhigh/max
             # but has 3 tiers + off: none|off -> off, minimal|low -> low, medium (default), high|xhigh|max -> xhigh.
             # Same strings as the 27B so client settings carry over.
-            reasoning:
-              levels:
-                - none
-                - low
-                - medium
-                - xhigh
+      #       reasoning:
+      #         levels:
+      #           - none
+      #           - low
+      #           - medium
+      #           - xhigh
             # Pennyroyal runs the multimodal Flash-Next build: sglang encodes
             # image parts (verified against the dev gateway on 2026-10-03).
             # Declaring it earns the VISION chip and lets the gateway route
             # image traffic here instead of rejecting it with a 400.
-            inputs: [text, image]
+      #       inputs: [text, image]
       # REMOVED 2026-10-13: iPhone backend (gemma-3n-e4b). The tailscale egress
       # Service `iphone-llm` (apps/iphone-tailnet-egress.yaml) is still in place —
       # re-add a backend block pointing at http://iphone-llm.default.svc.cluster.local:8889

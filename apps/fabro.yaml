@@ -17,8 +17,8 @@
 # Bootstrap secrets (SESSION_SECRET, FABRO_DEV_TOKEN) come from apps/fabro-secrets.enc.yaml. Read the
 # token from the cluster Secret when you need it; never paste it anywhere committed.
 #
-# MODEL: provider `collective` = the LLM Collective (OpenAI chat codec), model qwen3-8-flash-next
-# (Pennyroyal). Its key is NOT an env var: Fabro only reads provider keys from its vault
+# MODEL: provider `collective` = the LLM Collective (OpenAI chat codec), model qwen3-8-27b (vLLM; was qwen3-8-flash-next until 2026-11-02)
+# (Qwen3.8-27B on vLLM). Its key is NOT an env var: Fabro only reads provider keys from its vault
 # (`COLLECTIVE_API_KEY`, set once with `fabro secret set`, see the skill). Vault values are PLAINTEXT in
 # /storage/db/fabro.sqlite3 — treat this PVC like a secret.
 #
@@ -86,21 +86,22 @@ data:
 
     [run.model]
     provider = "collective"
-    name = "qwen3-8-flash-next"
+    name = "qwen3-8-27b"
 
     [llm.providers.collective]
     display_name = "LLM Collective"
     base_url = "https://llm-collective.e-gineering.com/v1"
     auth = { type = "bearer" }     # key: vault COLLECTIVE_API_KEY
     priority = 100
-    default_model = "qwen3-8-flash-next"
+    default_model = "qwen3-8-27b"
 
-    # Pennyroyal (Qwen3.8-Flash-Next). The Collective declares levels none/low/medium/xhigh only.
-    [llm.providers.collective.models."qwen3-8-flash-next"]
-    display_name = "Qwen3.8 Flash-Next (Pennyroyal)"
-    api_model = "qwen3-8-flash-next"
-    aliases = ["pennyroyal"]
-    limits = { context_tokens = 524288, max_output_tokens = 65536 }
+    # Qwen3.8-27B on vLLM (apps/qwen38-27b-vllm.yaml), primary since 2026-11-02 (Pennyroyal parked).
+    # The Collective declares levels none/low/medium/xhigh only.
+    [llm.providers.collective.models."qwen3-8-27b"]
+    display_name = "Qwen3.8 27B (vLLM)"
+    api_model = "qwen3-8-27b"
+    aliases = ["qwen38-27b"]
+    limits = { context_tokens = 262144, max_output_tokens = 65536 }
     capabilities = { text = true, images = true, tools = true, reasoning = true, caching = true, reasoning_effort = { low = true, medium = true, xhigh = true }, response_format = { json_object = true, json_schema = true }, tool_choice = { required = true, named = true } }
     protocol_options = { reasoning_effort_levels = true }
     small_default = true
