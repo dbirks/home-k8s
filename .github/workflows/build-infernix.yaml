@@ -1,0 +1,87 @@
+name: build-infernix
+
+# Infernix (Wallawalla47/Infernix, C++/CUDA Qwen engine forked from NInfer) publishes no image.
+# Build its own Dockerfile at a pinned upstream commit for the RTX PRO 6000 (SM120, sm_120a) and
+# push ghcr.io/dbirks/infernix:<YYYYMMDD>-<shortsha>. GitHub runners have no GPU: compile only.
+# Manual trigger only. Pre-pull on the node by digest; nothing in apps/ uses it yet.
+#
+# Two patches to upstream's Dockerfile (applied with sed below, asserted with grep):
+#  - pass -DCMAKE_CUDA_ARCHITECTURES=120a explicitly (upstream's default and its only allowed value).
+#  - the Linux build links the SHARED cudart, built by nvcc 13.4, but the runtime stage is
+#    cuda:13.1 (its comment assumes a static runtime). Copy the build stage's 13.4 libcudart.so.13
+#    over the runtime stage's 13.1 one so the binary runs on the runtime it was compiled with. Driver 580 runs
+#    13.x runtimes via minor-version compatibility; the code is SASS for sm_120a, so no PTX JIT.
+#    NInfer runs on the same cuda:13.1.2-runtime base on this node already.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Wallawalla47/Infernix commit SHA (full) to build"
+        default: "31fe191c62b5174db0512d634413e7c16f3ac5aa"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free disk space (CUDA devel base extracts to ~10GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Check out Infernix at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: Wallawalla47/Infernix
+          ref: ${{ inputs.ref }}
+          path: infernix
+
+      - name: Compute tag
+        id: tag
+        run: |
+          cd infernix
+          test "$(git rev-parse HEAD)" = "${{ inputs.ref }}"
+          echo "tag=$(date -u +%Y%m%d)-$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Patch Dockerfile (explicit sm_120a, ship the 13.4 cudart)
+        run: |
+          cd infernix
+          sed -i 's|-DCMAKE_BUILD_TYPE=Release \\|-DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120a \\|' Dockerfile
+          sed -i 's|^COPY --from=build /build/apps/infernix /usr/local/bin/infernix$|COPY --from=build /usr/local/cuda/lib64/libcudart.so.13* /usr/local/cuda/lib64/\n&|' Dockerfile
+          grep -q 'CMAKE_CUDA_ARCHITECTURES=120a' Dockerfile
+          grep -q 'libcudart.so.13' Dockerfile
+          cat Dockerfile
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build
+        run: |
+          IMG=ghcr.io/dbirks/infernix:${{ steps.tag.outputs.tag }}
+          DOCKER_BUILDKIT=1 docker build \
+            --label org.opencontainers.image.source=https://github.com/Wallawalla47/Infernix \
+            --label org.opencontainers.image.revision=${{ inputs.ref }} \
+            -t "$IMG" infernix
+          docker images "$IMG"
+
+      - name: Smoke (no GPU) - shared libs resolve, CLI help runs
+        run: |
+          IMG=ghcr.io/dbirks/infernix:${{ steps.tag.outputs.tag }}
+          docker run --rm --entrypoint sh "$IMG" -c '
+            for b in /usr/local/bin/infernix /usr/local/bin/infernix-serve; do
+              ldd "$b"; if ldd "$b" | grep -q "not found"; then exit 1; fi; done
+            ldd /usr/local/bin/infernix-serve | grep cudart'
+          docker run --rm "$IMG" infernix-serve --help | head -40 || true
+
+      - name: Push to GHCR
+        run: |
+          IMG=ghcr.io/dbirks/infernix:${{ steps.tag.outputs.tag }}
+          docker push "$IMG"
+          docker inspect --format '{{index .RepoDigests 0}}' "$IMG"
+          docker image inspect --format 'size {{.Size}} bytes' "$IMG"
