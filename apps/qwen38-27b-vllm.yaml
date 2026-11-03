@@ -9,7 +9,8 @@
 #   --kv-cache-dtype nvfp4 since 2026-10-24 (was fp8_e4m3 per NVIDIA's serve command; the 741K-token pool was full
 #     under agent load, prefix-cache hits fell to ~2% and every turn re-prefilled; KV only on the 16 full-attention layers), MTP 3 (the checkpoint keeps the MTP head in BF16), qwen3 reasoning parser,
 #     qwen3_coder tool parser. Vision tower included (Qwen3_5ForConditionalGeneration).
-# HAMi shows vLLM a 56800 MiB GPU (same slice Flint had), so --gpu-memory-utilization is a fraction of the SLICE.
+# HAMi shows vLLM a 97800 MiB GPU (whole card since 2026-11-02; was the 56800 slice), so --gpu-memory-utilization is a
+# fraction of the SLICE. CLEF and both Qwen3-TTS must stay at 0 while this holds the whole card.
 # Weights: apps/qwen38-27b-models.yaml (HDD PVC, pinned + sha-checked).
 # Switch: this to replicas 1 + flint to 0 + the Collective backend in ONE commit (they cannot co-reside).
 # ============================================================================================
@@ -22,7 +23,7 @@ metadata:
   labels:
     app.kubernetes.io/name: qwen38-27b
 spec:
-  replicas: 0                     # PARKED 2026-10-24: Pennyroyal Flash-Next has the whole card. Rollback = 1 (pennyroyal to 0 first).
+  replicas: 1                     # PRIMARY again 2026-11-02, whole card (pennyroyal parked). Was parked 2026-10-24..11-02.
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
@@ -52,11 +53,11 @@ spec:
             - "--max-model-len"
             - "262144"
             - "--max-num-seqs"
-            - "24"
+            - "32"                        # 2026-11-02: 24 -> 32 (Collective 28 in front; ~100K avg tokens/agent on ~3M KV)
             - "--max-num-batched-tokens"
-            - "8192"
+            - "16384"                     # 2026-11-02: 8192 -> 16384 (fewer prefill chunks = fewer DeltaNet snapshots)
             - "--gpu-memory-utilization"
-            - "0.90"                      # of the 56800 MiB HAMi slice; tune from the startup log
+            - "0.93"                      # 2026-11-02: whole card (97800 MiB slice); was 0.90 of 56800
             - "--kv-cache-dtype"
             - "nvfp4"                     # 2026-10-24: was fp8_e4m3 (741K tokens). Stock vLLM >= 0.32 NVFP4 KV on SM12x
                                           # (#46963, XQA decode #60452): ~2x pool so agents' prefixes survive between turns.
@@ -73,6 +74,9 @@ spec:
           env:
             - { name: HF_HUB_OFFLINE, value: "1" }
             - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+            # 2026-11-02: thin intermediate DeltaNet snapshots kept by align-mode prefix caching (vLLM PR #45845) so
+            # they compete less with KV blocks. A guess; A/B against /metrics prefix_cache_hits/queries.
+            - { name: VLLM_PREFIX_CACHE_RETENTION_INTERVAL, value: "16384" }
           ports:
             - containerPort: 8000
           startupProbe:                   # 20 GiB off the HDD + compile + CUDA graphs: allow 20 min
@@ -89,7 +93,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
           resources:
-            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "56800", cpu: "8", memory: 28Gi }
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "97800", cpu: "8", memory: 28Gi }
             requests: { cpu: "4", memory: 8Gi }
           volumeMounts:
             - { name: models, mountPath: /models, readOnly: true }
