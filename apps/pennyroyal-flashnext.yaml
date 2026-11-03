@@ -15,7 +15,9 @@
 # 2026-10-26 tuning (see the pennyroyal-flashnext skill): several agents with 190K-410K contexts
 # (~1.17M total) overflowed GPU KV + host HiCache, and LRU evicted exactly the context needed next.
 # So: HiCache 8 -> 12GB, --schedule-policy lpm (was fcfs), contributor concurrency 12 -> 8.
-# Mamba slots are NOT the bottleneck: leave MAX_MAMBA_CACHE_SIZE alone.
+# 2026-11-02: 8 parallel. SGLang caps running requests at max_mamba_cache_size // 5 (3 slots/request + 2
+# extra_buffer ping-pong with the overlap scheduler), so 6 / 24 really ran 4. Now 8 / 40. Each extra mamba
+# slot (~57 MB) comes out of the GPU KV pool; see the pennyroyal-flashnext skill for before/after capacity.
 # NVFP4 KV was evaluated the same day and NOT applied: this fork's HiCache host transfer is
 # unaware of FP4 KV (copies head_dim bytes/token from head_dim/2-wide rows, never copies the
 # block-scale buffers), so every host backup/restore would corrupt KV. It also needs
@@ -104,8 +106,8 @@ spec:
             - { name: SGLANG_SM120_ONLINE_MXFP8, value: "false" }     # A0 baseline; A1 flips to true
             - { name: SGLANG_MM_PREPROCESS_DEVICE, value: cpu }
             - { name: SGLANG_FORWARD_UNKNOWN_TOOLS, value: "true" }
-            - { name: MAX_RUNNING_REQUESTS, value: "6" }               # 2026-10-12: 4 -> 6 (Collective concurrency 6)
-            - { name: MAX_MAMBA_CACHE_SIZE, value: "24" }
+            - { name: MAX_RUNNING_REQUESTS, value: "8" }               # 2026-11-02: 6 -> 8 (was effectively 4: mamba cap)
+            - { name: MAX_MAMBA_CACHE_SIZE, value: "40" }              # must be >= 5 x MAX_RUNNING_REQUESTS (extra_buffer + overlap)
             # 2026-10-26: 1,000,000 fp8 tokens (was unset -> recipe CAP of 824,384, not a memory limit: boot left
             # ~4 GB VRAM free after graphs; upstream qualified 1,000,000). The quality-neutral way to grow the
             # shared prefix cache; costs ~2 GB of the post-boot VRAM headroom. Rollback = delete this line.
