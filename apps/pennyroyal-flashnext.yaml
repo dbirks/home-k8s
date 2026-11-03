@@ -101,7 +101,7 @@ spec:
             - { name: TARGET_MODEL, value: /models/RadixArk-Qwen3.8-Flash-Next-NVFP4 }
             - { name: PENNY_PLE_BACKEND, value: nvme }
             - { name: PENNY_PLE_NVME_MODEL, value: /models/flash-next-ple }
-            - { name: PENNY_HICACHE_SIZE_GB, value: "12" }            # upstream 32 cannot fit; 8 -> 12 on 2026-10-26.
+            - { name: PENNY_HICACHE_SIZE_GB, value: "10" }            # upstream 32 cannot fit; 8 -> 12 on 2026-10-26; 12 -> 10 on 2026-11-02 (boot failed: host mamba pool needed 1.36 GB, 1.12 GB free under the 10 GiB reserve).
               # Split host KV vs host mamba in proportion to their GPU pool bytes (_split_hicache_size).
             - { name: CUDA_VISIBLE_DEVICES, value: "0" }
             - { name: SGLANG_SM120_ONLINE_MXFP8, value: "false" }     # A0 baseline; A1 flips to true
