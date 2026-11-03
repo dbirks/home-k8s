@@ -63,8 +63,28 @@ context needed next. Analyse a log with ReqTimeStats (token-weighted `cached_inp
 queue/prefill ms) and `/metrics` deltas of `sglang:cached_tokens_total{cache_source=device|host}`.
 
 What is and is not the bottleneck:
-- **Mamba slots are not.** `max_running_requests` is clamped to 4 by 24 slots x 5 states/request, and
-  `mamba usage` stays low. Raising `MAX_MAMBA_CACHE_SIZE` only takes VRAM away from KV.
+- **Mamba slots DO cap concurrency** (corrected 2026-11-02; this note used to say they were not).
+  `resolve_max_num_reqs()` in `python/sglang/srt/mem_cache/kv_cache_configurator.py` sets
+  `effective = min(MAX_RUNNING_REQUESTS, MAX_MAMBA_CACHE_SIZE // ratio)`. With
+  `--mamba-radix-cache-strategy extra_buffer` + the overlap scheduler the ratio is **5** (3 slots per
+  request + 2 ping-pong buffers); `extra_buffer_lazy` makes it 4 but is only qualified on Pennyroyal's
+  27B profile, not Flash-Next. So `6 / 24` silently ran **4** (`/get_server_info` ->
+  `internal_states[0].effective_max_running_requests_per_dp`; the boot log says "max_running_requests is
+  capped to N by the mamba state cache"). `mamba usage` in decode logs reads low because live requests
+  hold ~4 slots; admission reserves 5. Always set `MAX_MAMBA_CACHE_SIZE >= 5 x MAX_RUNNING_REQUESTS`.
+  Cost: ~57 MB VRAM per slot (36 linear layers x 48 v-heads x 128 x 128 bf16 + conv state), ~7.5K fp8 KV
+  tokens per slot out of the GPU pool. Measured: 6/24 -> token_capacity 855,616 (kvcache 10.405 GB);
+  8/40 -> 722,496 (-133K, ~8.3K tokens per extra slot incl. per-request spec buffers; mamba ssm 2.16 GB +
+  conv 0.08 GB) and then **FAILED TO BOOT (2026-11-02, reverted)**: `--hicache-size` is split by GPU pool bytes,
+  so the host mamba pool grew 1.42 -> 2.36 GB (host KV 9.99 -> 9.08 GB), and `host_memory_budget_bytes()`
+  (`pool_host/base.py`: `psutil.virtual_memory().available - 10 GiB` reserve, checked after the host KV pool is
+  pinned) only had 1.35 GB -> `ValueError: Not enough host memory available. Requesting 2.36 GB`. 24 slots
+  passed with ~0.07 GB to spare. Any raise needs ~1 GB more node MemAvailable at boot (stop another
+  talos-210-73x pod) or a smaller `PENNY_HICACHE_SIZE_GB` (~10 for 8/40, costs host-L2 tokens), or
+  `extra_buffer_lazy` (ratio 4, same 24 slots -> 6; unqualified on Flash-Next). Upstream: jpezzulli/sglang-rtxpro6000#5 (closed, by design);
+  Pennyroyal v3.1.4 (2026-10-29) still defaults to 4 / 24 with the same ratio. Do NOT use
+  `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK=1` to shave the ratio: sgl-project/sglang#43204 (engine dies on
+  "Can not alloc mamba cache").
 - **The GPU KV pool is.** 824,384 fp8 tokens is a recipe **cap** (`configure_max_total_tokens 824384`,
   overridable with `MAX_TOTAL_TOKENS`), not the memory limit. Boot leaves ~4.06 GB VRAM free after CUDA
   graphs, and upstream qualified `MAX_TOTAL_TOKENS=1000000`. fp8 costs ~12.4 KB/token (target 9.44 GB +
@@ -116,5 +136,5 @@ Applied 2026-10-26 (one restart): HiCache 8 to 12, lpm, contributor concurrency 
 The llm.birks.dev KServe/Envoy/KEDA gateway stack is **gone** (history: issues #95/#135, teardown
 research #144). Consumers connect to the Service directly: the LLM Collective contributor runs
 `url: http://pennyroyal-flashnext.default.svc.cluster.local:8001` (protocols openai+anthropic,
-concurrency 8 since 2026-10-26; SGLang runs 4 and queues the rest, the dev contributor runs 2). Do not write Backend/AIServiceBackend/KEDA manifests — those
+concurrency 8 since 2026-10-26; SGLang runs 4 (24 mamba slots // 5) and queues the rest, the dev contributor runs 2). Do not write Backend/AIServiceBackend/KEDA manifests — those
 CRDs no longer exist on the cluster.
