@@ -1,0 +1,23 @@
+apiVersion: v1
+data:
+    client_id: ENC[AES256_GCM,data:rVYPtU3lLeB9gHtx6vUxbLgfPl41ZYx6f/rzMt+8GqLAWxVXDybc/dGRaCO2gII1eiBwqAHfPMZ86ug/rEfdqC6Xwr4B5wW1WJwkFvE65h06AhZU26/ZyEyXQUvOrEcB,iv:5RdTiiQRfgJMOdYCdkpcAFNnOyHwup1f2HMBcj/yjxk=,tag:1Ses0JYXo4RqZh+uaTkFPQ==,type:str]
+    client_secret: ENC[AES256_GCM,data:Sb9fOgJfhFvOHq5RXvqgDE9l53GtFyWIy7QBw1e2FeWtLDUp5wexBz1GvdsDvU8g,iv:gApbpq2BDLGMf6Uj0eUpyalDQCLLDRa3Jtij0mILuvI=,tag:tneukGoWqDouTUeriRhqPg==,type:str]
+kind: Secret
+metadata:
+    name: gmail-broker-oauth-client
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBaMFJuNUhyVUtiYjNRZ05x
+            RkJ1QjhrRVA5S3JEdDJvbXB1NnpacUNiVVhVCkxWcFhBYk9LSExDYTBER0N1WEtS
+            MzBnSUoyZ2oxM2VHU0ZwV1g3d1FpZTAKLS0tIExsSkQvQzZJUjNiT2RUa1RmYkU1
+            bnYydEVjOVpxN2puSlQ1V29sRzVoUk0Kn3k+l+Z+iYDez7OF16lEnK3FCQbwGamJ
+            eQqOyGPv5lYxXotxwbsdBBWv7UvdiKA8YEpUBwTpWpNxlQIqlFoeZQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-11-05T02:48:14Z"
+    mac: ENC[AES256_GCM,data:IA5MeFvcntSJp4g2h1URxVdCwh1VLbMWHQBH+mzJEIof49S9F59C5X6S3Om8MTlESM4+aEUGraKyDbebb1I9HiyTPcfrc7GPK6CLFDkUXRIAhef9Hyt93v/+pf2tAk8QmU3a9hbLTBVZ7CPci6vTQEwni/+ibAanx4haFOp883o=,iv:MD+rRb/PZQDZQQqPTTnFXjdjwe1Lh4wq3Uq8pu0yNGg=,tag:aFUR2uGtSztt/FhV5c2ipA==,type:str]
+    version: 3.13.3

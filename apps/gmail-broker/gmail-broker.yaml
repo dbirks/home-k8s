@@ -75,8 +75,15 @@ spec:
         - name: client
           secret: { secretName: gmail-broker-oauth-client, optional: true }
         # One source per authorized account: items map refresh_token/email to <alias>.refresh_token/<alias>.email.
+        # To add an account: run gmail-auth.py ALIAS, then append one more `- secret:` source below.
         - name: accounts
-          emptyDir: { sizeLimit: 1Mi }   # no accounts yet; replaced by a projected volume when the first is added
+          projected:
+            sources:
+              - secret:
+                  name: gmail-broker-acct-davidebirks
+                  items:
+                    - { key: refresh_token, path: davidebirks.refresh_token }
+                    - { key: email, path: davidebirks.email }
 ---
 apiVersion: v1
 kind: Service
