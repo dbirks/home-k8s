@@ -2,12 +2,14 @@ name: build-ripple-sglang
 
 # Ripple-65B NVFP4 on stock SGLang 0.5.19 cu130 (build/ripple-sglang/Dockerfile), pushed to GHCR (#168).
 # Pure-Python overlay, no CUDA compile. Runs on GitHub's runners: the base image extracts to ~30GB.
+# Pushed into the existing PUBLIC ghcr.io/dbirks/vllm-openai package (tag ripple-sglang*): this repo's GITHUB_TOKEN
+# is denied creating a new package, and a new package would be private (no pull secret needed this way).
 on:
   workflow_dispatch:
     inputs:
       tag:
         description: "Image tag to push"
-        default: "sglang0519-20261104"
+        default: "ripple-sglang0519-20261104"
         required: true
 
 jobs:
@@ -33,9 +35,9 @@ jobs:
         run: |
           docker build \
             --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
-            -t ghcr.io/dbirks/ripple-sglang:${{ inputs.tag }} build/ripple-sglang
+            -t ghcr.io/dbirks/vllm-openai:${{ inputs.tag }} build/ripple-sglang
 
       - name: Push to GHCR
         run: |
-          docker push ghcr.io/dbirks/ripple-sglang:${{ inputs.tag }}
-          docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/dbirks/ripple-sglang:${{ inputs.tag }}
+          docker push ghcr.io/dbirks/vllm-openai:${{ inputs.tag }}
+          docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/dbirks/vllm-openai:${{ inputs.tag }}
