@@ -1,0 +1,23 @@
+apiVersion: v1
+data:
+    email: ENC[AES256_GCM,data:WrLQa4WyqCoL04XPslvIXD21bZRn0OAT,iv:qhW83pm5NnB4I4wzjbMeNIlOtcuDga+c3M7zqapcI2M=,tag:YiiWLaB6ZBvtJqnhd1h2eg==,type:str]
+    refresh_token: ENC[AES256_GCM,data:eJXCRIIjB2iG7SRtK7iFdC7RH7yVJ4LTQZb6dOjqkkStXuqjlND33p+JecyVxlKXHbSUWFQcjIBIjE+OydWqRqNIIN0/kxQ140Ar1Ha3x3F28zDJ4QpY9TgYb2nzxPh25WQIz0jqy9VIw8e2voYRFxlnxXTQr5FpwqhjY3I3dc1Esg1SfKLfwUsJUGA=,iv:aCfmyxacCGbtJUrof0/2CjJtmqotb06mji5IUcG/kto=,tag:L1/ceNGCjB4FjFzoCxq9kQ==,type:str]
+kind: Secret
+metadata:
+    name: gmail-broker-acct-dbirks91
+    namespace: default
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBzK0tNUVArNi9NTVRuQVZ0
+            dDIxcitvOS91YlhHdkZkV3FjVHBSa1M3Rm13CkxaeFFwMVdvOW1NRFZsbkxLbXZW
+            OXpSSGRFS0MyeDkxK1FSd2V1RThVZEUKLS0tIDNKcW5KUURkS1ZwQkxQTEFTZEND
+            WlI3TjlBMXhPYmdSd29zQ3NnV1BTYlkKEoCO7nUnOvaynlUm/TLrXF5jgoYKGZC3
+            QB8YAN+iEHWkRit2EtibfGyujdrmiZd3yTYk7eYfLbsKjhj0EwzspQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-11-05T02:54:39Z"
+    mac: ENC[AES256_GCM,data:e06y9R2RWxoN2K6IG+nOZfTgqXwiKin0Xha6REQIpBqcVHlHAGNlWL/b0hkLLvyzMjz/rCnJXEgX07i7jrCUJEtn8dMaJjN4pWxVhQmzITi1ddbnGD3jM00TXxaAg29SMbZX+a+ytXKaZbqVKGct7VDhHlzdp403BST1nXGGE0g=,iv:NKhnBA0gAOqtTJMACJH09NrnjIvuOkH13FYzsJfc1fs=,tag:DQpuf+XwcCyGRqaEQlKG7g==,type:str]
+    version: 3.13.3

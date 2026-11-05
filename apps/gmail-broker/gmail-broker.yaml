@@ -84,6 +84,16 @@ spec:
                   items:
                     - { key: refresh_token, path: davidebirks.refresh_token }
                     - { key: email, path: davidebirks.email }
+              - secret:
+                  name: gmail-broker-acct-jameson23
+                  items:
+                    - { key: refresh_token, path: jameson23.refresh_token }
+                    - { key: email, path: jameson23.email }
+              - secret:
+                  name: gmail-broker-acct-dbirks91
+                  items:
+                    - { key: refresh_token, path: dbirks91.refresh_token }
+                    - { key: email, path: dbirks91.email }
 ---
 apiVersion: v1
 kind: Service
