@@ -35,28 +35,44 @@ data:
     metrics:
       listen: 127.0.0.1:9091
     backends:
+      # Ripple-65B Preview NVFP4 on stock SGLang 0.5.19 (apps/ripple-65b-sglang.yaml, #168), 2026-11-04, whole card in
+      # place of qwen38-27b. Dense 65B, NVFP4 MLPs + BF16 attention, BF16 KV, radix cache, ripple tool + reasoning
+      # parsers. No reasoning levels: Ripple's template has no thinking switch (it always thinks). Text only.
+      - name: ripple-65b
+        url: http://ripple-65b.default.svc.cluster.local:8000
+        protocols: [openai, anthropic]   # SGLang serves /v1/chat/completions and /v1/messages natively
+        concurrency: 2            # SGLang --max-running-requests 16 behind it (prod 12); see ripple-65b-sglang skill
+        models:
+          - alias: ripple-65b
+            model: ripple-65b
+            limits:
+              context: 65536
+            reasoning: true
+            inputs: [text]
+      # PARKED 2026-11-04: qwen38-27b at replicas 0 while Ripple-65B (#168) owns the whole card. Rollback = uncomment,
+      # drop ripple-65b, flip both replicas (or git revert the switch commit).
       # Qwen3.8-27B NVFP4 on stock vLLM (apps/qwen38-27b-vllm.yaml), primary again 2026-11-02 (was NInfer here, parked).
       # Shares vLLM's 32 seqs with prod (24); kept small so dev can't starve prod.
-      - name: qwen38-27b
-        url: http://qwen38-27b.default.svc.cluster.local:8000
-        protocols: [openai, anthropic]
-        concurrency: 4
-        models:
-          - alias: qwen3-8-27b
-            model: qwen3-8-27b
-            limits:
-              context: 262144
+      # - name: qwen38-27b
+      #   url: http://qwen38-27b.default.svc.cluster.local:8000
+      #   protocols: [openai, anthropic]
+      #   concurrency: 4
+      #   models:
+      #     - alias: qwen3-8-27b
+      #       model: qwen3-8-27b
+      #       limits:
+      #         context: 262144
             # Probed live 2026-10-17: the artifact template accepts xhigh (its default), medium and low;
             # `none` is the engine's thinking-off switch. minimal/high/max are rejected with a 400.
-            reasoning:
-              levels:
-                - none
-                - low
-                - medium
-                - xhigh
+      #       reasoning:
+      #         levels:
+      #           - none
+      #           - low
+      #           - medium
+      #           - xhigh
             # --vision on since 2026-10-17 (data-URI image verified). Video parts also work engine-side;
             # the Collective has no video input type, so they ride under image.
-            inputs: [text, image]
+      #       inputs: [text, image]
       # PARKED 2026-11-02: Pennyroyal at replicas 0 (qwen38-27b primary). Rollback = uncomment.
       # - name: pennyroyal
       #   url: http://pennyroyal-flashnext.default.svc.cluster.local:8001

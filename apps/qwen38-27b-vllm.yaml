@@ -23,7 +23,9 @@ metadata:
   labels:
     app.kubernetes.io/name: qwen38-27b
 spec:
-  replicas: 1                     # PRIMARY again 2026-11-02, whole card (pennyroyal parked). Was parked 2026-10-24..11-02.
+  replicas: 0                     # PARKED 2026-11-04 for Ripple-65B (#168, apps/ripple-65b-sglang.yaml holds the whole card).
+                                  # Rollback: git revert the Ripple switch commit (this -> 1, ripple-65b -> 0, Collective backend back).
+                                  # Was primary 2026-11-02..11-04.
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }

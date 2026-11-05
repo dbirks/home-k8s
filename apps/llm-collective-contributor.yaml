@@ -1,5 +1,5 @@
-# LLM Collective contributor. Contributes Qwen3.8-27B on vLLM (qwen3-8-27b, primary again 2026-11-02;
-# Pennyroyal Flash-Next parked) to the company LLM Collective at
+# LLM Collective contributor. Contributes Ripple-65B on SGLang (ripple-65b, primary since 2026-11-04, #168;
+# Qwen3.8-27B and Pennyroyal Flash-Next parked) to the company LLM Collective at
 # https://llm-collective.e-gineering.com over one outbound WebSocket tunnel.
 #
 # Backend target is the ninfer Service directly. NOTE: ninfer scales to zero via
@@ -139,33 +139,49 @@ data:
           - alias: phonon-31m            # English only (the Apache-2.0 checkpoint)
             model: phonon-31m-en
             types: [speech]
+      # Ripple-65B Preview NVFP4 on stock SGLang 0.5.19 (apps/ripple-65b-sglang.yaml, #168), 2026-11-04, whole card in
+      # place of qwen38-27b. Dense 65B, NVFP4 MLPs + BF16 attention, BF16 KV, radix cache, ripple tool + reasoning
+      # parsers. No reasoning levels: Ripple's template has no thinking switch (it always thinks). Text only.
+      - name: ripple-65b
+        url: http://ripple-65b.default.svc.cluster.local:8000
+        protocols: [openai, anthropic]   # SGLang serves /v1/chat/completions and /v1/messages natively
+        concurrency: 12            # SGLang --max-running-requests 16 behind it (dev 2); see ripple-65b-sglang skill
+        models:
+          - alias: ripple-65b
+            model: ripple-65b
+            limits:
+              context: 65536
+            reasoning: true
+            inputs: [text]
+      # PARKED 2026-11-04: qwen38-27b at replicas 0 while Ripple-65B (#168) owns the whole card. Rollback = uncomment,
+      # drop ripple-65b, flip both replicas (or git revert the switch commit).
       # Qwen3.8-27B NVFP4 (nvidia ModelOpt) on STOCK vLLM v0.32.0 (apps/qwen38-27b-vllm.yaml), 2026-10-22, in place
       # of flint. Prefix caching + batched prefill; MTP 3; vision; tools (qwen3_coder) + reasoning (qwen3).
       # PRIMARY again 2026-11-02: whole card, nvfp4 KV (~3M tokens), max-num-seqs 32. Pennyroyal parked (host-RAM boot failures).
-      - name: qwen38-27b
-        url: http://qwen38-27b.default.svc.cluster.local:8000
-        protocols: [openai, anthropic]
-        concurrency: 24         # 2026-11-02: ~3.0M nvfp4 KV / ~270K per full-262K request = ~11 guaranteed-full; 24 assumes
+      # - name: qwen38-27b
+      #   url: http://qwen38-27b.default.svc.cluster.local:8000
+      #   protocols: [openai, anthropic]
+      #   concurrency: 24         # 2026-11-02: ~3.0M nvfp4 KV / ~270K per full-262K request = ~11 guaranteed-full; 24 assumes
                                 # ~125K average with prefix sharing. vLLM --max-num-seqs 32 behind it (headroom for dev 4 +
                                 # preemption). Watch vllm:num_preemptions_total; lower this if it climbs.
-        models:
-          - alias: qwen3-8-27b
-            model: qwen3-8-27b
-            limits:
-              context: 262144
+      #   models:
+      #     - alias: qwen3-8-27b
+      #       model: qwen3-8-27b
+      #       limits:
+      #         context: 262144
             # Probed live 2026-10-23 on vLLM v0.32.0: reasoning_effort low/medium/xhigh think; `none` turns thinking
             # off (vLLM maps it to enable_thinking=false); high/minimal/max are rejected (400) by Qwen's template.
             # Server default is medium (--default-chat-template-kwargs). The gateway web chat's "off" sends
             # chat_template_kwargs.thinking_enabled, which Qwen ignores (its key is enable_thinking); API clients
             # sending reasoning_effort=none or Anthropic thinking.type=disabled do get thinking off (llm-collective#84).
-            reasoning:
-              levels:
-                - none
-                - low
-                - medium
-                - xhigh
+      #       reasoning:
+      #         levels:
+      #           - none
+      #           - low
+      #           - medium
+      #           - xhigh
             # Vision verified (data-URI PNG, colors read correctly).
-            inputs: [text, image]
+      #       inputs: [text, image]
       # PARKED 2026-10-22: flint on vLLM with our SM120 + fp8 KV patches (apps/flint-vllm.yaml). Rollback = uncomment,
       # drop qwen38-27b, flip both replicas. Always thinks (glm47), no levels; text only.
       # - name: flint
