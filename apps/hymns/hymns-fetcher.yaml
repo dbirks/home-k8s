@@ -1,7 +1,7 @@
 # Hymns found-online audio fetcher (PRBC hymns app, source: prbc/hymns repo fetcher/).
 # Weekly CronJob: re-checks found-online sources via the app API, downloads pending Remillard
 # YouTube recordings with yt-dlp from this home connection, uploads them through the app. Outbound only.
-# Upstream manifest: prbc/hymns fetcher/k8s/cronjob.yaml (kept identical except the arch nodeSelector).
+# Upstream manifest: prbc/hymns fetcher/k8s/cronjob.yaml (kept identical; last synced to prbc/hymns a31b04a).
 # Secrets (SOPS, this folder): hymns-fetcher (key per TARGETS env: dev), ghcr-pull (copy of the
 # dbirks GHCR pull secret used by market-agent; it can read ghcr.io/prbc/hymns-fetcher).
 # Run once now: kubectl -n hymns create job --from=cronjob/hymns-fetcher fetch-now
@@ -17,24 +17,34 @@ metadata:
   name: hymns-fetcher
   namespace: hymns
 spec:
-  schedule: "17 7 * * 1" # Mondays 07:17 in the cluster's time zone
+  schedule: "17 7 * * 1"        # Mondays 07:17 in the cluster's time zone
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 0 # a failed run waits for next week (or a manual job)
+      backoffLimit: 0            # a failed run waits for next week (or a manual job)
       activeDeadlineSeconds: 14400
       ttlSecondsAfterFinished: 1209600
       template:
         spec:
           restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/arch: amd64
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000            # the image's "node" user
+            runAsGroup: 1000
+            seccompProfile: { type: RuntimeDefault }
           imagePullSecrets:
             - name: ghcr-pull
           containers:
             - name: fetcher
               image: ghcr.io/prbc/hymns-fetcher:latest
               imagePullPolicy: Always
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
               envFrom:
                 # keys are target names: dev -> HYMNS_PASSWORD_dev
                 - prefix: HYMNS_PASSWORD_
@@ -46,12 +56,10 @@ spec:
                 - name: LIMIT
                   value: "500"
               resources:
-                requests: {cpu: 100m, memory: 256Mi}
-                limits: {memory: 1Gi}
+                requests: { cpu: 100m, memory: 256Mi }
+                limits: { memory: 1Gi }
               volumeMounts:
-                - {name: tmp, mountPath: /tmp}
+                - { name: tmp, mountPath: /tmp }
           volumes:
             - name: tmp
-              emptyDir: {sizeLimit: 2Gi}
-          nodeSelector:
-            kubernetes.io/arch: amd64
+              emptyDir: { sizeLimit: 2Gi }
