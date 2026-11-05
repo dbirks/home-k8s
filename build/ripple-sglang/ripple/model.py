@@ -441,7 +441,10 @@ class RicursiveForCausalLM(nn.Module):
                 else:
                     unused.append(name)
         tied = {"lm_head.weight"} if self.config.tie_word_embeddings else set()
-        missing = sorted(set(params) - loaded - tied)
+        # ModelOpt adds RadixAttention k_scale/v_scale params (init -1, set to 1.0 after loading when absent);
+        # this checkpoint has none and runs BF16 KV, so they are expected gaps.
+        missing = sorted(n for n in set(params) - loaded - tied
+                         if not n.endswith((".attn.k_scale", ".attn.v_scale")))
         if unused or missing:
             import logging
             import os
