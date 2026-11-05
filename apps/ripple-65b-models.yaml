@@ -1,0 +1,94 @@
+# Ripple-65B Preview NVFP4 weights for apps/ripple-65b-sglang.yaml (issue 168). Staging only: no GPU is touched.
+#
+#   /models/ripple-65b-nvfp4/   ricursiveAI/Ripple-65B-Preview-NVFP4 @ 99eea447 (57.2 GB, 6 safetensors shards)
+#
+# ModelOpt NVFP4 (W4A4, group 16) on the MLPs only; attention, embeddings and lm_head stay BF16 - so this is
+# NOT a 4-bit 65B, it is ~53 GiB resident. Dense 80 layers, hybrid SWA (64 sliding window 1024 + 16 full).
+# The inference/local/*.py files are Ricursive's SGLang model code (SM121/DGX Spark target); the serving image
+# (build/ripple-sglang) bakes its own reviewed copy, these are kept beside the weights for reference.
+# DFlash2 drafter (phase 5) is deliberately NOT staged yet.
+#
+# On the HDD like qwen38-27b-models-hdd (NVMe /var is near kubelet's image-GC threshold). Standalone PVC so
+# retiring this Job never prunes the weights. LFS sha256 from the HF API; the small files were hashed from the
+# pinned revision, 2026-11-04.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ripple-65b-models-hdd
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 80Gi             # 57.2 GB weights + the DFlash2 drafter later (~8 GB) + slack; local-path does not enforce it
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ripple-65b-models-download
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }   # the HDD and the GPU that will read it
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              REV=99eea4477a001a41b86914e41feb4b2ed86105e5
+              M=/models/ripple-65b-nvfp4
+              MARK=/models/.verified-$REV
+              if [ -f "$MARK" ]; then echo "already verified"; ls -l "$M"; exit 0; fi
+              pip install -q -U "huggingface_hub[cli]"
+              mkdir -p "$M.dl"
+              # resumable: a restarted pod picks up the partial files in $M.dl
+              hf download ricursiveAI/Ripple-65B-Preview-NVFP4 --revision "$REV" --local-dir "$M.dl" \
+                model-00001-of-00006.safetensors model-00002-of-00006.safetensors model-00003-of-00006.safetensors \
+                model-00004-of-00006.safetensors model-00005-of-00006.safetensors model-00006-of-00006.safetensors \
+                model.safetensors.index.json config.json generation_config.json chat_template.jinja \
+                configuration_ricursive.py modeling_ricursive.py special_tokens_map.json tokenizer.json \
+                tokenizer_config.json README.md LICENSE \
+                inference/local/model.py inference/local/ripple_format.py inference/local/spark.py
+              (cd "$M.dl" && sha256sum --check <<'SUMS'
+              eaa330c20b3774b201349acbbdc72d2c37fc08cdda5b57a241ef3df0580cb497  model-00001-of-00006.safetensors
+              f460bca35a7b99faaee131f898a54c9d54b808d05fd1ad59493c2403538f8c96  model-00002-of-00006.safetensors
+              4c570c1435b733c51183221cf5473918c6f9cbb658c97eb322879e5995d96416  model-00003-of-00006.safetensors
+              372a737fb2e758e3911dfb49f1b6be2a26f2c99533337dc7e4390cc082b747ad  model-00004-of-00006.safetensors
+              d2448f900b27958228fa703903fa9b4ff0bd14590a31fe0c7627bf88715e98ce  model-00005-of-00006.safetensors
+              d7cf2508852befa8303153f441a588745270ef3ce163188072d35963d7413578  model-00006-of-00006.safetensors
+              4dc55a07fad0710c1a9686f5bfa0a24ff67bafcf21141c853a66243d090cd0d4  model.safetensors.index.json
+              46e68394f1ceda2385c2458b883957510c07cc60cfb8ffc6a898be70507a126f  config.json
+              29ffb44a6b91f1ef703c25767da9d1bfa7f05b18b26c0d8ba50ac8ab0d1f3e85  generation_config.json
+              877c2dbf365243dda14738ca250b31398059b35ffd91d4ed0ec68be45ca6ebd3  chat_template.jinja
+              002cb3915be9685eb962d617623bec14d45b5d6b5d46e689fac98a3b38cb6cf6  configuration_ricursive.py
+              f83865ef643e273a6c9aecf1575e85c95ad01fd995b1e43c3c7a892765006bb3  modeling_ricursive.py
+              3f7cd7d0cfb20f9faa47c75fd4df91b1c9a78aef0be27ded12cb705b23951341  special_tokens_map.json
+              18e309ad7f9c60037eaf26aca401a96128187cad2bdfa01a508dca7526bf6300  tokenizer.json
+              eef580161a5d941607f7ec7ca95c50bfcd24812d2921c110ac049c620345ed85  tokenizer_config.json
+              007ec77d0d64d3007d68a256f726ff69318abf1a45ab5de08828979425e5b986  inference/local/model.py
+              19e432554ad48c57a1b67b989695ff4e35a44ac769821ad92ba229ecf5266ace  inference/local/ripple_format.py
+              17cbc3414673d9e0e98de82360e485e9b73c9a2bbc9c93f39c09e2ea2548a8e6  inference/local/spark.py
+              SUMS
+              )
+              rm -rf "$M.dl/.cache" "$M" && mv "$M.dl" "$M"
+              touch "$MARK" && ls -l "$M" && df -h /models
+          env:
+            - { name: HF_HUB_DISABLE_TELEMETRY, value: "1" }
+            - { name: HF_HUB_ENABLE_HF_TRANSFER, value: "0" }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: ripple-65b-models-hdd }
