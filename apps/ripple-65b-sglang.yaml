@@ -50,7 +50,7 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: main
-          image: ghcr.io/dbirks/vllm-openai:ripple-sglang0519-20261104@sha256:78373faf81a0951ce149b4e6c8cbfe6be66726be886520062e108ddb9271e945
+          image: ghcr.io/dbirks/vllm-openai:ripple-sglang0519-20261105@sha256:91895aee0afc5ded9d5064ca5a8f5660f92b915a4427bd41d5ec6e708653b3d3
           args:
             - "--model-path"
             - "/models/ripple-65b-nvfp4"
@@ -92,6 +92,7 @@ spec:
             - "--reasoning-parser"
             - "ripple"
             - "--enable-metrics"
+            - "--enable-cache-report"     # usage.prompt_tokens_details.cached_tokens per response
             - "--model-loader-extra-config"       # 6 shards read in parallel off one HDD thrashed at ~65 MB/s (15 min);
             - '{"enable_multithread_load": false}' # sequential reads (as Ricursive's Spark recipe)
             - "--watchdog-timeout"
@@ -100,15 +101,15 @@ spec:
             - { name: HF_HUB_OFFLINE, value: "1" }
             - { name: TRANSFORMERS_OFFLINE, value: "1" }
             - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
-            # 0 = log (not raise) on load gaps. 2026-11-04 first boot: 0 unused checkpoint tensors, the only "gaps" were the
-            # 160 RadixAttention k_scale/v_scale params ModelOpt adds (init -1 -> SGLang sets 1.0; unused with BF16 KV).
-            # Image fix pending (exclude *.attn.k_scale/v_scale); until then log only.
-            - { name: RIPPLE_STRICT_LOAD, value: "0" }
+            # Raise on load gaps (0 = log only). The 160 ModelOpt RadixAttention k_scale/v_scale params (init -1, SGLang sets
+            # 1.0, unused with BF16 KV) are excluded since image ripple-sglang0519-20261105 (the first boot tripped on them).
+            - { name: RIPPLE_STRICT_LOAD, value: "1" }
           ports:
             - containerPort: 8000
-          startupProbe:                   # 57 GB off the HDD + possible FlashInfer JIT + CUDA graphs: allow 40 min
+          startupProbe:                   # 57 GB off the HDD (~12 min) + FlashInfer autotune + CUDA graphs: allow 40 min
             httpGet: { path: /health, port: 8000 }
             periodSeconds: 10
+            timeoutSeconds: 10            # /health runs a 1-token generate and polls in 1 s steps: the 1 s default never passes
             failureThreshold: 240
           livenessProbe:
             httpGet: { path: /health, port: 8000 }
