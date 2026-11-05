@@ -7,15 +7,16 @@
 #
 # Model: dense 65B, 80 layers = 64 sliding-window (1024, RoPE) + 16 full-attention (NoPE), GQA 8 KV heads x 128.
 # NVFP4 W4A4 on the MLPs only, attention/embeddings/lm_head BF16: ~53 GiB of weights on the card.
-# KV: full layers 16 x 2 x 8 x 128 x 2 B = 64 KiB/token (BF16); SWA layers live in SGLang's separate hybrid-SWA pool
+# KV: full layers 16 x 2 x 8 x 128 x 2 B = 64 KiB/token BF16, 32 KiB fp8; SWA layers live in SGLang's separate hybrid-SWA pool
 # (sized by --swa-full-tokens-ratio; it only has to hold the last 1024 tokens of each live/cached sequence).
 #
 # Flags and why (see the ripple-65b-sglang skill for the numbers behind them):
-#   flashinfer attention     trtllm_mha (Ricursive's B200 choice) is SM100-only; FA3 is Hopper-only.
+#   flashinfer attention     FA3 is Hopper-only. (trtllm_mha, Ricursive's B200 pick, does run XQA decode on SM120 in 0.5.19;
+#                            untested here - it is the NVFP4-KV path, a later step.)
 #   flashinfer_cutlass FP4   SGLang's auto pick on SM120 anyway; pinned so a version bump cannot silently swap it.
 #   radix cache ON, lpm      Spark's --disable-radix-cache / max-running-requests 1 are single-user defaults.
-#   BF16 KV                  correctness first (the only KV dtype Ricursive validated).
-#   context 65536            conservative start (model supports 2Mi positions).
+#   FP8 KV (e4m3)            since 2026-11-05 after an A/B vs BF16 (the only dtype Ricursive validated); see the skill.
+#   context 131072           Ripple's 128K SFT length (model supports 2Mi positions).
 #   prefill CUDA graphs off  as both Ricursive recipes.
 # No HiCache host pool: host RAM (46 GB, no swap) is the binding constraint on this node, not VRAM.
 #
@@ -64,7 +65,8 @@ spec:
             - "--dtype"
             - "bfloat16"
             - "--kv-cache-dtype"
-            - "bfloat16"
+            - "fp8_e4m3"                  # 2026-11-05 A/B vs bfloat16 (#168): ~2.6x full-attention pool. No k/v scales in the
+                                          # checkpoint -> 1.0. Revert to "bfloat16" if quality probes regress (skill).
             - "--tp-size"
             - "1"
             - "--attention-backend"
@@ -72,13 +74,14 @@ spec:
             - "--fp4-gemm-backend"
             - "flashinfer_cutlass"
             - "--context-length"
-            - "65536"
+            - "131072"                    # 128K = Ripple's SFT length (positions go to 2Mi; keep it here)
             - "--mem-fraction-static"
             - "0.88"
             - "--swa-full-tokens-ratio"
-            - "0.2"                       # default 0.8 would spend 4x the full pool's bytes on SWA tails
+            - "0.07"                      # SWA pool = 7% of full tokens (~49K at fp8): window 1024 x live reqs + prefill chunk.
+                                          # Default 0.8 would spend most bytes on SWA tails (64 of 80 layers are SWA)
             - "--max-running-requests"
-            - "16"
+            - "12"                        # Collective prod 8 + dev 2 + headroom
             - "--chunked-prefill-size"
             - "8192"
             - "--schedule-policy"
