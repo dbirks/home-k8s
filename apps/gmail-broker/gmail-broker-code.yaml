@@ -101,14 +101,14 @@ data:
         ("GET", re.compile(r"^profile$")),
         ("GET", re.compile(r"^messages(/[A-Za-z0-9_-]+)?$")),
         ("GET", re.compile(r"^threads/[A-Za-z0-9_-]+$")),
-        ("GET", re.compile(r"^drafts(/[A-Za-z0-9_-]+)?$")),
+        ("GET", re.compile(r"^drafts(/[A-Za-z0-9_:-]+)?$")),  # draft ids look like s:-6489...
         ("POST", re.compile(r"^drafts$")),
-        ("PUT", re.compile(r"^drafts/[A-Za-z0-9_-]+$")),
+        ("PUT", re.compile(r"^drafts/[A-Za-z0-9_:-]+$")),
     ]
 
 
     def _gmail(alias, method, path, query=None, body=None):
-        if "send" in path.lower() or not any(m == method and rx.match(path) for m, rx in _ALLOWED):
+        if "send" in path.lower() or not any(m == method and rx.fullmatch(path) for m, rx in _ALLOWED):
             log.error("BLOCKED outbound gmail call method=%s path=%s", method, path)
             raise ToolError("Blocked: that Gmail operation is not allowed by this broker.")
         url = API + path + ("?" + urllib.parse.urlencode(query, doseq=True) if query else "")
@@ -236,7 +236,7 @@ data:
 
     def _id(args, key):
         v = str(args.get(key, "")).strip()
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", v):
+        if not re.fullmatch(r"[A-Za-z0-9_:-]+", v):  # draft ids contain ":"
             raise ToolError(f"'{key}' is required and must be a Gmail id.")
         return v
 

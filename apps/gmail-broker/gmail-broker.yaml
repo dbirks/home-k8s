@@ -7,6 +7,7 @@
 #
 # CODE: broker.py (stdlib only, no pip) shipped as ConfigMap gmail-broker-code.yaml. After editing broker.py
 # regenerate it:  kubectl create configmap gmail-broker-code -n default --from-file=broker.py=apps/gmail-broker/broker.py --dry-run=client -o yaml > apps/gmail-broker/gmail-broker-code.yaml
+#   ...and set the pod annotation broker-py-sha256 to: sha256sum apps/gmail-broker/broker.py | cut -c1-12
 #
 # SECRETS (all SOPS, all in this folder; nothing private in plaintext — this repo is public):
 #   gmail-broker-token        BROKER_TOKEN, the bearer Hermes presents (Hermes reads the same Secret)
@@ -31,6 +32,7 @@ spec:
   template:
     metadata:
       labels: { app: gmail-broker }
+      annotations: { broker-py-sha256: "df63a11f8e40" }   # bump with broker.py so the pod reloads the ConfigMap
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
