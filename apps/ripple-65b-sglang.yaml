@@ -1,0 +1,145 @@
+# ripple-65b — Ricursive Ripple-65B Preview NVFP4 on stock SGLang 0.5.19 (cu130), one RTX PRO 6000 (SM120). Issue #168.
+# ============================================================================================
+# Image: build/ripple-sglang (lmsysorg/sglang:v0.5.19-cu130 + Ricursive's model.py / ripple_format.py / chat template,
+# no compile, no runtime pip), built by .github/workflows/build-ripple-sglang.yaml into the public dbirks/vllm-openai package, pinned by digest.
+# Its 70 base layers are byte-identical to lmsysorg/sglang:v0.5.19-cu130, so pre-pulling that from Docker Hub leaves ~4 tiny layers.
+# Weights: apps/ripple-65b-models.yaml (HDD PVC, pinned HF commit + sha256-checked).
+#
+# Model: dense 65B, 80 layers = 64 sliding-window (1024, RoPE) + 16 full-attention (NoPE), GQA 8 KV heads x 128.
+# NVFP4 W4A4 on the MLPs only, attention/embeddings/lm_head BF16: ~53 GiB of weights on the card.
+# KV: full layers 16 x 2 x 8 x 128 x 2 B = 64 KiB/token (BF16); SWA layers live in SGLang's separate hybrid-SWA pool
+# (sized by --swa-full-tokens-ratio; it only has to hold the last 1024 tokens of each live/cached sequence).
+#
+# Flags and why (see the ripple-65b-sglang skill for the numbers behind them):
+#   flashinfer attention     trtllm_mha (Ricursive's B200 choice) is SM100-only; FA3 is Hopper-only.
+#   flashinfer_cutlass FP4   SGLang's auto pick on SM120 anyway; pinned so a version bump cannot silently swap it.
+#   radix cache ON, lpm      Spark's --disable-radix-cache / max-running-requests 1 are single-user defaults.
+#   BF16 KV                  correctness first (the only KV dtype Ricursive validated).
+#   context 65536            conservative start (model supports 2Mi positions).
+#   prefill CUDA graphs off  as both Ricursive recipes.
+# No HiCache host pool: host RAM (46 GB, no swap) is the binding constraint on this node, not VRAM.
+#
+# HAMi shows SGLang a 97800 MiB GPU (whole card): qwen38-27b, CLEF and both Qwen3-TTS must be at 0 while this runs.
+# Switch / rollback: ONE commit flips this and apps/qwen38-27b-vllm.yaml replicas (1<->0) and the Collective
+# backends in apps/llm-collective-contributor*.yaml. Rollback = set this to 0 and qwen38-27b to 1 (git revert of
+# the switch commit does exactly that).
+# ============================================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ripple-65b
+  namespace: default
+  labels:
+    app.kubernetes.io/name: ripple-65b
+spec:
+  replicas: 0                     # staged; the switch commit sets 1 (and qwen38-27b 0)
+  strategy:
+    type: Recreate                # never two whole-card pods
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ripple-65b
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ripple-65b
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: main
+          image: ghcr.io/dbirks/vllm-openai:ripple-sglang0519-20261104@sha256:78373faf81a0951ce149b4e6c8cbfe6be66726be886520062e108ddb9271e945
+          args:
+            - "--model-path"
+            - "/models/ripple-65b-nvfp4"
+            - "--served-model-name"
+            - "ripple-65b"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--trust-remote-code"
+            - "--dtype"
+            - "bfloat16"
+            - "--kv-cache-dtype"
+            - "bfloat16"
+            - "--tp-size"
+            - "1"
+            - "--attention-backend"
+            - "flashinfer"
+            - "--fp4-gemm-backend"
+            - "flashinfer_cutlass"
+            - "--context-length"
+            - "65536"
+            - "--mem-fraction-static"
+            - "0.88"
+            - "--swa-full-tokens-ratio"
+            - "0.2"                       # default 0.8 would spend 4x the full pool's bytes on SWA tails
+            - "--max-running-requests"
+            - "16"
+            - "--chunked-prefill-size"
+            - "8192"
+            - "--schedule-policy"
+            - "lpm"
+            - "--cuda-graph-backend-prefill"
+            - "disabled"
+            - "--chat-template"
+            - "/opt/ripple/chat_template.jinja"
+            - "--tool-call-parser"
+            - "ripple"
+            - "--reasoning-parser"
+            - "ripple"
+            - "--enable-metrics"
+            - "--watchdog-timeout"
+            - "1800"
+          env:
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: TRANSFORMERS_OFFLINE, value: "1" }
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+            - { name: RIPPLE_STRICT_LOAD, value: "1" }   # 0 = log (not raise) on checkpoint/param name gaps
+          ports:
+            - containerPort: 8000
+          startupProbe:                   # 57 GB off the HDD + possible FlashInfer JIT + CUDA graphs: allow 40 min
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            failureThreshold: 240
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem: "97800", cpu: "8", memory: 28Gi }
+            requests: { cpu: "4", memory: 8Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ripple-65b-models-hdd
+            readOnly: true
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 4Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ripple-65b
+  namespace: default
+  labels:
+    app.kubernetes.io/name: ripple-65b
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ripple-65b
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
