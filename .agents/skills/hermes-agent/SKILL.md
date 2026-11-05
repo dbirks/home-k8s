@@ -99,6 +99,9 @@ on every start; if you see this, check that init ran. Smoke test: `kubectl exec 
   send/delete/import/modify; anything containing "send" is refused and logged `BLOCKED`). Logs never carry
   addresses/subjects/bodies.
 - After editing broker.py, regenerate the ConfigMap (the command is in the header of gmail-broker.yaml) and commit both.
+  Also bump the pod annotation `broker-py-sha256` (first 12 hex of `sha256sum broker.py`) or the pod keeps the old code.
+- Gmail draft ids contain a colon (`s:-6489...`); id regexes must allow `:` (fixed 2026-11-05, list_drafts was BLOCKED).
+- Accounts live 2026-11-05: davidebirks, dbirks91, jameson23. SENDING IS DELIBERATELY OFF (user decision); per-tool approval design for a future send tool is in issue 169.
 - Hermes side: env `GMAIL_BROKER_TOKEN` (same Secret `gmail-broker-token`), and by hand:
   `hermes config set mcp_servers.gmail '{url: "http://gmail-broker.default.svc.cluster.local:8080/mcp", headers: {Authorization: "Bearer ${GMAIL_BROKER_TOKEN}"}}'`
   plus `mcp_servers.gmail.tools.include` = the 8 tool names. Check: `kubectl exec deploy/hermes -c hermes -- hermes mcp test gmail`.
