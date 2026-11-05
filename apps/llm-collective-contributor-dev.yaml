@@ -46,7 +46,7 @@ data:
           - alias: ripple-65b
             model: ripple-65b
             limits:
-              context: 65536
+              context: 131072   # = SGLang --context-length (fp8 KV, 2026-11-05)
             reasoning: true
             inputs: [text]
       # PARKED 2026-11-04: qwen38-27b at replicas 0 while Ripple-65B (#168) owns the whole card. Rollback = uncomment,
