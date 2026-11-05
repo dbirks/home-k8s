@@ -146,7 +146,7 @@ spec:
         # One-shot schema migration (ADR-0013): serve never migrates itself, it
         # only refuses readiness until the schema is current.
         - name: migrate
-          image: ghcr.io/dbirks/communication:main@sha256:0633ecf52fc536e70f8c02a6bc25dee0a972b8f08f8639ff2db17f62f7a65db1 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:8bee511ab8d67c893e2cc71f9fc8a6b486e0cb76ac29728622a7a5088668330e # {"$imagepolicy": "flux-system:communication"}
           args: ["migrate", "up"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -157,7 +157,7 @@ spec:
         # bit, so a Secret volume (..data symlinks, 0644) can't be pointed at
         # directly. Copy the key into a 0700 emptyDir as a 0600 regular file.
         - name: keyring
-          image: ghcr.io/dbirks/communication:main@sha256:0633ecf52fc536e70f8c02a6bc25dee0a972b8f08f8639ff2db17f62f7a65db1 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:8bee511ab8d67c893e2cc71f9fc8a6b486e0cb76ac29728622a7a5088668330e # {"$imagepolicy": "flux-system:communication"}
           command: ["sh", "-ec"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -176,7 +176,7 @@ spec:
             - {name: keyring, mountPath: /keyring}
       containers:
         - name: serve
-          image: ghcr.io/dbirks/communication:main@sha256:0633ecf52fc536e70f8c02a6bc25dee0a972b8f08f8639ff2db17f62f7a65db1 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:8bee511ab8d67c893e2cc71f9fc8a6b486e0cb76ac29728622a7a5088668330e # {"$imagepolicy": "flux-system:communication"}
           args: ["serve"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -377,7 +377,7 @@ spec:
         # bit, so a Secret volume (..data symlinks, 0644) can't be pointed at
         # directly. Copy the key into a 0700 emptyDir as a 0600 regular file.
         - name: keyring
-          image: ghcr.io/dbirks/communication:main@sha256:0633ecf52fc536e70f8c02a6bc25dee0a972b8f08f8639ff2db17f62f7a65db1 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:8bee511ab8d67c893e2cc71f9fc8a6b486e0cb76ac29728622a7a5088668330e # {"$imagepolicy": "flux-system:communication"}
           command: ["sh", "-ec"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -400,7 +400,7 @@ spec:
         # 0600-files emptyDir. Never print contents. Absent Secret => the
         # optional volume is an empty dir; seed nothing and exit 0.
         - name: claude-config
-          image: ghcr.io/dbirks/communication:main@sha256:0633ecf52fc536e70f8c02a6bc25dee0a972b8f08f8639ff2db17f62f7a65db1 # {"$imagepolicy": "flux-system:communication"}
+          image: ghcr.io/dbirks/communication:main@sha256:8bee511ab8d67c893e2cc71f9fc8a6b486e0cb76ac29728622a7a5088668330e # {"$imagepolicy": "flux-system:communication"}
           command: ["sh", "-ec"]
           securityContext:
             allowPrivilegeEscalation: false
