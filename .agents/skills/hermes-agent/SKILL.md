@@ -1,6 +1,6 @@
 ---
 name: hermes-agent
-description: Operate the in-cluster NousResearch Hermes Agent (apps/hermes-agent.yaml, issue 162) - s6 process model and security context, tsidp OIDC dashboard login, config.yaml settings we set by hand, the LLM Collective provider and its key, how to exec in and verify, the Signal sidecar and its landline registration, the Gmail read+draft-only broker and its account helper, the Gnotes MCP adapter, and what is next (Microsoft 365 read-only, Bitwarden). Use when changing, upgrading, debugging or extending Hermes.
+description: Operate the in-cluster NousResearch Hermes Agent (apps/hermes-agent.yaml, issue 162) - s6 process model and security context, tsidp OIDC dashboard login, config.yaml settings we set by hand, the LLM Collective provider and its key, how to exec in and verify, the Signal sidecar and its landline registration, voice-message speech-to-text via Collective qwen3-asr, the Gmail read+draft-only broker and its account helper, the Gnotes MCP adapter, and what is next (Microsoft 365 read-only, Bitwarden). Use when changing, upgrading, debugging or extending Hermes.
 ---
 
 # Hermes Agent (in-cluster since 2026-10-28)
@@ -81,6 +81,32 @@ through `sops encrypt --filename-override apps/hermes-secrets.enc.yaml`.
   Approving pairing without an allowlist: `kubectl exec deploy/hermes -c hermes -- hermes pairing approve signal CODE`
   (the exec-shim drops to uid 10000). Group replies don't require an @mention (`SIGNAL_REQUIRE_MENTION` default false).
 - signal-cli logs the account number at daemon start; pod logs are not public, but don't paste them anywhere public.
+
+## Voice messages (STT) = Collective qwen3-asr-1-7b through openwebui-stt-shim
+Signal voice notes (AAC/m4a), Ogg/Opus etc. are transcribed by Hermes' built-in `openai` STT provider
+(`tools/transcription_tools.py: transcribe_audio`, which the gateway calls from `gateway/run_inbound_transcription.py`).
+config.yaml (re-apply after a PVC loss; the "not a recognized config key" warnings are cosmetic, the code reads them):
+```bash
+H="kubectl exec deploy/hermes -c hermes -- hermes config set"
+$H stt.provider openai
+$H stt.openai.model qwen3-asr-1-7b
+$H stt.openai.base_url http://openwebui-stt-shim.default.svc.cluster.local/v1
+$H stt.openai.api_key '${COLLECTIVE_API_KEY}'   # literal; config.yaml expands ${ENV} at load, no key on disk
+$H stt.openai.timeout 120
+```
+Why the shim, not the Collective directly: the Collective's qwen3-asr (speech.cpp) reads **WAV only** and 400s
+anything else (`unsupported_value ... is not a WAV file`). Hermes always uploads compressed audio: its cloud
+silence-trim re-encodes to m4a, and its "unsupported container" retry transcodes to m4a again, so the direct path
+can never succeed. `openwebui-stt-shim` (apps/openwebui.yaml, open-webui skill) converts anything to 16 kHz WAV,
+chunks long audio, and forwards the caller's own `Authorization` to the Collective, so it is still the Collective
+with Hermes' own key. **Coupling:** scaling Open WebUI's shim to 0 breaks Hermes voice notes too. If the Collective
+ever accepts other formats, drop `stt.openai.base_url` to `https://llm-collective.e-gineering.com/v1`.
+Verify (real code path, no key printed):
+```bash
+kubectl exec deploy/hermes -c hermes -- sh -c 'cd /opt/hermes && /opt/hermes/.venv/bin/python -c "from tools.transcription_tools import transcribe_audio as t; print(t(\"/tmp/x.m4a\"))"'
+# -> {'success': True, 'transcript': '...', 'provider': 'openai'}
+```
+Make a test clip in the pod: Collective `phonon-31m` `/v1/audio/speech` to wav, then `ffmpeg -i t.wav -c:a aac t.m4a`.
 
 ## Gotcha: unsafe_control_permissions
 `hermes chat` failing with `Gateway inaccessible: unsafe_control_permissions (/opt/data has mode 0777 ...)` means

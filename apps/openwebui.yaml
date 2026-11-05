@@ -44,6 +44,7 @@
 # holds no key and stores nothing. BYPASS_PYDUB_PREPROCESSING=true skips Open WebUI's own
 # lossy mp3 pass so the shim gets the original recording. If the Collective ever accepts
 # other formats, point AUDIO_STT_OPENAI_API_BASE_URL straight at it and drop the shim.
+# Hermes (apps/hermes-agent.yaml) also sends its voice-note STT through this shim (stt.openai.base_url).
 #
 # TTS (read aloud + voice calls): AUDIO_TTS_ENGINE=openai pointed straight at the Collective's phonon-31m
 # (Gradium Phonon, CPU on dave-droid, apps/phonon-tts.yaml). Open WebUI sends {model, input, voice} and gets mp3

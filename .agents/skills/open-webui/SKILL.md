@@ -60,6 +60,7 @@ webm labelled `recording.wav`, and its pydub step converts every non-flac/mp3 co
 - Editing only the ConfigMap script does not restart the pod; change something in the
   pod template too (or the shim keeps running the old code).
 - `BYPASS_PYDUB_PREPROCESSING=true` stops Open WebUI's lossy mp3 pass first.
+- Hermes also uses this shim for Signal voice notes (hermes-agent skill), so keep it up even if Open WebUI is parked.
 - If the Collective starts accepting other formats, point
   `AUDIO_STT_OPENAI_API_BASE_URL` straight at it and delete the shim.
 
