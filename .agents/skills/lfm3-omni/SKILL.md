@@ -41,6 +41,13 @@ Collective: backend `lfm3-omni` in BOTH `apps/llm-collective-contributor.yaml` a
 - Quality caveat: a 2B model - it states wrong "fun facts" with confidence. Fine for a voice demo/agent
   front end, not for facts.
 
+## Q8_0 weights (2026-11-05)
+- VRAM: card total **5.74 GiB / 8 GiB** idle with qwen3-asr (was 4.84 GiB on Q4_K_M).
+- Realtime tool calls, audio output, prompt ending "Respond with function calls, and interleaved text and audio."
+  (the steering phrase llama.cpp's realtime tool example uses; without it the model only speaks):
+  smile 2/2, dance 1/2, nod 0/2 (Q4_K_M had smile 0/2, dance 2/2). Better on smile, still hit-and-miss.
+- The init container's wget resumes (`-c`) and times out (`-T 60`): the first Q8_0 pull stalled at 1.39 GB.
+
 ## Test it
 ```bash
 kubectl port-forward svc/lfm3-omni 18080:8080 &
