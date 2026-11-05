@@ -79,11 +79,15 @@ spec:
               17cbc3414673d9e0e98de82360e485e9b73c9a2bbc9c93f39c09e2ea2548a8e6  inference/local/spark.py
               SUMS
               )
-              rm -rf "$M.dl/.cache" "$M" && mv "$M.dl" "$M"
+              rm -rf "$M.dl/.cache" "$M" /models/.hf-home && mv "$M.dl" "$M"
               touch "$MARK" && ls -l "$M" && df -h /models
           env:
             - { name: HF_HUB_DISABLE_TELEMETRY, value: "1" }
             - { name: HF_HUB_ENABLE_HF_TRANSFER, value: "0" }
+            - { name: HF_XET_HIGH_PERFORMANCE, value: "1" }        # unauthenticated + default xet ran at 2-6 MiB/s
+            - { name: HF_HOME, value: /models/.hf-home }            # xet chunk cache survives a pod restart
+            - name: HF_TOKEN                                       # authenticated rate limits; read-only token
+              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
           resources:
             requests: { cpu: "1", memory: 1Gi }
             limits: { cpu: "4", memory: 4Gi }
