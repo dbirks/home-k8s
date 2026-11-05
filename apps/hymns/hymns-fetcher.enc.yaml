@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    dev: ENC[AES256_GCM,data:hTOHFnn8cg1a9961,iv:MqUNZGmRNXzrNgyJurwGgJBizn29/05KibyGo8wSsoQ=,tag:GZFH1tvgiyN0LEHxRBjqzg==,type:str]
+kind: Secret
+metadata:
+    name: hymns-fetcher
+    namespace: hymns
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAxMDBlZUdjU0ZiZjRnanRz
+            eXlYTXJkK3NxTmxKOVpvNHZxQ0pUczJTWWxnCkRkaFpsMHNmMml2TWdrbWJ0Y3pP
+            d1d2cmNRZm5QS3FUVU11UHlrQkVnd0UKLS0tIDJHVXlKblJaSnVCQmg4THEwdjhk
+            d1dPNERGMkhWemZSUitEaVJ4WE1QUkkK0pwM23GGBeUJBxXtGQC4G0BPkSJcBK2n
+            vktqbJgfug1YE/O8SEhwAQtmG7jC+F37OX20s8P3A/J9nuVfdY9xlA==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-11-05T18:51:42Z"
+    mac: ENC[AES256_GCM,data:eO3kj18mnc2uFLD+dH0KbtLDYyeqHI4vxeWw5Kjn1R0BbDpx7nV/vdiDcyLKk+j3Xo+KAjmFnHmiwTO6Kx0aLzRYH5aRPBa4p1+q6+mzo1l5RueMvBXRXq/DApzsgRyswaw4PAmO9TTDtn9gDX871Pd5UM8uWuH+A5AqvhJ425o=,iv:uyd5yT3GzC0UeKqRP63PtiZRbeTyImn0L39LaADppXs=,tag:xeLvmtFq5Vdv61Ipc7f88w==,type:str]
+    version: 3.13.3
