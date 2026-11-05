@@ -41,7 +41,7 @@ data:
       - name: ripple-65b
         url: http://ripple-65b.default.svc.cluster.local:8000
         protocols: [openai, anthropic]   # SGLang serves /v1/chat/completions and /v1/messages natively
-        concurrency: 2            # SGLang --max-running-requests 16 behind it (prod 12); see ripple-65b-sglang skill
+        concurrency: 2            # SGLang --max-running-requests 16 behind it (prod 8); see ripple-65b-sglang skill
         models:
           - alias: ripple-65b
             model: ripple-65b

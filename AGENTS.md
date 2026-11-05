@@ -97,16 +97,23 @@ API CRDs are all gone. History: issues #95, #105, #135, #144 and git history.
 
 What serves models today:
 
+- **Ripple-65B Preview NVFP4 on stock SGLang 0.5.19** (`apps/ripple-65b-sglang.yaml`, weights
+  `apps/ripple-65b-models.yaml`, image `build/ripple-sglang`) is the primary engine since 2026-11-04 (#168):
+  Collective model `ripple-65b`, context 65,536, BF16 KV (269K full-attention tokens + hybrid-SWA pool),
+  radix prefix cache, max-running-requests 16, always-thinking (no effort levels), text only. Whole card
+  (HAMi 97800 MiB). Collective prod 8 / dev 2. ~12 min cold boot (57 GB off the HDD). Operate it via the
+  ripple-65b-sglang skill. **Rollback to Qwen = `git revert` the switch commit `3dbb0bd`.**
 - **Qwen3.8-27B on stock vLLM** (`apps/qwen38-27b-vllm.yaml`, `nvidia/Qwen3.8-27B-NVFP4`, vLLM
-  v0.32.0, no patches) is the primary engine (again since 2026-11-02; Pennyroyal parked): model
+  v0.32.0, no patches) is PARKED at `replicas: 0` since 2026-11-04 (was primary 2026-11-02..11-04): model
   `qwen3-8-27b`, context 262,144, MTP 3, NVFP4 KV (~2.97M-token pool), prefix caching, vision, reasoning
   default medium. It holds the WHOLE card (HAMi 97800 MiB), so CLEF and both Qwen3-TTS stay at 0.
-  Collective prod concurrency 24 / dev 4 over vLLM max-num-seqs 32. Operate it via the qwen38-27b-vllm skill.
+  Collective prod concurrency 24 / dev 4 over vLLM max-num-seqs 32 (backend blocks commented as PARKED).
+  Operate it via the qwen38-27b-vllm skill.
 - **LLM Collective contributor** (`apps/llm-collective-contributor*.yaml`) is the consumer and it
   talks to engines DIRECTLY over the cluster Service (e.g.
   `http://qwen38-27b.default.svc.cluster.local:8000`). This direct pattern is the only
   wiring; there is no in-cluster gateway.
-- **Parked engines** (flint = vLLM with our patches, ninfer = our fork, pennyroyal = whole-card
+- **Parked engines** (qwen38-27b, flint = vLLM with our patches, ninfer = our fork, pennyroyal = whole-card
   Flash-Next) keep Deployment+Service manifests with revival notes in their headers (direct Service +
   Collective backend, or a tailscale Ingress). KEDA is gone, so a revived engine is always-on at
   `replicas: 1`.
