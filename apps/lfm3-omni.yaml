@@ -1,4 +1,4 @@
-# LiquidAI LFM3-Omni-2B (Q4_K_M + Q8_0 mmproj) on llama.cpp llama-server, Vulkan, on dave-droid's GTX 1070
+# LiquidAI LFM3-Omni-2B (Q8_0 weights + Q8_0 mmproj) on llama.cpp llama-server, Vulkan, on dave-droid's GTX 1070
 # (Pascal sm_61), issue #167. Speech-to-speech: the Collective publishes it as a `realtime` model on its
 # OpenAI-style `GET /v1/realtime?model=...` WebSocket door (contributor backend `lfm3-omni`).
 #
@@ -8,8 +8,9 @@
 # co-residency headroom was measured by hand (lfm3-omni skill).
 #
 # Weights: pinned HF revision, fetched once into the PVC and sha256-checked; restarts skip the download.
-# mmproj Q8_0 (not Q4_K_M): it carries the audio encoder AND the speech decoder, Liquid's own llama-tts
-# example pairs Q4_K_M weights with the Q8_0 mmproj, and it only costs ~215 MB more.
+# mmproj Q8_0 (not Q4_K_M): it carries the audio encoder AND the speech decoder.
+# Weights Q8_0 (was Q4_K_M until 2026-11-05): +0.75 GB VRAM, tried for steadier realtime tool calls
+# (llm-collective playground Pix). Q4_K_M stays in the PVC; rollback = point --model back at it.
 #
 # llama-server has NO auth: ClusterIP only, reached by the LLM Collective contributor (concurrency 1,
 # one slot). --reasoning off is required (LFM3-Omni is not a reasoning model). Rollback: replicas 0 here
@@ -23,7 +24,7 @@ metadata:
 spec:
   accessModes: [ReadWriteOnce]
   storageClassName: local-path        # binds on dave-droid (WaitForFirstConsumer)
-  resources: { requests: { storage: 10Gi } }   # Q4_K_M 1.10 GB + mmproj Q8_0 0.51 GB, room for a Q8_0 pair later
+  resources: { requests: { storage: 10Gi } }   # Q8_0 1.85 GB + Q4_K_M 1.10 GB (rollback) + mmproj Q8_0 0.51 GB
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -61,7 +62,7 @@ spec:
                 echo "$2  $1.part" | sha256sum -c -
                 mv "$1.part" "$1"
               }
-              fetch LFM3-Omni-2B-Q4_K_M.gguf     9f8d30e9d4fd7a9349d586e077988229b3ca0a0e4ad730897563d1eccc9893e2
+              fetch LFM3-Omni-2B-Q8_0.gguf       59118f661eaacb93d204723d76355b53347f0940b508c11412f6290fd49158d4
               fetch mmproj-LFM3-Omni-2B-Q8_0.gguf 8a25f9d1931244429de404fccacfb7fb933970a36aa5688d2f5069f29c6b27b1
               ls -la "$d"
           volumeMounts:
@@ -72,7 +73,7 @@ spec:
           image: ghcr.io/ggml-org/llama.cpp:server-vulkan-b12030@sha256:dfb1ba32020a962b4aba4eab5de587907b044daff0d043b3652e15ca3b8895a1
           args:
             - --model
-            - /data/models/3d29af2ad166f8299c2d820937e47dc0add20ffc/LFM3-Omni-2B-Q4_K_M.gguf
+            - /data/models/3d29af2ad166f8299c2d820937e47dc0add20ffc/LFM3-Omni-2B-Q8_0.gguf
             - --mmproj
             - /data/models/3d29af2ad166f8299c2d820937e47dc0add20ffc/mmproj-LFM3-Omni-2B-Q8_0.gguf
             - --alias

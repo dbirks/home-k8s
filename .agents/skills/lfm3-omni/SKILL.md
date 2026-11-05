@@ -6,7 +6,7 @@ description: Operate LFM3-Omni-2B speech-to-speech (apps/lfm3-omni.yaml, issue 1
 # LFM3-Omni-2B realtime voice on dave-droid
 
 What runs: `ghcr.io/ggml-org/llama.cpp:server-vulkan-b12030` (pinned digest) serving
-`LFM3-Omni-2B-Q4_K_M.gguf` + `mmproj-LFM3-Omni-2B-Q8_0.gguf` from the PVC `lfm3-omni-models`
+`LFM3-Omni-2B-Q8_0.gguf` (Q4_K_M until 2026-11-05; still on the PVC for rollback) + `mmproj-LFM3-Omni-2B-Q8_0.gguf` from the PVC `lfm3-omni-models`
 (local-path on dave-droid), HF revision pinned in the init container, sha256-checked, downloaded once.
 ClusterIP `lfm3-omni:8080`, no auth. Local model id = `--alias lfm3-omni-2b`.
 
