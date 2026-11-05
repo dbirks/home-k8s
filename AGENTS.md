@@ -97,12 +97,15 @@ API CRDs are all gone. History: issues #95, #105, #135, #144 and git history.
 
 What serves models today:
 
-- **Ripple-65B Preview NVFP4 on stock SGLang 0.5.19** (`apps/ripple-65b-sglang.yaml`, weights
-  `apps/ripple-65b-models.yaml`, image `build/ripple-sglang`) is the primary engine since 2026-11-04 (#168):
-  Collective model `ripple-65b`, context 65,536, BF16 KV (269K full-attention tokens + hybrid-SWA pool),
-  radix prefix cache, max-running-requests 16, always-thinking (no effort levels), text only. Whole card
-  (HAMi 97800 MiB). Collective prod 8 / dev 2. ~12 min cold boot (57 GB off the HDD). Operate it via the
-  ripple-65b-sglang skill. **Rollback to Qwen = `git revert` the switch commit `3dbb0bd`.**
+- **Pennyroyal (SGLang fork) serving Qwen3.8-Flash-Next NVFP4** (`apps/pennyroyal-flashnext.yaml`) is the primary
+  engine again since 2026-11-05: Collective model `qwen3-8-flash-next` (prod 8 / dev 2 over SGLang's effective 4
+  running = 24 mamba slots // 5), context 524,288, FP8 KV, ~1M-token pool, HiCache 10 GB host tier, vision.
+  Whole card. Operate it via the pennyroyal-flashnext skill.
+- **Ripple-65B Preview NVFP4 on stock SGLang 0.5.19** (`apps/ripple-65b-sglang.yaml`, #168) is PARKED at
+  `replicas: 0` since 2026-11-05 (was primary 2026-11-04..11-05). Last config: fp8_e4m3 KV (756K full-attention
+  tokens, passed the BF16 quality A/B incl. needles at 119K), context 131072, max-running-requests 12, Collective
+  8 / 2 (blocks commented as PARKED). Weights on HDD `ripple-65b-models-hdd` (~12-14 min cold load) plus an NVMe
+  copy `ripple-65b-models-ssd` (apps/ripple-65b-models-ssd.yaml) to switch the volume to. ripple-65b-sglang skill.
 - **Qwen3.8-27B on stock vLLM** (`apps/qwen38-27b-vllm.yaml`, `nvidia/Qwen3.8-27B-NVFP4`, vLLM
   v0.32.0, no patches) is PARKED at `replicas: 0` since 2026-11-04 (was primary 2026-11-02..11-04): model
   `qwen3-8-27b`, context 262,144, MTP 3, NVFP4 KV (~2.97M-token pool), prefix caching, vision, reasoning

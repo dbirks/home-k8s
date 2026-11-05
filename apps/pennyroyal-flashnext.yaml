@@ -1,4 +1,4 @@
-# PARKED 2026-11-02: replicas 0. Host-RAM boot failures (8/40 mamba slots, then 6/24 at HiCache 12 also failed the
+# LIVE again 2026-11-05 (replicas 1, 6/24 slots, HiCache 10). Was PARKED 2026-11-02..11-05: Host-RAM boot failures (8/40 mamba slots, then 6/24 at HiCache 12 also failed the
 # host-memory check; HiCache 10 booted). Primary moved to Qwen3.8-27B on stock vLLM (apps/qwen38-27b-vllm.yaml) for
 # ~3x the KV pool. Rollback = qwen38-27b to 0 first, then this to 1, and swap the Collective backend back.
 #
@@ -38,7 +38,7 @@ metadata:
   namespace: default
   labels: { app: pennyroyal-flashnext }
 spec:
-  replicas: 0                         # PARKED 2026-11-02: primary moved to qwen38-27b on vLLM (nvfp4 KV, whole card). Was LIVE 2026-10-24..11-02.
+  replicas: 1                         # LIVE again 2026-11-05 (primary; Ripple #168 parked). Was LIVE 2026-10-24..11-02, parked 11-02..11-05.
   strategy: { type: Recreate }        # never two whole-card pods
   selector:
     matchLabels: { app: pennyroyal-flashnext }

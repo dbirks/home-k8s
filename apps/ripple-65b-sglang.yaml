@@ -34,7 +34,7 @@ metadata:
   labels:
     app.kubernetes.io/name: ripple-65b
 spec:
-  replicas: 1                     # LIVE 2026-11-04 (switch commit: qwen38-27b -> 0). Rollback = git revert that commit.
+  replicas: 0                     # PARKED 2026-11-05: Pennyroyal Flash-Next is primary again. Was LIVE 2026-11-04..11-05 (fp8 KV 128K passed quality; see skill).
   strategy:
     type: Recreate                # never two whole-card pods
   selector:
