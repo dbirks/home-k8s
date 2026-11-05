@@ -140,6 +140,12 @@ on every start; if you see this, check that init ran. Smoke test: `kubectl exec 
   (`items: [{key: refresh_token, path: ALIAS.refresh_token}, {key: email, path: ALIAS.email}]`) and commit. Real
   addresses stay inside the encrypted Secret, and aliases are the only names used anywhere else.
 - Token death (`invalid_grant` in broker logs): re-run the helper for that alias.
+- Gotcha "I don't have email access": the gmail tools are deferred behind `tool_search`, and on Signal the model's
+  search missed them, then it tried `manage_connections` (Nous cloud connectors, where `gmail` is not a slug) and
+  concluded nothing was connected. Fix (2026-11-05): an entry in Hermes' built-in memory `/opt/data/memories/MEMORY.md`
+  (entries split by a line holding only the section sign) saying email = the `gmail` MCP tools, read + draft only,
+  never manage_connections. Memory is snapshotted per session, so an already-running Signal chat needs `/new`.
+  Verify with a fresh `hermes chat -q "Do you have access to my emails?"` (it should call Gmail tools).
 
 ## Gnotes = notes/tasks via apps/gnotes-mcp/ (issue 163)
 - Gnotes (apps/gnotes.yaml) has a REST API but no MCP server and no OIDC. `gnotes_mcp.py` (stdlib MCP, same shape as the
