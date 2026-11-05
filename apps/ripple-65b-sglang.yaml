@@ -92,13 +92,18 @@ spec:
             - "--reasoning-parser"
             - "ripple"
             - "--enable-metrics"
+            - "--model-loader-extra-config"       # 6 shards read in parallel off one HDD thrashed at ~65 MB/s (15 min);
+            - '{"enable_multithread_load": false}' # sequential reads (as Ricursive's Spark recipe)
             - "--watchdog-timeout"
             - "1800"
           env:
             - { name: HF_HUB_OFFLINE, value: "1" }
             - { name: TRANSFORMERS_OFFLINE, value: "1" }
             - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
-            - { name: RIPPLE_STRICT_LOAD, value: "1" }   # 0 = log (not raise) on checkpoint/param name gaps
+            # 0 = log (not raise) on load gaps. 2026-11-04 first boot: 0 unused checkpoint tensors, the only "gaps" were the
+            # 160 RadixAttention k_scale/v_scale params ModelOpt adds (init -1 -> SGLang sets 1.0; unused with BF16 KV).
+            # Image fix pending (exclude *.attn.k_scale/v_scale); until then log only.
+            - { name: RIPPLE_STRICT_LOAD, value: "0" }
           ports:
             - containerPort: 8000
           startupProbe:                   # 57 GB off the HDD + possible FlashInfer JIT + CUDA graphs: allow 40 min
