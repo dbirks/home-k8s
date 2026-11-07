@@ -47,3 +47,15 @@ Pieces (namespace `omnigent`, runners in `omnigent-sandboxes`):
 ## Known stale bit
 The host's Pi models.json still points at `vllm.default.svc.cluster.local` (Qwen3.6, parked). To use the live model,
 point it at the LLM Collective or the running engine's Service (see AGENTS.md "Serving stack").
+
+## Pi in the host = LLM Collective (since 2026-11-07)
+- `apps/omnigent-host.yaml` ConfigMap `pi-models-config` defines provider `collective`
+  (`https://llm-collective.e-gineering.com/v1`, model `qwen3-8-flash-next`); a wrapper pins
+  `--model collective/qwen3-8-flash-next` so headless Pi never falls back to google.
+- Key: env `COLLECTIVE_API_KEY` from SOPS secret `omnigent-collective`. Pi 1.5 only interpolates
+  `"apiKey": "${COLLECTIVE_API_KEY}"`; a bare env-var name is sent literally (401 invalid API key).
+  The secret currently holds a copy of Hermes' key; mint a dedicated one in the Collective UI to split usage.
+- The wrapper must exec the RESOLVED `/usr/local/bin/pi` symlink target (`dist/cli.js`): copying it
+  elsewhere breaks its `./cli-runtime.js` require (MODULE_NOT_FOUND).
+- A ConfigMap edit alone doesn't restart the pod (the init container copies models.json at start).
+- Test: `kubectl -n omnigent exec deploy/omnigent-host -c host -- sh -c 'cd /tmp && pi -p --no-session "Reply with exactly: ok" < /dev/null'`
