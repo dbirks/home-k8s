@@ -68,6 +68,11 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "get", "delete"]
+  # v0.13+: `provider: agent_sandbox` (kubernetes-sigs/agent-sandbox CRs). Mirrors upstream's
+  # sandbox-runners role; inert here (CRD not installed, we use provider: kubernetes).
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["create", "get", "patch", "delete"]
   # pods create/delete retained for the bare-Pod -> Job migration fallback;
   # list added so the launcher can find a Job's child Pod by label.
   - apiGroups: [""]
@@ -124,11 +129,13 @@ data:
         # (see omnigent-sandbox-creds.enc.yaml)
         secret_name: omnigent-creds
         service_account: omnigent-runner
-        # Pin runner Pods to the same image version as the persistent host (v0.10.0)
-        image: ghcr.io/omnigent-ai/omnigent-host@sha256:625e16f7a3aa72f6cbe75d06d134c2124d5d4998bc43feb8db4bef6b18ae0ab8
+        # Pin runner Pods to the same image version as the persistent host (v0.21.0)
+        image: ghcr.io/omnigent-ai/omnigent-host@sha256:da9265d28a920d876c89d464b599d4bdcf4647bc338e3c4f79e3e2714570c7e5
         # Single-node cluster — pin to this node
         node_selector:
           kubernetes.io/hostname: talos-210-73x
+        # v0.21: Pod-start wait budget (default 90 s); a cold pull of the ~GB host image runs longer
+        pod_ready_timeout_s: 300
         resources:
           requests:
             cpu: "500m"
