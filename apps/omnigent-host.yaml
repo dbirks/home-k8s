@@ -89,8 +89,12 @@ spec:
             - /bin/sh
             - -c
             - |
-              cp /usr/local/bin/pi /tmp/pi-real \
-              && printf '#!/bin/sh\nexec /tmp/pi-real --model collective/qwen3-8-flash-next "$@"\n' \
+              # /usr/local/bin/pi is a symlink to the package's dist/cli.js, which loads
+              # ./cli-runtime.js relative to itself: wrap the RESOLVED path (copying the
+              # file elsewhere breaks it with MODULE_NOT_FOUND, seen on v0.21.0).
+              PI_REAL=$(readlink -f /usr/local/bin/pi) \
+              && rm /usr/local/bin/pi \
+              && printf '#!/bin/sh\nexec %s --model collective/qwen3-8-flash-next "$@"\n' "$PI_REAL" \
                    > /usr/local/bin/pi \
               && chmod +x /usr/local/bin/pi \
               && omnigent host --server http://omnigent.omnigent.svc.cluster.local
