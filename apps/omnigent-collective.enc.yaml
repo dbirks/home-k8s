@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+    COLLECTIVE_API_KEY: ENC[AES256_GCM,data:mgUaTfh9a3UfBHqJrq3bVh0N6MKQMWkmJ1UemgL8lUJCJ4HhenGDCS6ckIWv2G0vwYPaMq1T+KWqxC1jUbY8eA==,iv:78MW+arCR/GlsLzLrc4L5DJE+tii/cBxSzzmCmWALJE=,tag:ufbXd3cgUQ9/uOmF3ydU1Q==,type:str]
+kind: Secret
+metadata:
+    name: omnigent-collective
+    namespace: omnigent
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBxMUp4dTFYQStTL1FoNEo3
+            SHYvVFpXTlRubElneDVnWnpZRFduTnllbVdZCnhROHBVZmdMank2WlRKNnozc1dm
+            Uks5K283YjRiK2UwNmpMMUY5cG5hVk0KLS0tIDdYUzNCa0pEc2Y1cHluT3AwNnA5
+            L2tBYVJrYlVEbk43aUhpajVHU0tkYWsKOtS0XfZwPOIHksEnNDS++stiW39GCn5U
+            oMjWwJueaWgLXHvyNCdPsLJh0uUdpXeOMpTEac41eJLC6UtnXwv/Ew==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-11-07T11:52:10Z"
+    mac: ENC[AES256_GCM,data:4cEoXndMvdsULdEtLo2nPGaLfp1VX6ZEux8tzHBRdJzJLe9NxB7LJFE6fsvzSIy7yUzdmRemuI8yJV8jVvZqqsBaMlpe9KcVI9KL91nv/Np44IZEAUYOX9+tOH6kX/U7nVHjOzs4dnJXL4BZnkN7xI/bly6+u+Cb+7tR3UNXCuA=,iv:J+5IuOItJimJJGFCPK/CEGG4JnpHZbyv1h0vfODbmcY=,tag:uXywoB2csQqFe/Jc2ww2yg==,type:str]
+    version: 3.13.3
