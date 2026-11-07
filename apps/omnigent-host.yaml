@@ -14,7 +14,8 @@
 # A wrapper around the pi binary pre-selects collective/qwen3-8-flash-next so Pi
 # doesn't fall back to its default google provider when spawned headlessly.
 # Collective key: env COLLECTIVE_API_KEY from SOPS secret omnigent-collective
-# (apps/omnigent-collective.enc.yaml); models.json names the env var, not the value.
+# (apps/omnigent-collective.enc.yaml); models.json interpolates ${COLLECTIVE_API_KEY}
+# (Pi 1.5 needs the $ form; a bare name is sent literally and 401s).
 # 2026-11-07: that secret holds a copy of Hermes' Collective key; mint a dedicated
 # one in the Collective UI (/api-keys) and re-encrypt to separate usage.
 ---
@@ -30,7 +31,7 @@ data:
         "collective": {
           "baseUrl": "https://llm-collective.e-gineering.com/v1",
           "api": "openai-completions",
-          "apiKey": "COLLECTIVE_API_KEY",
+          "apiKey": "${COLLECTIVE_API_KEY}",
           "compat": { "supportsDeveloperRole": false },
           "models": [
             {
