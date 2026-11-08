@@ -52,7 +52,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: web
-          image: ghcr.io/dbirks/contrail-sky:main@sha256:bbdf806244e1cd266a97b619e96517fc0ec7673cefb410ad2b78cffdeeacb18e # {"$imagepolicy": "flux-system:contrail-sky"}
+          image: ghcr.io/dbirks/contrail-sky:main@sha256:088e317143ddc1b6fd24e711c170d3bc1051270062a6b4f5f745fd646450ad86 # {"$imagepolicy": "flux-system:contrail-sky"}
           ports:
             - {name: http, containerPort: 8080}
           readinessProbe:
