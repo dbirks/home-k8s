@@ -39,38 +39,38 @@ metadata:
   namespace: default
 spec:
   replicas: 1
-  selector: { matchLabels: { app: contrail-sky } }
+  selector: {matchLabels: {app: contrail-sky}}
   template:
-    metadata: { labels: { app: contrail-sky } }
+    metadata: {labels: {app: contrail-sky}}
     spec:
       enableServiceLinks: false
-      nodeSelector: { kubernetes.io/arch: amd64 }
+      nodeSelector: {kubernetes.io/arch: amd64}
       securityContext:
         runAsNonRoot: true
         runAsUser: 101 # nginx-unprivileged
         runAsGroup: 101
-        seccompProfile: { type: RuntimeDefault }
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: web
-          image: ghcr.io/dbirks/contrail-sky:main # {"$imagepolicy": "flux-system:contrail-sky"}
+          image: ghcr.io/dbirks/contrail-sky:main@sha256:678b0c9967ba46350a59ca749c4bf4c9c1025dbdee53cacf7fe9600dab8a8a72 # {"$imagepolicy": "flux-system:contrail-sky"}
           ports:
-            - { name: http, containerPort: 8080 }
+            - {name: http, containerPort: 8080}
           readinessProbe:
-            httpGet: { path: /healthz, port: 8080 }
+            httpGet: {path: /healthz, port: 8080}
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /healthz, port: 8080 }
+            httpGet: {path: /healthz, port: 8080}
             initialDelaySeconds: 5
             periodSeconds: 30
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
-            capabilities: { drop: [ALL] }
+            capabilities: {drop: [ALL]}
           resources:
-            requests: { cpu: 10m, memory: 16Mi }
-            limits: { cpu: 500m, memory: 64Mi }
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 500m, memory: 64Mi}
           volumeMounts:
-            - { name: tmp, mountPath: /tmp }
+            - {name: tmp, mountPath: /tmp}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -81,9 +81,9 @@ metadata:
   name: contrail-sky
   namespace: default
 spec:
-  selector: { app: contrail-sky }
+  selector: {app: contrail-sky}
   ports:
-    - { name: http, port: 8080, targetPort: 8080 }
+    - {name: http, port: 8080, targetPort: 8080}
 ---
 # Tailscale Ingress: contrail-sky.beluga-wyvern.ts.net, tailnet only, never public.
 apiVersion: networking.k8s.io/v1
