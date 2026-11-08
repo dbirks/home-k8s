@@ -1,6 +1,7 @@
 apiVersion: v1
 data:
-    dev: ENC[AES256_GCM,data:hTOHFnn8cg1a9961,iv:MqUNZGmRNXzrNgyJurwGgJBizn29/05KibyGo8wSsoQ=,tag:GZFH1tvgiyN0LEHxRBjqzg==,type:str]
+    dev: ENC[AES256_GCM,data:AUJ6JKffEFU4O76Q,iv:r16YV78qcHrEEn8NYGoYycgfCbsYuN4qZTBz3rfn1No=,tag:WAJxJKWEzMVNlLdSNiSMVQ==,type:str]
+    prod: ENC[AES256_GCM,data:/Pu8Wtg+gzS0U+gVFh0OQA==,iv:dF3q/9TQ7SF3qBFODT5yFh5UTOqksyLDaLM58Kqt7Qc=,tag:iQPj7qOWe5uzEwLyilf/FA==,type:str]
 kind: Secret
 metadata:
     name: hymns-fetcher
@@ -9,14 +10,14 @@ sops:
     age:
         - enc: |
             -----BEGIN AGE ENCRYPTED FILE-----
-            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAxMDBlZUdjU0ZiZjRnanRz
-            eXlYTXJkK3NxTmxKOVpvNHZxQ0pUczJTWWxnCkRkaFpsMHNmMml2TWdrbWJ0Y3pP
-            d1d2cmNRZm5QS3FUVU11UHlrQkVnd0UKLS0tIDJHVXlKblJaSnVCQmg4THEwdjhk
-            d1dPNERGMkhWemZSUitEaVJ4WE1QUkkK0pwM23GGBeUJBxXtGQC4G0BPkSJcBK2n
-            vktqbJgfug1YE/O8SEhwAQtmG7jC+F37OX20s8P3A/J9nuVfdY9xlA==
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBseVZzVnlzWGZFYVJ4aWlY
+            VmcwV3oxWjROTEt2TUJQSmdtUFZFbkl1VTBrCmdXM3VXenpBMStieXdXVUwwZ29B
+            c3dVTkVsME1oRTRNYTJNZFIzalNoMTQKLS0tIEpncVI5TytaUlg2eHBZbEY1bnda
+            VEZUY2tvaFYvQmZtWndBckxuaDA0MDgKY+e7GYxZu8BUM2kLi4Efn9QNwnNO26IK
+            mT8QUvjkQwmFW5JTn2SAi7M7hL4WR5/XEZHxNovNSMjkCDlkbM4oew==
             -----END AGE ENCRYPTED FILE-----
           recipient: age17wuzt6mcky73hyllpkwsegs7ryqph6ygc2q3esqhzsu8rfpgtyyqm3zr49
     encrypted_regex: ^(data|stringData)$
-    lastmodified: "2026-11-05T18:51:42Z"
-    mac: ENC[AES256_GCM,data:eO3kj18mnc2uFLD+dH0KbtLDYyeqHI4vxeWw5Kjn1R0BbDpx7nV/vdiDcyLKk+j3Xo+KAjmFnHmiwTO6Kx0aLzRYH5aRPBa4p1+q6+mzo1l5RueMvBXRXq/DApzsgRyswaw4PAmO9TTDtn9gDX871Pd5UM8uWuH+A5AqvhJ425o=,iv:uyd5yT3GzC0UeKqRP63PtiZRbeTyImn0L39LaADppXs=,tag:xeLvmtFq5Vdv61Ipc7f88w==,type:str]
+    lastmodified: "2026-11-08T14:01:30Z"
+    mac: ENC[AES256_GCM,data:j+uZhwzf9vPlbqJXn7me4LXPu9rTldKhbFR85cMxEJfeN82ampU4MAbFRH7pMLb1KCud6+77qjPGLr7M/7i5TvN6eMdyALuRbvqqklk674xEo2W5kBXiVlBj0tzwFg9TxjlwjodcyMO26OXYoztwGCnPg0UPKtoUY5YK8W5lTdY=,iv:VJVQOozUnuwktoG6raWPAtIPRbkG/9NMcI3hWiBMryc=,tag:I1eN/sn6NSpF8680KF7aqQ==,type:str]
     version: 3.13.3

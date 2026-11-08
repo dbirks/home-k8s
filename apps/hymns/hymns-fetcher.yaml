@@ -2,7 +2,7 @@
 # Weekly CronJob: re-checks found-online sources via the app API, downloads pending Remillard
 # YouTube recordings with yt-dlp from this home connection, uploads them through the app. Outbound only.
 # Upstream manifest: prbc/hymns fetcher/k8s/cronjob.yaml (kept identical; last synced to prbc/hymns a31b04a).
-# Secrets (SOPS, this folder): hymns-fetcher (key per TARGETS env: dev), ghcr-pull (copy of the
+# Secrets (SOPS, this folder): hymns-fetcher (key per TARGETS env: dev, prod), ghcr-pull (copy of the
 # dbirks GHCR pull secret used by market-agent; it can read ghcr.io/prbc/hymns-fetcher).
 # Run once now: kubectl -n hymns create job --from=cronjob/hymns-fetcher fetch-now
 ---
@@ -52,7 +52,7 @@ spec:
                     name: hymns-fetcher
               env:
                 - name: TARGETS
-                  value: "dev=https://hymns.dev.prbcindy.com"
+                  value: "dev=https://hymns.dev.prbcindy.com prod=https://hymns.prbcindy.com"
                 - name: LIMIT
                   value: "500"
               resources:
