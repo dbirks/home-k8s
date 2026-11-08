@@ -1,3 +1,5 @@
+# RETIRED 2026-11-08: Contrail Sky now lives on GitHub Pages (https://dbirks.github.io/contrail-sky/).
+# Held (.yaml.hold) so Flux prunes it; rename back to .yaml to run it in-cluster again.
 # Contrail Sky: a kids' explainer showing that a low contrail on the horizon is a plane
 # about 11 km up and far away, not a rocket. A static three.js site from
 # https://github.com/dbirks/contrail-sky (public; CI pushes ghcr.io/dbirks/contrail-sky:main).
