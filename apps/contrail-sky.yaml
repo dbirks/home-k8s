@@ -1,0 +1,108 @@
+# Contrail Sky: a kids' explainer showing that a low contrail on the horizon is a plane
+# about 11 km up and far away, not a rocket. A static three.js site from
+# https://github.com/dbirks/contrail-sky (public; CI pushes ghcr.io/dbirks/contrail-sky:main).
+# Reachable only on the tailnet at https://contrail-sky.beluga-wyvern.ts.net (Tailscale Ingress).
+#
+# Auto-updates: the ImagePolicy below follows the moving `main` tag by digest. The
+# `shepherd` ImageUpdateAutomation (scope ./apps) rewrites the marker on the image line
+# to main@sha256:... on every push. Keep this header attached to the first resource,
+# with no leading `---` (flux-image-automation skill, gotcha 4).
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: contrail-sky
+  namespace: flux-system
+spec:
+  image: ghcr.io/dbirks/contrail-sky
+  interval: 5m0s
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: contrail-sky
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: contrail-sky
+  filterTags:
+    pattern: '^main$'
+  policy:
+    alphabetical:
+      order: asc
+  digestReflectionPolicy: Always
+  interval: 5m0s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: contrail-sky
+  namespace: default
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: contrail-sky } }
+  template:
+    metadata: { labels: { app: contrail-sky } }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/arch: amd64 }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101 # nginx-unprivileged
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          image: ghcr.io/dbirks/contrail-sky:main # {"$imagepolicy": "flux-system:contrail-sky"}
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 500m, memory: 64Mi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: contrail-sky
+  namespace: default
+spec:
+  selector: { app: contrail-sky }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+# Tailscale Ingress: contrail-sky.beluga-wyvern.ts.net, tailnet only, never public.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: contrail-sky-ts
+  namespace: default
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: [contrail-sky]
+  rules:
+    - host: contrail-sky
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: contrail-sky
+                port:
+                  number: 8080
