@@ -27,12 +27,15 @@
 # runtime image cannot run agent turns, so runs only execute once that worker is
 # up; see its header for which node kinds are actually runnable today.
 #
+# 2026-11-09: volumes renamed to *-v2 for a clean reinstall (old data dumped to
+# ~/backups/communication-2026-11-09-2357.sql.gz on the workstation).
+#
 # Single replica: the app is stateless (all state in Postgres) so more replicas
 # are fine later; one is plenty on this node.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: communication-postgres-data
+  name: communication-postgres-data-v2
   namespace: default
 spec:
   accessModes: [ReadWriteOnce]
@@ -86,7 +89,7 @@ spec:
             timeoutSeconds: 5
       volumes:
         - name: data
-          persistentVolumeClaim: {claimName: communication-postgres-data}
+          persistentVolumeClaim: {claimName: communication-postgres-data-v2}
 ---
 apiVersion: v1
 kind: Service
@@ -103,7 +106,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: communication-artifacts
+  name: communication-artifacts-v2
   namespace: default
 spec:
   accessModes: [ReadWriteOnce]
@@ -227,7 +230,7 @@ spec:
             limits: {cpu: 1000m, memory: 512Mi}
       volumes:
         - name: artifacts
-          persistentVolumeClaim: {claimName: communication-artifacts}
+          persistentVolumeClaim: {claimName: communication-artifacts-v2}
         - name: keyring-src
           secret:
             secretName: communication-keyring
@@ -325,7 +328,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: communication-workspaces
+  name: communication-workspaces-v2
   namespace: default
 spec:
   accessModes: [ReadWriteOnce]
@@ -337,7 +340,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: communication-repos
+  name: communication-repos-v2
   namespace: default
 spec:
   accessModes: [ReadWriteOnce]
@@ -490,12 +493,12 @@ spec:
             limits: {memory: 4Gi}
       volumes:
         - name: workspaces
-          persistentVolumeClaim: {claimName: communication-workspaces}
+          persistentVolumeClaim: {claimName: communication-workspaces-v2}
         - name: repos
-          persistentVolumeClaim: {claimName: communication-repos}
+          persistentVolumeClaim: {claimName: communication-repos-v2}
         # READ-WRITE here (the worker writes artifacts); serve mounts the same claim read-only.
         - name: artifacts
-          persistentVolumeClaim: {claimName: communication-artifacts}
+          persistentVolumeClaim: {claimName: communication-artifacts-v2}
         - name: sandbox-home
           emptyDir: {}
         - name: sandbox-policy
