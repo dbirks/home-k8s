@@ -85,3 +85,12 @@ controllers, issue #148); until then this is intentional out-of-band drift, so d
 control-plane minor (bump on every k8s upgrade or version skew breaks it);
 `createRuntimeClass: false` (the `nvidia` RuntimeClass already exists); cert-manager for the
 webhook cert under `scheduler.certManager`; `prometheus.enabled: false` (no ServiceMonitor CRD).
+
+## After a full-cluster restart (power blip): GPU pods stuck Pending
+
+Seen 2026-11-10: both nodes rebooted at once and every GPU engine (pennyroyal, qwen3-asr, lfm3-omni) stayed off the Collective.
+- Pods that started before `hami-device-plugin` was up end `Failed` / `UnexpectedAdmissionError`.
+- Their replacements were admitted while HAMi was down. `hami-webhook` is `failurePolicy: Ignore`, so they kept `schedulerName: default-scheduler`, which can't satisfy `nvidia.com/gpumem` → Pending forever with "Insufficient nvidia.com/gpumem". Tell-tale: `kubectl get pods -o custom-columns=N:.metadata.name,S:.spec.schedulerName`.
+- Fix: delete those pods once `hami-scheduler` is Ready; the ReplicaSet recreates them through the webhook.
+
+`apps/gpu-pod-rescuer.yaml` (CronJob in kube-system, every 3 min) now does exactly that automatically: only GPU pods owned by a ReplicaSet/StatefulSet, only when hami-scheduler is Ready, Pending on a non-HAMi scheduler for 2+ min or Failed with UnexpectedAdmissionError. Logs: `kubectl logs -n kube-system -l app=gpu-pod-rescuer`; set `DRY_RUN: "1"` to observe only.
