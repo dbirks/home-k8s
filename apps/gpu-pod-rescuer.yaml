@@ -1,0 +1,196 @@
+# gpu-pod-rescuer: unstick GPU pods after a full-cluster restart (power blip).
+#
+# Failure seen 2026-11-10 after a power blip rebooted both nodes at once:
+#   1. GPU pods that came up before hami-device-plugin was ready were rejected
+#      by the kubelet (phase Failed, reason UnexpectedAdmissionError) and HAMi
+#      kept counting their gpumem.
+#   2. Their replacements were created while HAMi was still down. The
+#      hami-webhook has failurePolicy: Ignore, so they were admitted WITHOUT
+#      schedulerName: hami-scheduler. The default scheduler cannot hand out
+#      nvidia.com/gpumem, so they sat Pending ("Insufficient nvidia.com/gpumem")
+#      forever and every engine stayed off the LLM Collective.
+#
+# Every 3 minutes this CronJob deletes, ONLY when hami-scheduler is Ready:
+#   - Pending GPU pods older than 2 min that are NOT on hami-scheduler and not
+#     yet bound to a node, and
+#   - Failed GPU pods with reason UnexpectedAdmissionError,
+# and only if a ReplicaSet/StatefulSet owns them (so they get recreated, now
+# through the working webhook). It never touches anything else. A GPU pod here
+# means any container requesting an nvidia.com/* resource.
+#
+# Dry run: set DRY_RUN to "1". Logs: kubectl logs -n kube-system -l app=gpu-pod-rescuer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-pod-rescuer
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-pod-rescuer
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-pod-rescuer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpu-pod-rescuer
+subjects:
+  - kind: ServiceAccount
+    name: gpu-pod-rescuer
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-pod-rescuer
+  namespace: kube-system
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [hami-scheduler]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-pod-rescuer
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-pod-rescuer
+subjects:
+  - kind: ServiceAccount
+    name: gpu-pod-rescuer
+    namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-pod-rescuer
+  namespace: kube-system
+data:
+  rescue.py: |
+    import json, os, ssl, sys, urllib.request
+    from datetime import datetime, timezone
+
+    SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+    API = "https://kubernetes.default.svc"
+    TOKEN = open(f"{SA}/token").read().strip()
+    CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
+    DRY = os.environ.get("DRY_RUN", "0") == "1"
+    MIN_AGE = int(os.environ.get("MIN_PENDING_SECONDS", "120"))
+    HAMI = "hami-scheduler"
+
+    def call(method, path):
+        req = urllib.request.Request(API + path, method=method,
+                                     headers={"Authorization": f"Bearer {TOKEN}"})
+        with urllib.request.urlopen(req, context=CTX, timeout=20) as r:
+            return json.load(r)
+
+    def log(msg):
+        print(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} {msg}", flush=True)
+
+    def wants_gpu(pod):
+        for c in pod["spec"].get("containers", []):
+            res = c.get("resources") or {}
+            for k in list((res.get("limits") or {})) + list((res.get("requests") or {})):
+                if k.startswith("nvidia.com/"):
+                    return True
+        return False
+
+    def recreated(pod):
+        return any(o.get("kind") in ("ReplicaSet", "StatefulSet")
+                   for o in pod["metadata"].get("ownerReferences", []))
+
+    dep = call("GET", "/apis/apps/v1/namespaces/kube-system/deployments/hami-scheduler")
+    if (dep.get("status", {}).get("readyReplicas") or 0) < 1:
+        log("hami-scheduler not Ready yet; a recreated pod would miss the webhook again. Skipping.")
+        sys.exit(0)
+
+    now = datetime.now(timezone.utc)
+    acted = 0
+    for phase in ("Pending", "Failed"):
+        for pod in call("GET", f"/api/v1/pods?fieldSelector=status.phase%3D{phase}")["items"]:
+            md, spec, st = pod["metadata"], pod["spec"], pod.get("status", {})
+            if not wants_gpu(pod) or not recreated(pod):
+                continue
+            created = datetime.fromisoformat(md["creationTimestamp"].replace("Z", "+00:00"))
+            age = (now - created).total_seconds()
+            why = None
+            if (phase == "Pending" and spec.get("schedulerName") != HAMI
+                    and not spec.get("nodeName") and age >= MIN_AGE):
+                why = f"Pending {int(age)}s on scheduler {spec.get('schedulerName')!r} (webhook missed it)"
+            elif phase == "Failed" and st.get("reason") == "UnexpectedAdmissionError":
+                why = "Failed with UnexpectedAdmissionError (device plugin was not ready at boot)"
+            if not why:
+                continue
+            acted += 1
+            name = f"{md['namespace']}/{md['name']}"
+            if DRY:
+                log(f"DRY_RUN would delete {name}: {why}")
+            else:
+                call("DELETE", f"/api/v1/namespaces/{md['namespace']}/pods/{md['name']}")
+                log(f"deleted {name}: {why}")
+    if not acted:
+        log("ok: no stuck GPU pods")
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gpu-pod-rescuer
+  namespace: kube-system
+spec:
+  schedule: "*/3 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels: {app: gpu-pod-rescuer}
+        spec:
+          serviceAccountName: gpu-pod-rescuer
+          restartPolicy: Never
+          enableServiceLinks: false
+          # Must run while GPU nodes are still settling; tolerate anything on the
+          # control plane so it can't itself get stuck behind a taint.
+          tolerations:
+            - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: rescue
+              image: python:3.14.10-alpine
+              command: ["python3", "-I", "/script/rescue.py"]
+              env:
+                - {name: DRY_RUN, value: "0"}
+                - {name: MIN_PENDING_SECONDS, value: "120"}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {memory: 96Mi}
+              volumeMounts:
+                - {name: script, mountPath: /script, readOnly: true}
+          volumes:
+            - name: script
+              configMap: {name: gpu-pod-rescuer}
