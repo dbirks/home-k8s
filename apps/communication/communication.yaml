@@ -436,7 +436,7 @@ spec:
         - name: worker
           # No args: the image's ENTRYPOINT is /usr/local/bin/communication and
           # its CMD is already ["worker"].
-          image: ghcr.io/dbirks/communication-worker:main@sha256:41c962dcbfbf12df3c9a5659bdd77729e6b730cda113a04d01e90e8588728db7 # {"$imagepolicy": "flux-system:communication-worker"}
+          image: ghcr.io/dbirks/communication-worker:main@sha256:9c4b8fd05848d04d6f57283ba19afc4389cb92de00d50a0d899a23a1f7da80e2 # {"$imagepolicy": "flux-system:communication-worker"}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
