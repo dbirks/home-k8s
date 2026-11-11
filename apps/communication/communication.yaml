@@ -334,7 +334,10 @@ spec:
 # state across all of them — this is not credential isolation (ADR-0019 D4).
 # If the Secret is absent the dir stays empty, agent.acp fails closed with the
 # worker's honest refusal, and only process.exec and model.chat nodes run.
-# CODEX_HOME is still not mounted, so the codex launcher remains unavailable.
+# CODEX_HOME is a persistent PVC (communication-codex-home) at /harness/codex. It
+# starts empty: log in once with the device flow (see docs in the communication
+# repo, docs/home-cluster.md "Codex login"); codex writes its refreshed
+# auth.json back there, so the login survives restarts.
 # model.chat gets its bearer token from communication-worker-secrets (created
 # out of band — never commit a value); base URL + allowlist are plain env below.
 #
@@ -365,6 +368,18 @@ spec:
   resources:
     requests:
       storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: communication-codex-home
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 100Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -498,6 +513,12 @@ spec:
             - {name: COMMUNICATION_PI_API_KEY_FILE, value: /run/pi-key/key}
             - {name: COMMUNICATION_PI_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
             - {name: COMMUNICATION_PI_MODEL, value: david-birks/qwen3-8-flash-next}
+            # Codex launcher credential dir (ADR-0019 D4): a writable, persistent home.
+            - {name: CODEX_HOME, value: /harness/codex}
+            # Agent egress (ADR-0035): Anthropic for Claude Code, OpenAI's ChatGPT-login and API hosts
+            # for Codex, GitHub for templates that push and open draft PRs. Pi's Collective host is
+            # added by the worker from COMMUNICATION_PI_BASE_URL.
+            - {name: COMMUNICATION_AGENT_EGRESS_ALLOW, value: "api.anthropic.com,chatgpt.com,api.openai.com,auth.openai.com,github.com,api.github.com"}
           volumeMounts:
             - {name: workspaces, mountPath: /workspaces}
             - {name: repos, mountPath: /repos}
@@ -512,6 +533,7 @@ spec:
             - {name: claude-config, mountPath: /harness/claude}
             - {name: claude-token, mountPath: /run/claude-token, readOnly: true}
             - {name: pi-key, mountPath: /run/pi-key, readOnly: true}
+            - {name: codex-home, mountPath: /harness/codex}
           resources:
             requests: {cpu: 250m, memory: 512Mi}
             limits: {memory: 4Gi}
@@ -548,6 +570,8 @@ spec:
           secret:
             secretName: communication-worker-claude-token
             defaultMode: 0440
+        - name: codex-home
+          persistentVolumeClaim: {claimName: communication-codex-home}
         - name: pi-key
           secret:
             secretName: communication-worker-secrets
