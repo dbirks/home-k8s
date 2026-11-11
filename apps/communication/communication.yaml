@@ -223,6 +223,10 @@ spec:
                 secretKeyRef: {name: communication-worker-secrets, key: COMMUNICATION_MODEL_CHAT_API_KEY, optional: false}
             - {name: COMMUNICATION_DECISION_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
             - {name: COMMUNICATION_DECISION_MODEL, value: david-birks/qwen3-8-flash-next}
+            # Operations shows the workflow model steps' endpoint and model; the key stays
+            # worker-only (serve reports "key unknown here").
+            - {name: COMMUNICATION_MODEL_CHAT_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
+            - {name: COMMUNICATION_MODEL_CHAT_MODELS, value: david-birks/qwen3-8-flash-next}
             - name: COMMUNICATION_DECISION_API_KEY
               valueFrom:
                 secretKeyRef: {name: communication-worker-secrets, key: COMMUNICATION_MODEL_CHAT_API_KEY, optional: false}
