@@ -488,6 +488,12 @@ spec:
             # and handed to the agent as CLAUDE_CODE_OAUTH_TOKEN (never argv/logs).
             # Replaces relying on the copied interactive login, which goes stale.
             - {name: COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE, value: /run/claude-token/token}
+            # Pi (ADR-0059): pi-acp spawns `pi --mode rpc`; the launcher reads the
+            # provider key from this file and writes base URL + model into the agent
+            # home's models.json per turn. Same Collective key as the chat steps.
+            - {name: COMMUNICATION_PI_API_KEY_FILE, value: /run/pi-key/key}
+            - {name: COMMUNICATION_PI_BASE_URL, value: "https://llm-collective.e-gineering.com/v1"}
+            - {name: COMMUNICATION_PI_MODEL, value: david-birks/qwen3-8-flash-next}
           volumeMounts:
             - {name: workspaces, mountPath: /workspaces}
             - {name: repos, mountPath: /repos}
@@ -501,6 +507,7 @@ spec:
             # back into CLAUDE_CONFIG_DIR while a turn is running.
             - {name: claude-config, mountPath: /harness/claude}
             - {name: claude-token, mountPath: /run/claude-token, readOnly: true}
+            - {name: pi-key, mountPath: /run/pi-key, readOnly: true}
           resources:
             requests: {cpu: 250m, memory: 512Mi}
             limits: {memory: 4Gi}
@@ -536,4 +543,9 @@ spec:
         - name: claude-token
           secret:
             secretName: communication-worker-claude-token
+            defaultMode: 0440
+        - name: pi-key
+          secret:
+            secretName: communication-worker-secrets
+            items: [{key: COMMUNICATION_MODEL_CHAT_API_KEY, path: key}]
             defaultMode: 0440
