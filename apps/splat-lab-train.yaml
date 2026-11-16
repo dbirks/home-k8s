@@ -23,8 +23,9 @@
 # Fetch: kubectl cp default/$(kubectl get pod -l app=splat-lab-files -o name | cut -d/ -f2):/data/out/<OUT> ./<OUT>
 #
 # train-1 failed after ~30 s: pytorch/pytorch:-runtime has no curl (apt + the injected /etc/vulkan/icd.d/
-# nvidia_icd.json were fine) -> downloads now use python urllib. train-2 also caches brush + the dataset
-# under /data/cache so re-runs skip the 270 MB of fetching.
+# nvidia_icd.json were fine) -> downloads now use python urllib. train-2 then failed because the binary
+# inside the cargo-dist archive is called `brush_app`, not `brush-app` -> extract.py now looks for either
+# and calls it `brush`. train-3+ cache brush + the dataset under /data/cache, so re-runs skip the fetch.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -114,19 +115,20 @@ data:
 
   extract.py: |
     #!/usr/bin/env python3
-    """Pull the brush-app binary out of a cargo-dist .tar.xz into <dir>/brush-app (755)."""
+    """Pull the brush binary out of a cargo-dist .tar.xz into <dir>/brush (755)."""
     import os
     import sys
     import tarfile
 
     with tarfile.open(sys.argv[1]) as t:
-        names = [m for m in t.getmembers() if m.name.endswith("/brush-app") or m.name == "brush-app"]
+        names = [m for m in t.getmembers()
+                 if m.isfile() and os.path.basename(m.name) in ("brush-app", "brush_app", "brush-cli", "brush")]
         if not names:
-            raise SystemExit("brush-app not in archive: " + str([m.name for m in t.getmembers()][:20]))
+            raise SystemExit("no brush binary in archive: " + str([m.name for m in t.getmembers()][:20]))
         m = names[0]
         t.extract(m, sys.argv[2], filter="data")
         src = os.path.join(sys.argv[2], m.name)
-        dst = os.path.join(sys.argv[2], "brush-app")
+        dst = os.path.join(sys.argv[2], "brush")
         if os.path.abspath(src) != os.path.abspath(dst):
             os.replace(src, dst)
         os.chmod(dst, 0o755)
@@ -165,7 +167,7 @@ data:
     ls -l /etc/vulkan/icd.d/ 2>/dev/null || echo "[warn] no /etc/vulkan/icd.d -> driver not injected?"
 
     # ---- 1. Brush binary (cached on the PVC, checksum-pinned) -------------------------------
-    BRUSH_BIN=/data/cache/brush/$BRUSH_VER/brush-app
+    BRUSH_BIN=/data/cache/brush/$BRUSH_VER/brush
     if [ ! -x "$BRUSH_BIN" ]; then
       mkdir -p "$OUT/dl" /data/cache/brush
       python3 /config/dl.py "$BRUSH_URL" "$OUT/dl/brush.tar.xz"
@@ -193,7 +195,7 @@ data:
         free=$((total - used))
         if [ "$free" -lt "$FREE_FLOOR" ]; then
           echo "[watchdog] $(date -u +%T) only ${free} MiB free on the GPU -> stopping trainer to protect qwen3-asr"
-          pkill -x brush-app || true
+          pkill -x brush || true
           touch "$OUT/ABORTED_OOM"
           break
         fi
@@ -244,14 +246,14 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-train-2
+  name: splat-lab-train-3
   namespace: default
   labels: { app: splat-lab }
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 3600
   template:
-    metadata: { labels: { app: splat-lab, job: splat-lab-train-2 } }
+    metadata: { labels: { app: splat-lab, job: splat-lab-train-3 } }
     spec:
       restartPolicy: Never
       runtimeClassName: nvidia
@@ -267,7 +269,7 @@ spec:
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: WGPU_BACKEND, value: vulkan }
             - { name: HOME, value: /data }
-            - { name: OUT, value: /data/out/train-2 }
+            - { name: OUT, value: /data/out/train-3 }
             - { name: DATA, value: nvs-bench/tanksandtemples/truck }
             - { name: STEPS, value: "10000" }
             - { name: MAX_RES, value: "512" }
