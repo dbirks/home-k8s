@@ -1,0 +1,262 @@
+# splat-lab-train (deck method G3, 2026-11-16): train a REAL 3D Gaussian Splat scene from multi-view
+# photos on dave-droid's GTX 1070 (Pascal sm_61), for the AISE Nov 2026 talk deck
+# (github.com/dbirks/aise-nov-2026-local-llms, tools/splats/g3/ + public/splats/g3/README.md).
+#
+# Trainer: Brush v0.3.0 (ArthurBrussee/brush, Apache-2.0) — Rust + Burn over **wgpu/Vulkan**, so it needs
+# no CUDA compile and no sm_61 kernels at all. Same Vulkan-on-Pascal trick as apps/qwen3-asr.yaml:
+# NVIDIA_DRIVER_CAPABILITIES=all injects the graphics driver + ICD, VK_ICD_FILENAMES pins the NVIDIA ICD
+# so wgpu can't silently fall back to llvmpipe (CPU). WGPU_BACKEND=vulkan is belt-and-braces.
+# Data: Tanks and Temples "truck" (a toy pickup on a table, 251 photos) as pre-exported by
+# nvs-bench/tanksandtemples (Hugging Face; images/ + COLMAP sparse/0), so NO SfM has to run here.
+#
+# VRAM: HAMi's gpumem quota is CUDA-only — it does NOT limit a Vulkan process (same caveat as qwen3-asr).
+# The 5000 MiB request is accounting so the GPU still schedules one job at a time. Actual headroom is
+# 8192 MiB minus qwen3-asr's ~2.1 GiB, so the job runs a watchdog on `nvidia-smi` free memory and KILLS
+# Brush before the card runs out (that would take the ASR service down with it). Keep --max-splats and
+# --max-resolution small unless you re-check that.
+#
+# Re-run: copy the Job block, bump the -N suffix and OUT, delete the old Job block in the same commit
+# (Jobs are immutable; Flux prunes the deleted one), then poke flux:
+#   kubectl -n flux-system annotate --overwrite gitrepository/flux-system reconcile.fluxcd.io/requestedAt="$(date +%s)"
+#   kubectl -n flux-system annotate --overwrite kustomization/apps reconcile.fluxcd.io/requestedAt="$(date +%s)"
+# Watch: kubectl get pods -l job-name=splat-lab-train-1 -w    Logs: kubectl logs job/splat-lab-train-1
+# Fetch: kubectl cp default/$(kubectl get pod -l app=splat-lab-files -o name | cut -d/ -f2):/data/out/train-1 ./train-1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: splat-lab-train-v1
+  namespace: default
+  labels: { app: splat-lab }
+data:
+  fetch_hf.py: |
+    #!/usr/bin/env python3
+    """Download one folder (prefix) of a public Hugging Face dataset. Stdlib only.
+    Resumable: a file already on disk with the expected size is skipped."""
+    import concurrent.futures as cf
+    import json
+    import os
+    import sys
+    import urllib.parse
+    import urllib.request
+
+    repo, prefix, dest = sys.argv[1], sys.argv[2].rstrip("/"), sys.argv[3]
+    threads = int(sys.argv[4]) if len(sys.argv) > 4 else 8
+
+    def get(url, out=None):
+        req = urllib.request.Request(url, headers={"User-Agent": "splat-lab/1.0"})
+        with urllib.request.urlopen(req, timeout=180) as r:
+            body = r.read()
+            link = r.headers.get("Link", "")
+        nxt = None
+        for part in link.split(","):
+            if 'rel="next"' in part:
+                nxt = part[part.index("<") + 1: part.index(">")]
+        if out:
+            with open(out, "wb") as f:
+                f.write(body)
+        return body, nxt
+
+    files, url = [], f"https://huggingface.co/api/datasets/{repo}/tree/main?recursive=true"
+    while url:
+        body, url = get(url)
+        for f in json.loads(body):
+            if f.get("type") == "file" and f["path"].startswith(prefix + "/"):
+                files.append(f)
+    if not files:
+        raise SystemExit(f"no files under {repo}/{prefix}")
+
+    def dl(f):
+        path, size = f["path"], f.get("size") or 0
+        target = os.path.join(dest, os.path.relpath(path, prefix))
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        if os.path.isfile(target) and os.path.getsize(target) == size:
+            return ("cached", target, size)
+        durl = f"https://huggingface.co/datasets/{repo}/resolve/main/{urllib.parse.quote(path)}"
+        tmp = target + ".part"
+        err = None
+        for _ in range(4):
+            try:
+                get(durl, out=tmp)
+                os.replace(tmp, target)
+                return ("new", target, os.path.getsize(target))
+            except Exception as exc:  # noqa: BLE001 - retry any transient failure
+                err = exc
+        raise SystemExit(f"FAILED {path}: {err}")
+
+    with cf.ThreadPoolExecutor(threads) as ex:
+        res = list(ex.map(dl, files))
+    new = sum(1 for r in res if r[0] == "new")
+    print(f"{len(res)} files under {prefix}/ ({new} fetched, {len(res) - new} cached), "
+          f"{sum(r[2] for r in res) / 1e6:.1f} MB", flush=True)
+
+  extract.py: |
+    #!/usr/bin/env python3
+    """Pull the brush-app binary out of a cargo-dist .tar.xz into <dir>/brush-app (755)."""
+    import os
+    import sys
+    import tarfile
+
+    with tarfile.open(sys.argv[1]) as t:
+        names = [m for m in t.getmembers() if m.name.endswith("/brush-app") or m.name == "brush-app"]
+        if not names:
+            raise SystemExit("brush-app not in archive: " + str([m.name for m in t.getmembers()][:20]))
+        m = names[0]
+        t.extract(m, sys.argv[2], filter="data")
+        src = os.path.join(sys.argv[2], m.name)
+        dst = os.path.join(sys.argv[2], "brush-app")
+        if os.path.abspath(src) != os.path.abspath(dst):
+            os.replace(src, dst)
+        os.chmod(dst, 0o755)
+    print("extracted", dst, os.path.getsize(dst), "bytes", flush=True)
+
+  entrypoint.sh: |
+    #!/bin/bash
+    # G3: Brush (wgpu/Vulkan) 3DGS training on the GTX 1070. See the header of the file that mounts this.
+    set -euo pipefail
+    : "${OUT:?}"
+    : "${DATA:?}"          # HF dataset folder, e.g. nvs-bench/tanksandtemples -> truck/
+    : "${STEPS:=10000}"
+    : "${MAX_RES:=512}"
+    : "${MAX_SPLATS:=800000}"
+    : "${SH_DEG:=0}"
+    : "${BRUSH_URL:=https://github.com/ArthurBrussee/brush/releases/download/v0.3.0/brush-app-x86_64-unknown-linux-gnu.tar.xz}"
+    : "${BRUSH_SHA:=4f0f9a8785d1951c62df26aae247c02c5bba32b00f40b06df4e1c9b867399e20}"
+    : "${BRUSH_VER:=v0.3.0}"
+    FREE_FLOOR=900   # MiB free that must stay for qwen3-asr + headroom before we abort
+
+    T0=$(date +%s)
+    mkdir -p "$OUT"
+    cd "$OUT"
+    exec > >(tee -a "$OUT/job.log") 2>&1
+    echo "== splat-lab-train: $(date -u +%FT%TZ) host=$(hostname) out=$OUT steps=$STEPS maxres=$MAX_RES maxsplats=$MAX_SPLATS sh=$SH_DEG"
+
+    # ---- 0. GPU + Vulkan loader -------------------------------------------------------------
+    nvidia-smi --query-gpu=name,driver_version,memory.total,memory.used --format=csv,noheader
+    echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset} LIBCUDA=${LIBCUDA:-unset}"
+    if ! ldconfig -p | grep -q 'libvulkan\.so\.1'; then
+      echo "[deps] libvulkan.so.1 missing -> apt-get install libvulkan1 (+ X libs brush-app links)"
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+        libvulkan1 libxcb1 libx11-6 libxkbcommon0 libegl1 libgl1
+    fi
+    ls -l /etc/vulkan/icd.d/ 2>/dev/null || echo "[warn] no /etc/vulkan/icd.d -> driver not injected?"
+
+    # ---- 1. Brush binary (cached on the PVC, checksum-pinned) -------------------------------
+    BRUSH_BIN=/data/cache/brush/$BRUSH_VER/brush-app
+    if [ ! -x "$BRUSH_BIN" ]; then
+      mkdir -p "$OUT/dl" /data/cache/brush
+      curl -sSL --retry 3 -o "$OUT/dl/brush.tar.xz" "$BRUSH_URL"
+      echo "$BRUSH_SHA  $OUT/dl/brush.tar.xz" | sha256sum -c -
+      mkdir -p /data/cache/brush/$BRUSH_VER
+      python3 /config/extract.py "$OUT/dl/brush.tar.xz" /data/cache/brush/$BRUSH_VER
+      rm -rf "$OUT/dl"
+    fi
+    "$BRUSH_BIN" --version || true
+    ldd "$BRUSH_BIN" | grep -i 'not found' && { echo "FATAL: unresolved shared libs"; exit 3; }
+
+    # ---- 2. Dataset (cached on the PVC) -----------------------------------------------------
+    REPO=$(dirname "$DATA"); NAME=$(basename "$DATA")
+    DS=/data/cache/datasets/$REPO/$NAME
+    mkdir -p "$DS"
+    python3 /config/fetch_hf.py "$REPO" "$NAME" "$DS" 8
+    echo "images=$(ls "$DS/images" | wc -l) sparse=$(ls "$DS"/sparse/0 2>/dev/null | tr '\n' ' ')"
+    du -sh "$DS"
+
+    # ---- 3. VRAM watchdog (Brush is Vulkan: HAMi's gpumem quota does not bound it) ----------
+    : > "$OUT/nvsmi.csv"
+    ( while true; do
+        read -r used total <<<"$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits | tr ',' ' ')"
+        echo "$(date +%s),$used,$total" >> "$OUT/nvsmi.csv"
+        free=$((total - used))
+        if [ "$free" -lt "$FREE_FLOOR" ]; then
+          echo "[watchdog] $(date -u +%T) only ${free} MiB free on the GPU -> stopping trainer to protect qwen3-asr"
+          pkill -x brush-app || true
+          touch "$OUT/ABORTED_OOM"
+          break
+        fi
+        sleep 5
+      done ) &
+    WATCHDOG=$!
+    trap 'kill $WATCHDOG 2>/dev/null || true' EXIT
+
+    # ---- 4. Preflight: 60 steps, fails in ~1 min if Vulkan/Pascal cannot run Brush ----------
+    echo "-- preflight"
+    "$BRUSH_BIN" "$DS" --total-steps 60 --max-resolution 384 --sh-degree 0 --max-splats 50000 \
+        --export-every 1000000 --export-path "$OUT/preflight" \
+        > "$OUT/preflight.log" 2>&1 && PRE_OK=1 || PRE_OK=0
+    tail -25 "$OUT/preflight.log"
+    if [ "$PRE_OK" != 1 ]; then echo "FATAL: brush preflight failed"; exit 4; fi
+    echo "preflight ok in $(( $(date +%s) - T0 ))s"
+
+    # ---- 5. Train ---------------------------------------------------------------------------
+    echo "-- train ${STEPS} steps"
+    TT=$(date +%s)
+    if "$BRUSH_BIN" "$DS" \
+      --total-steps "$STEPS" \
+      --max-resolution "$MAX_RES" \
+      --sh-degree "$SH_DEG" \
+      --max-splats "$MAX_SPLATS" \
+      --growth-stop-iter $((STEPS * 3 / 4)) \
+      --seed 7 \
+      --export-every "$STEPS" \
+      --export-path "$OUT" \
+      --export-name "truck_{iter}.ply" \
+      2>&1 | tee "$OUT/train.log"; then :; else echo "[train] brush exited nonzero (see above)"; fi
+    TTrain=$(( $(date +%s) - TT ))
+    [ -s "$OUT/ABORTED_OOM" ] && { echo "FATAL: aborted by the VRAM watchdog"; exit 5; }
+    ply=$(ls -S "$OUT"/truck_*.ply 2>/dev/null | head -1)
+    [ -n "$ply" ] || { echo "FATAL: no exported ply"; exit 6; }
+    ls -la "$OUT"
+
+    # ---- 6. Record --------------------------------------------------------------------------
+    peak=$(awk -F, 'NR>1 && $2>m{m=$2} END{print m}' "$OUT/nvsmi.csv")
+    sed -n '/splat/Ip' "$OUT/train.log" | tail -8 || true
+    grep -oE "loss[^,]*" "$OUT/train.log" | tail -3 || true
+    echo "brush_version=$BRUSH_VER dataset=$DATA images=$(ls "$DS/images" | wc -l) steps=$STEPS max_res=$MAX_RES sh_degree=$SH_DEG max_splats=$MAX_SPLATS" > "$OUT/run.env"
+    echo "train_seconds=$TTrain total_seconds=$(( $(date +%s) - T0 )) ply=$(basename "$ply") ply_bytes=$(stat -c%s "$ply") nvidia_smi_peak_mib_used=$peak" >> "$OUT/run.env"
+    cat "$OUT/run.env"
+    echo "== done $(date -u +%FT%TZ)"
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: splat-lab-train-1
+  namespace: default
+  labels: { app: splat-lab }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata: { labels: { app: splat-lab, job: splat-lab-train-1 } }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      containers:
+        - name: run
+          image: pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime@sha256:2b59b1b91885677814f78be1f8df48a25d5dc952eb6580eaecfefca510f9afd3
+          command: [bash, /config/entrypoint.sh]
+          env:
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }     # graphics = the Vulkan ICD
+            - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
+            - { name: WGPU_BACKEND, value: vulkan }
+            - { name: HOME, value: /data }
+            - { name: OUT, value: /data/out/train-1 }
+            - { name: DATA, value: nvs-bench/tanksandtemples/truck }
+            - { name: STEPS, value: "10000" }
+            - { name: MAX_RES, value: "512" }
+            - { name: MAX_SPLATS, value: "800000" }
+            - { name: SH_DEG, value: "0" }
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { cpu: "6", memory: 14Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "5000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /config }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: splat-lab-data } }
+        - { name: config, configMap: { name: splat-lab-train-v1, defaultMode: 0755 } }
