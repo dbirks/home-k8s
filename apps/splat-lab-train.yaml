@@ -19,8 +19,12 @@
 # (Jobs are immutable; Flux prunes the deleted one), then poke flux:
 #   kubectl -n flux-system annotate --overwrite gitrepository/flux-system reconcile.fluxcd.io/requestedAt="$(date +%s)"
 #   kubectl -n flux-system annotate --overwrite kustomization/apps reconcile.fluxcd.io/requestedAt="$(date +%s)"
-# Watch: kubectl get pods -l job-name=splat-lab-train-1 -w    Logs: kubectl logs job/splat-lab-train-1
-# Fetch: kubectl cp default/$(kubectl get pod -l app=splat-lab-files -o name | cut -d/ -f2):/data/out/train-1 ./train-1
+# Watch: kubectl get pods -l job-name=<job> -w    Logs: kubectl logs job/<job>
+# Fetch: kubectl cp default/$(kubectl get pod -l app=splat-lab-files -o name | cut -d/ -f2):/data/out/<OUT> ./<OUT>
+#
+# train-1 failed after ~30 s: pytorch/pytorch:-runtime has no curl (apt + the injected /etc/vulkan/icd.d/
+# nvidia_icd.json were fine) -> downloads now use python urllib. train-2 also caches brush + the dataset
+# under /data/cache so re-runs skip the 270 MB of fetching.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -90,6 +94,24 @@ data:
     print(f"{len(res)} files under {prefix}/ ({new} fetched, {len(res) - new} cached), "
           f"{sum(r[2] for r in res) / 1e6:.1f} MB", flush=True)
 
+  dl.py: |
+    #!/usr/bin/env python3
+    """Fetch one URL to a file (stdlib only - the pytorch runtime image has no curl)."""
+    import sys
+    import urllib.request
+
+    url, out = sys.argv[1], sys.argv[2]
+    req = urllib.request.Request(url, headers={"User-Agent": "splat-lab/1.0"})
+    with urllib.request.urlopen(req, timeout=300) as r, open(out, "wb") as f:
+        got = 0
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            got += len(chunk)
+    print(f"{url} -> {out} ({got / 1e6:.1f} MB)", flush=True)
+
   extract.py: |
     #!/usr/bin/env python3
     """Pull the brush-app binary out of a cargo-dist .tar.xz into <dir>/brush-app (755)."""
@@ -146,7 +168,7 @@ data:
     BRUSH_BIN=/data/cache/brush/$BRUSH_VER/brush-app
     if [ ! -x "$BRUSH_BIN" ]; then
       mkdir -p "$OUT/dl" /data/cache/brush
-      curl -sSL --retry 3 -o "$OUT/dl/brush.tar.xz" "$BRUSH_URL"
+      python3 /config/dl.py "$BRUSH_URL" "$OUT/dl/brush.tar.xz"
       echo "$BRUSH_SHA  $OUT/dl/brush.tar.xz" | sha256sum -c -
       mkdir -p /data/cache/brush/$BRUSH_VER
       python3 /config/extract.py "$OUT/dl/brush.tar.xz" /data/cache/brush/$BRUSH_VER
@@ -222,14 +244,14 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-train-1
+  name: splat-lab-train-2
   namespace: default
   labels: { app: splat-lab }
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 3600
   template:
-    metadata: { labels: { app: splat-lab, job: splat-lab-train-1 } }
+    metadata: { labels: { app: splat-lab, job: splat-lab-train-2 } }
     spec:
       restartPolicy: Never
       runtimeClassName: nvidia
@@ -245,7 +267,7 @@ spec:
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: WGPU_BACKEND, value: vulkan }
             - { name: HOME, value: /data }
-            - { name: OUT, value: /data/out/train-1 }
+            - { name: OUT, value: /data/out/train-2 }
             - { name: DATA, value: nvs-bench/tanksandtemples/truck }
             - { name: STEPS, value: "10000" }
             - { name: MAX_RES, value: "512" }
