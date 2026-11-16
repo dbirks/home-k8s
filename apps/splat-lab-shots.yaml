@@ -26,6 +26,13 @@ data:
   # Slide ids to shoot, one per line (everything after # is a comment). Full splat-lab set as of
   # 2026-11-16 (src/slides.ts + src/slides/splat-lab/*.ts in the deck repo).
   ids.txt: |
+    moe
+    kvcache
+    kvledger
+    offload
+    flow
+    spec
+    sample
     gs-smoke-proc
     gs-a1-f-gpu
     gs-a1-f-embedding
@@ -188,7 +195,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-2
+  name: splat-lab-shots-3
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -210,7 +217,7 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-2 }
+            - { name: OUT_DIR, value: /data/out/shots-3 }
             - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
