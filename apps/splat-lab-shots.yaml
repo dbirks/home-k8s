@@ -1,0 +1,212 @@
+# splat-lab-shots (GPU screenshot service for the AISE deck).
+# Headless Chromium (official Playwright image) WITH the GTX 1070's Vulkan/ANGLE path
+# (NVIDIA_DRIVER_CAPABILITIES=all + VK_ICD_FILENAMES, same trick as qwen3-asr), opening the
+# public deck https://dbirks.github.io/aise-nov-2026-local-llms/#/<id> per slide id, waiting for
+# the 3D scene to render, and saving 1600x900 PNGs to /data/out/<OUT_DIR name>/.
+# The Job VERIFIES the GPU is in use: it logs WebGL UNMASKED_RENDERER (must mention NVIDIA, not
+# SwiftShader) plus chrome://gpu + nvidia-smi, and fails unless real GPU rendering is active
+# (override: env ALLOW_SOFTWARE=1). No CUDA — gpumem stays small (1000 MiB requested).
+#
+# Re-run with a new id list:
+#   1) edit ids.txt (and/or base-url.txt, wait-ms.txt) below,
+#   2) copy the Job block, rename splat-lab-shots-<n+1>, set OUT_DIR=/data/out/shots-<n+1>,
+#      delete the old Job block (Jobs are immutable; Flux prunes the deleted one),
+#   3) commit+push, poke flux (see splat-lab skill), watch: kubectl get pods -l job-name=splat-lab-shots-<n+1> -w
+# Fetch results:
+#   kubectl cp default/$(kubectl get pod -l app=splat-lab-files -o name | cut -d/ -f2):/data/out/shots-<n> ./shots-<n>
+# Per-shot timings land in <out>/shots.tsv; gpu-info.txt holds the chrome://gpu dump.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: splat-lab-shots-v1
+  namespace: default
+  labels: { app: splat-lab }
+data:
+  # Slide ids to shoot, one per line (everything after # is a comment). Full splat-lab set as of
+  # 2026-11-16 (src/slides.ts + src/slides/splat-lab/*.ts in the deck repo).
+  ids.txt: |
+    gs-smoke-proc
+    gs-a1-f-gpu
+    gs-a1-f-embedding
+    gs-a1-f-kvcache
+    gs-a1-q-gpu
+    gs-a1-q-embedding
+    gs-a1-q-kvcache
+    gs-a2-gpu
+    gs-a2-layers
+    gs-a2-kv-blocks
+    gs-a2-tokens
+    gs-a2b-attn-mask
+    gs-a3-gpu
+    gs-a3-gpu-palette
+    gs-a3-layers
+    gs-a3-server
+    gs-b-gpu
+    gs-b-rack
+    gs-b-desktop
+    gs-c-lgm-gpu
+    gs-d-millipede
+    gs-d-lion
+    gs-d-tomatoes
+  # Change to a preview build URL later, e.g. a tunnel into a `vite preview`; env BASE_URL wins.
+  base-url.txt: |
+    https://dbirks.github.io/aise-nov-2026-local-llms
+  # Milliseconds to wait after the slide mounts before capturing (scene warm-up + fonts).
+  wait-ms.txt: |
+    8000
+  run.sh: |
+    #!/bin/sh
+    set -e
+    # Playwright's noble image should ship the Vulkan loader; install it if this ever changes.
+    if ! ldconfig -p | grep -q 'libvulkan\.so\.1'; then
+      echo "[run] libvulkan.so.1 missing -> apt-get install libvulkan1"
+      apt-get update -qq
+      apt-get install -y -qq --no-install-recommends libvulkan1
+    fi
+    nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || echo "[run] nvidia-smi unavailable in PATH"
+    exec node /config/shot.cjs
+  shot.cjs: |
+    // GPU screenshots of deck slides via headless Chromium. See header in the file that mounts this.
+    const fs = require('fs');
+    const path = require('path');
+    const { execSync } = require('child_process');
+    let chromium;
+    try { ({ chromium } = require('playwright')); }
+    catch { ({ chromium } = require('/usr/local/lib/node_modules/playwright')); }
+
+    const readOr = (f, d) => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return d; } };
+    const BASE = (process.env.BASE_URL || readOr('/config/base-url.txt', 'https://dbirks.github.io/aise-nov-2026-local-llms')).replace(/\/+$/, '');
+    const OUT = process.env.OUT_DIR || readOr('/config/out-dir.txt', '/data/out/shots');
+    const WAIT_MS = parseInt(process.env.WAIT_MS || readOr('/config/wait-ms.txt', '8000'), 10);
+    const IDS = fs.readFileSync('/config/ids.txt', 'utf8').split('\n').map(s => s.split('#')[0].trim()).filter(Boolean);
+    const T0 = Date.now();
+    const log = m => console.log(`[shots +${((Date.now() - T0) / 1000).toFixed(1)}s] ${m}`);
+    const smi = () => { try { return execSync('nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return 'nvidia-smi unavailable'; } };
+
+    // Renderer backends to try, in order. Last entry is the software fallback, only used when
+    // ALLOW_SOFTWARE=1 (it is a correctness fallback for headless quirks, not a perf one).
+    const ATTEMPTS = [
+      ['angle-vulkan', ['--use-angle=vulkan']],
+      ['angle-egl', ['--use-angle=gles']],
+      ['software', []],
+    ];
+
+    async function probe(browser) {
+      const page = await browser.newPage();
+      const r = await page.evaluate(() => {
+        const gl = document.createElement('canvas').getContext('webgl2') || document.createElement('canvas').getContext('webgl');
+        if (!gl) return { renderer: 'no webgl context', vendor: '?' };
+        const ext = gl.getExtension('WEBGL_debug_renderer_info');
+        return {
+          renderer: String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)),
+          vendor: String(ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR)),
+        };
+      });
+      await page.close();
+      return r;
+    }
+
+    async function dumpChromeGpu(browser) {
+      try {
+        const page = await browser.newPage();
+        await page.goto('chrome://gpu', { waitUntil: 'load', timeout: 30000 });
+        const text = await page.evaluate(() => document.body.innerText || document.body.textContent || '');
+        fs.writeFileSync(path.join(OUT, 'gpu-info.txt'), text);
+        text.split('\n').filter(l => /GL Renderer|Vulkan|ANGLE|Compositing|Canvas|WebGL/i.test(l)).slice(0, 30).forEach(l => log('  gpu: ' + l.trim()));
+        await page.close();
+      } catch (e) { log(`chrome://gpu dump failed: ${e.message.split('\n')[0]}`); }
+    }
+
+    (async () => {
+      fs.mkdirSync(OUT, { recursive: true });
+      log(`base=${BASE} out=${OUT} wait=${WAIT_MS}ms ids=${IDS.length}`);
+      let browser = null, gpu = null;
+      for (const [name, extra] of ATTEMPTS) {
+        if (name === 'software' && process.env.ALLOW_SOFTWARE !== '1') continue;
+        let b = null;
+        try {
+          b = await chromium.launch({ channel: 'chromium', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu-sandbox', '--ignore-gpu-blocklist', ...extra] });
+        } catch (e) { log(`launch [${name}] failed: ${e.message.split('\n')[0]}`); continue; }
+        const r = await probe(b);
+        log(`[${name}] UNMASKED_RENDERER="${r.renderer}" vendor="${r.vendor}" | nvidia-smi: ${smi()}`);
+        if (/nvidia/i.test(r.renderer) || name === 'software') { browser = b; gpu = { name, ...r }; break; }
+        await b.close().catch(() => {});
+      }
+      if (!browser) { log('FATAL: no renderer could be launched'); process.exit(1); }
+      if (!/nvidia/i.test(gpu.renderer)) {
+        log(`FATAL: GPU not in use (renderer="${gpu.renderer}"). Fix the Vulkan path or run with ALLOW_SOFTWARE=1 to accept software rendering.`);
+        await browser.close();
+        process.exit(1);
+      }
+      log(`GPU OK via ${gpu.name}: ${gpu.renderer}`);
+      await dumpChromeGpu(browser);
+
+      const context = await browser.newContext({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+      const page = await context.newPage();
+      const rows = ['id\tseconds\tbytes\tstatus'];
+      let failed = 0;
+      for (let i = 0; i < IDS.length; i++) {
+        const id = IDS[i], file = path.join(OUT, id + '.png'), url = `${BASE}/#/${id}`;
+        const start = Date.now();
+        let ok = false, err = '';
+        for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+          try {
+            await page.goto(url, { waitUntil: 'load', timeout: 90000 });
+            await page.reload({ waitUntil: 'load', timeout: 90000 }); // cold mount of the slide
+            await page.waitForTimeout(WAIT_MS);
+            await page.screenshot({ path: file, timeout: 180000 });
+            ok = true;
+          } catch (e) { err = e.message.split('\n')[0]; log(`${id} attempt ${attempt} failed: ${err}`); }
+        }
+        const secs = ((Date.now() - start) / 1000).toFixed(1);
+        const bytes = ok ? fs.statSync(file).size : 0;
+        rows.push(`${id}\t${secs}\t${bytes}\t${ok ? 'ok' : 'FAIL ' + err}`);
+        log(`[${i + 1}/${IDS.length}] ${id} ${ok ? 'ok' : 'FAILED'} ${secs}s ${(bytes / 1024).toFixed(0)} KiB`);
+        if (!ok) failed++;
+        if ((i + 1) % 5 === 0) log(`vram mid-run: ${smi()}`);
+      }
+      log(`vram at end: ${smi()}`);
+      fs.writeFileSync(path.join(OUT, 'shots.tsv'), rows.join('\n') + '\n');
+      log(`done: ${IDS.length - failed}/${IDS.length} ok, wall ${((Date.now() - T0) / 1000).toFixed(1)}s -> ${OUT}`);
+      await browser.close();
+      process.exit(failed ? 1 : 0);
+    })().catch(e => { console.error('[shots] fatal:', e); process.exit(1); });
+---
+# First run: all 23 splat-lab slides from the published GitHub Pages build.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: splat-lab-shots-1
+  namespace: default
+  labels: { app: splat-lab }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata: { labels: { app: splat-lab } }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      containers:
+        - name: shots
+          image: mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
+          command: [sh, /config/run.sh]
+          env:
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
+            - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
+            - { name: HOME, value: /tmp }
+            - { name: OUT_DIR, value: /data/out/shots-1 }
+            - { name: NODE_PATH, value: /usr/local/lib/node_modules }
+          resources:
+            requests: { cpu: "2", memory: 2Gi }
+            limits: { cpu: "6", memory: 8Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "1000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /config, readOnly: true }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: splat-lab-data } }
+        - { name: config, configMap: { name: splat-lab-shots-v1 } }
