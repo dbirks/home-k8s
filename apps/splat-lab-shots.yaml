@@ -64,6 +64,16 @@ data:
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends libvulkan1
     fi
+    # v1.65+ images bake only the BROWSERS (the playwright-core install dir is deleted at build
+    # time), so grab the matching npm package here; it finds the baked browsers via
+    # PLAYWRIGHT_BROWSERS_PATH and downloads nothing.
+    if ! node -e "require('playwright')" 2>/dev/null; then
+      echo "[run] installing playwright@1.65.1 from npm (browsers are baked in)"
+      mkdir -p /tmp/agent && cd /tmp/agent
+      npm init -y >/dev/null 2>&1
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-fund --no-audit --loglevel=error playwright@1.65.1
+      export NODE_PATH=/tmp/agent/node_modules
+    fi
     nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || echo "[run] nvidia-smi unavailable in PATH"
     exec node /config/shot.cjs
   shot.cjs: |
@@ -73,7 +83,7 @@ data:
     const { execSync } = require('child_process');
     let chromium;
     try { ({ chromium } = require('playwright')); }
-    catch { ({ chromium } = require('/usr/local/lib/node_modules/playwright')); }
+    catch { ({ chromium } = require('/tmp/agent/node_modules/playwright')); }
 
     const readOr = (f, d) => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return d; } };
     const BASE = (process.env.BASE_URL || readOr('/config/base-url.txt', 'https://dbirks.github.io/aise-nov-2026-local-llms')).replace(/\/+$/, '');
@@ -173,11 +183,12 @@ data:
       process.exit(failed ? 1 : 0);
     })().catch(e => { console.error('[shots] fatal:', e); process.exit(1); });
 ---
-# First run: all 23 splat-lab slides from the published GitHub Pages build.
+# Run 2: all 23 splat-lab slides from the published GitHub Pages build (run 1 failed: v1.65 image
+# ships no playwright npm package; run.sh now installs it). Re-run = bump the name + OUT_DIR.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-1
+  name: splat-lab-shots-2
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -199,8 +210,8 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-1 }
-            - { name: NODE_PATH, value: /usr/local/lib/node_modules }
+            - { name: OUT_DIR, value: /data/out/shots-2 }
+            - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
             limits: { cpu: "6", memory: 8Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "1000" }
