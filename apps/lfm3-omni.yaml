@@ -33,7 +33,9 @@ metadata:
   namespace: default
   labels: { app: lfm3-omni }
 spec:
-  replicas: 1
+  # PARKED 2026-11-16: scaled to 0 to free ~3.3 GiB on the GTX 1070 for splat-lab GPU Jobs (apps/splat-lab.yaml).
+  # Revive: replicas 1 and un-comment the lfm3-omni backend in both contributor ConfigMaps.
+  replicas: 0
   strategy: { type: Recreate }
   selector:
     matchLabels: { app: lfm3-omni }
