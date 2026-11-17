@@ -412,8 +412,11 @@ data:
     if [[ -z $existing ]]; then
       say "building diff_gaussian_rasterization for TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST (slow step, capped at 30 min)"
       build_log=$G2/rasterizer-build.log
+      # --no-build-isolation: pip's default isolated build env does not see torch (the extension's
+      # setup.py imports torch at parse time -> ModuleNotFoundError: No module named 'torch').
+      "$VENV/bin/python" -m pip install -q --upgrade setuptools wheel >/dev/null 2>&1 || true
       if TMPDIR=$G2 PIP_CACHE_DIR=$CACHE/pip MAX_JOBS=4 timeout 1800 \
-           "$VENV/bin/python" -m pip wheel --no-deps -w "$WHEELS" "$RASTER_SRC" > "$build_log" 2>&1; then
+           "$VENV/bin/python" -m pip wheel --no-deps --no-build-isolation -w "$WHEELS" "$RASTER_SRC" > "$build_log" 2>&1; then
         say "build ok"
       else
         say "build FAILED/TIMED OUT - last 40 lines of $build_log:"
@@ -558,6 +561,10 @@ data:
                  "that flag on `scheduler.config` *after* construction, where diffusers 0.32 ignores it "
                  "(betas are fixed in __init__), so the off state is what upstream actually runs.",
         )
+        p.add_argument("--precision", choices=["fp16", "bf16"], default="fp16",
+                       help="generation-side weight + autocast dtype. fp16 is what the brief asks for "
+                            "(Pascal has no bf16 tensor cores); bf16 is available because torch 2.7 "
+                            "reports is_bf16_supported()=True on this card, kept as an escape hatch.")
         p.add_argument("--no-render", action="store_true", help="skip the verification contact sheet")
         p.add_argument("--render-res", type=int, default=256)
         p.add_argument("--orbit-frames", type=int, default=12)
@@ -625,6 +632,7 @@ data:
         from extensions.diffusers_diffsplat import StableMVDiffusionPipeline, UNetMV2DConditionModel
 
         SH_C0 = 0.28209479177387814
+        gen_dtype = torch.bfloat16 if args.precision == "bf16" else torch.float16
         t_start = time.time()
         dev = torch.device("cuda:0")
         sampler = GpuMemSampler()
@@ -642,7 +650,8 @@ data:
             "diffusers": __import__("diffusers").__version__,
             "transformers": __import__("transformers").__version__,
             "numpy": np.__version__,
-            "precision": "fp16 weights + torch.autocast(cuda, float16) for the UNet; fp32 GSVAE decode",
+            "precision": f"{args.precision} weights + torch.autocast(cuda, {str(gen_dtype).split('.')[-1]}) "
+                         "for the UNet; fp32 GSVAE decode",
         }
         free, total = torch.cuda.mem_get_info()
         env["mem_free_gib_at_start"] = round(free / 2**30, 3)
@@ -661,14 +670,14 @@ data:
 
         tok = CLIPTokenizer.from_pretrained(args.sd_model, subfolder="tokenizer")
         text_encoder = CLIPTextModel.from_pretrained(
-            args.sd_model, subfolder="text_encoder", variant="fp16", torch_dtype=torch.float16
+            args.sd_model, subfolder="text_encoder", variant="fp16", torch_dtype=gen_dtype
         ).to(dev).eval()
 
         # The plain SD1.5 VAE is only touched by the pipeline for *image* latents (single-view
         # conditioning); the text-conditioned path never encodes/decodes with it. Load it in fp16
         # anyway because the pipeline requires the attribute, and it costs 160 MB.
         vae = AutoencoderKL.from_pretrained(
-            args.sd_model, subfolder="vae", variant="fp16", torch_dtype=torch.float16
+            args.sd_model, subfolder="vae", variant="fp16", torch_dtype=gen_dtype
         ).to(dev).eval()
 
         gsvae = GSAutoencoderKL(opt).eval()
@@ -710,7 +719,8 @@ data:
 
         unet_dir = latest_ckpt_dir(os.path.join(args.ckpt, args.tag, "checkpoints"))
         in_channels = 4 + (6 if opt.input_concat_plucker else 0) + (1 if opt.input_concat_binary_mask else 0)
-        log(f"UNet: {unet_dir}/unet_ema in_channels={in_channels} sample_size={args.res // 8} (fp16)")
+        log(f"UNet: {unet_dir}/unet_ema in_channels={in_channels} sample_size={args.res // 8} ({args.precision}, "
+            f"low_cpu_mem_usage=False)")
         unet, loading_info = UNetMV2DConditionModel.from_pretrained_new(
             unet_dir, subfolder="unet_ema",
             sample_size=args.res // 8,
@@ -719,8 +729,13 @@ data:
             view_concat_condition=opt.view_concat_condition,
             input_concat_plucker=opt.input_concat_plucker,
             input_concat_binary_mask=opt.input_concat_binary_mask,
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True,
+            torch_dtype=gen_dtype,
+            # Upstream value, and the only one that works: the fork binds `state_dict_original`
+            # only in the low_cpu_mem_usage=False branch (unet_mv2d_condition.py:1634 vs :1661), so
+            # `low_cpu_mem_usage=True` dies with UnboundLocalError there. Measured cost of staying
+            # faithful: ~10 GB CPU peak while the 3.28 GB fp32 state dict is loaded and deep-copied,
+            # inside a 24 Gi container limit. It also gives us a real loading_info to check.
+            low_cpu_mem_usage=False,
             output_loading_info=True,
         )
         env["unet_loading_info"] = {k: list(v) for k, v in loading_info.items()}
@@ -869,7 +884,7 @@ data:
             t0 = time.time()
             try:
                 generator = torch.Generator(device=dev).manual_seed(args.seed)
-                with torch.no_grad(), torch.autocast("cuda", torch.float16):
+                with torch.no_grad(), torch.autocast("cuda", gen_dtype):
                     latents = pipeline(
                         None, prompt=prompt, negative_prompt=args.negative_prompt,
                         num_inference_steps=args.steps, guidance_scale=args.guidance_scale,
@@ -952,7 +967,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-diffsplat-2
+  name: splat-lab-diffsplat-3
   namespace: default
   labels: { app: splat-lab-diffsplat }
 spec:
@@ -994,7 +1009,7 @@ spec:
               cat "$OUT/metrics.json"
               exit $status
           env:
-            - { name: OUT, value: /data/out/diffsplat-2 }
+            - { name: OUT, value: /data/out/diffsplat-3 }
             - { name: HF_HOME, value: /data/cache/hf }
             - { name: TORCH_HOME, value: /data/cache/torch }
             - { name: PIP_CACHE_DIR, value: /data/cache/pip }
