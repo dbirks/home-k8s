@@ -26,36 +26,14 @@ data:
   # Slide ids to shoot, one per line (everything after # is a comment). Full splat-lab set as of
   # 2026-11-16 (src/slides.ts + src/slides/splat-lab/*.ts in the deck repo).
   ids.txt: |
-    moe
+    prefill
+    scheduler
     kvcache
-    kvledger
-    offload
-    flow
-    spec
-    sample
-    gs-smoke-proc
-    gs-a1-f-gpu
-    gs-a1-f-embedding
-    gs-a1-f-kvcache
-    gs-a1-q-gpu
-    gs-a1-q-embedding
-    gs-a1-q-kvcache
-    gs-a2-gpu
-    gs-a2-layers
-    gs-a2-kv-blocks
-    gs-a2-tokens
-    gs-a2b-attn-mask
-    gs-a3-gpu
-    gs-a3-gpu-palette
-    gs-a3-layers
-    gs-a3-server
-    gs-b-gpu
-    gs-b-rack
-    gs-b-desktop
-    gs-c-lgm-gpu
-    gs-d-millipede
-    gs-d-lion
-    gs-d-tomatoes
+    gs-g2-gpu-cooler
+    gs-g2-server-tower
+    gs-g2-books
+    gs-g3-truck
+    gs-g3-truck-grow
   # Change to a preview build URL later, e.g. a tunnel into a `vite preview`; env BASE_URL wins.
   base-url.txt: |
     https://dbirks.github.io/aise-nov-2026-local-llms
@@ -195,7 +173,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-3
+  name: splat-lab-shots-4
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -217,7 +195,7 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-3 }
+            - { name: OUT_DIR, value: /data/out/shots-4 }
             - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
