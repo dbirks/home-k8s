@@ -1,0 +1,920 @@
+# splat-lab g2 · DiffSplat (SD1.5, 0.86 B params) text -> 3D Gaussian splats on dave-droid's
+# GTX 1070 (Pascal sm_61, HAMi slice 5000 MiB). Generated 2026-11-16 — DO NOT EDIT BY HAND:
+# the ConfigMap is rendered from tools/splats/g2/job/ in https://github.com/dbirks/aise-nov-2026-local-llms
+# by tools/splats/g2/render_job_yaml.py (see that file for the re-run recipe).
+#
+# What the Job does (log: /data/out/<dir>/setup.log + run.log, both also echoed to pod logs):
+#   1. cached venv on the PVC (diffusers 0.32.2 etc. — torch stays the image's 2.7.1+cu126),
+#   2. pinned clones: DiffSplat a99d75707541009283bc5c073f1a07b5add41d00 (MIT),
+#      RaDe-GS d72f20792005ae1d6555a82aa2d15345f247604e (its 3DGS rasterizer fork),
+#   3. three import-graph patches so the SD1.5 text->splat path loads without the
+#      training/metrics/video stack (job/apply_patches.py; originals kept as *.upstream),
+#   4. builds the rasterizer for sm_61 (TORCH_CUDA_ARCH_LIST=6.1) and caches the wheel; if that
+#      fails a pure-python stub is used — the .ply export never calls the rasterizer, only the
+#      optional verification contact sheets do, so a stub just costs us the previews,
+#   5. cached HF weights: DiffSplat SD1.5 text-cond UNet-EMA (3.28 GB fp32) + GSVAE (SD).
+#      GSRecon (160 MB) is not fetched: upstream states only its rendering function is used at
+#      inference, and run.py redoes that math itself,
+#   6. generates three splats from text prompts in **fp16** (upstream's `--half_precision` is
+#      bf16, which PyTorch refuses on Pascal; upstream's default fp32 UNet alone is 3.3 GB and
+#      does not fit next to the rest in a 4.9 GiB slice), writes
+#      /data/out/<dir>/raw/<slug>.ply + raw/<slug>.json + metrics.json with measured wall time,
+#      peak torch allocation and a device-wide nvidia-smi peak.
+#
+# Copy results out with:
+#   kubectl cp default/<splat-lab-files pod>:/data/out/<dir> ./out
+# This Job is never deleted by TTL (Flux would re-create and re-run it); to re-run, bump the
+# name and the OUT path together.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: splat-lab-diffsplat-scripts
+  namespace: default
+  labels:
+    app: splat-lab-diffsplat
+    app.kubernetes.io/part-of: splat-lab
+  annotations:
+    splat-lab.aise/deck-source: tools/splats/g2/job
+    splat-lab.aise/regenerate: uv run tools/splats/g2/render_job_yaml.py
+data:
+  requirements.txt: |
+    # splat-lab g2 (DiffSplat, SD1.5 variant) — Python deps for the k8s Job.
+    # Installed into a --system-site-packages venv on the PVC, so torch / torchvision / numpy /
+    # scikit-image-runtime deps come from pytorch/pytorch:2.7.1-cuda12.6-cudnn9-devel and are NOT
+    # re-resolved here (that is what keeps the 5000 MiB Pascal container from getting a second
+    # torch). Pinned to the set diffusers==0.32.2 (DiffSplat's own pin) was released against.
+    #
+    # Deliberately absent, with the reason:
+    #   xformers                     SM70+; not imported by the SD1.5 UNet/pipeline (diffusers falls
+    #                                back to SDPA / the fork's own MVAttnProcessor2_0)
+    #   deepspeed, accelerate-cli    training only
+    #   rembg[gpu], onnxruntime-gpu  single-view image conditioning only
+    #   image-reward, lpips-weights, CLIP (openai), matplotlib, imageio-ffmpeg, wandb
+    #                                metrics/video/logging; kept out of the import graph by
+    #                                job/apply_patches.py (lpips *itself* is imported by gsvae.py)
+    #   kiui[full]                   mesh/vis/extras; plain kiui (lazy_loader only) is enough for the
+    #                                one helper `import kiui` needs at module scope
+    #   numpy                        left at whatever the image ships (recorded in pip-freeze.txt)
+    diffusers==0.32.2
+    transformers==4.46.3
+    accelerate==1.1.1
+    huggingface-hub==0.25.2
+    safetensors==0.4.5
+    tokenizers==0.20.3
+    einops==0.8.0
+    omegaconf==2.3.0
+    lpips==0.1.4
+    scikit-image==0.24.0
+    plyfile==1.1.2
+    kiui==0.3.5
+  prompts.tsv: "# splat-lab g2 · text prompts for DiffSplat (SD1.5). One per line: <slug><TAB><prompt>.\n# Chosen to match the deck's other splat-lab subjects (GPU, home server) plus one plain object,\n# and to stay in the noun-phrase style of the Cap3D captions DiffSplat was trained on.\ngpu-cooler\ta graphics card with a large cooler\nserver-tower\ta small home server tower\nbooks\ta stack of books\n"
+  apply_patches.py: |
+    #!/usr/bin/env python3
+    """splat-lab g2 · compatibility patches for the DiffSplat checkout (idempotent).
+
+    Only three edits, all import-graph surgery so the SD1.5 text-to-splat path can be imported
+    without the training/evaluation stack. Nothing here changes numerics.
+
+    1. `src/utils/__init__.py`  - upstream re-exports `metrics` (needs the `image-reward` +
+       `kiui.lpips` packages) and `vis_util` (needs `wandb`). The modules we import need exactly
+       `plucker_ray`/`unproject_depth` (geo_util), `patchify`/`unpatchify` (op_util) and
+       `IMAGENET_MEAN`/`IMAGENET_STD` (defined in vis_util; copied verbatim here instead).
+    2. `extensions/diffusers_diffsplat/{__init__,models/__init__,pipelines/__init__}.py` - keep the
+       SD1.5 UNet + pipeline only, so the SDXL / PixArt / SD3 / ControlNet variants (and their
+       T5/GPT/extra-diffusers imports) are never touched.
+    3. `diff_gaussian_rasterization` stub - the CUDA rasterizer is only used for preview renders;
+       the .ply export does not need it. A stub module keeps `src/models/gs_render/gs_util.py`'s
+       top-level import satisfiable when the sm_61 build is not available. If the real extension is
+       importable, nothing is written.
+
+    Every replaced file is kept once as `<file>.upstream` for diffing.
+    """
+    from __future__ import annotations
+
+    import os
+    import sys
+
+    UTILS_INIT = '''# patched by tools/splats/g2/job/apply_patches.py (splat-lab g2): inference-only subset.
+    # Upstream also re-exports metrics (image-reward), vis_util (wandb) and util (omegaconf);
+    # none of them are on the text->splat path, see the module docstring of the patch script.
+    from src.utils.geo_util import *  # noqa: F401,F403  (orbit_camera, plucker_ray, unproject_depth, ...)
+    from src.utils.op_util import patchify, unpatchify
+
+    # copied verbatim from src/utils/vis_util.py
+    IMAGENET_MEAN = [0.485, 0.456, 0.406]
+    IMAGENET_STD = [0.229, 0.224, 0.225]
+    '''
+
+    EXT_INIT = '''# patched by tools/splats/g2/job/apply_patches.py (splat-lab g2): SD1.5 subset only.
+    from .models.unets import UNetMV2DConditionModel  # noqa: F401
+    from .pipelines.pipeline_mv_stable_diffusion import StableMVDiffusionPipeline  # noqa: F401
+    '''
+
+    MODELS_INIT = '''# patched by tools/splats/g2/job/apply_patches.py (splat-lab g2): SD1.5 subset only.
+    from .unets import UNetMV2DConditionModel  # noqa: F401
+    '''
+
+    PIPELINES_INIT = '''# patched by tools/splats/g2/job/apply_patches.py (splat-lab g2): SD1.5 subset only.
+    from .pipeline_mv_stable_diffusion import StableMVDiffusionPipeline  # noqa: F401
+    '''
+
+    STUB = '''"""splat-lab g2 stub of the 3DGS CUDA rasterizer (RaDe-GS fork).
+
+    Written by tools/splats/g2/job/apply_patches.py when the sm_61 build of
+    diff-gaussian-rasterization is unavailable. It satisfies the import in
+    src/models/gs_render/gs_util.py so that Gaussian *export* works; calling it raises, so the
+    optional verification contact sheet is skipped and recorded as such in metrics.json.
+    """
+    from typing import NamedTuple
+
+
+    class GaussianRasterizationSettings(NamedTuple):
+        image_height: int = 0
+        image_width: int = 0
+        tanfovx: float = 0.0
+        tanfovy: float = 0.0
+        kernel_size: float = 0.0
+        bg: object = None
+        scale_modifier: float = 1.0
+        viewmatrix: object = None
+        projmatrix: object = None
+        sh_degree: int = 0
+        campos: object = None
+        prefiltered: bool = False
+        debug: bool = False
+        require_depth: bool = False
+        require_coord: bool = False
+
+
+    class GaussianRasterizer:
+        def __init__(self, raster_settings=None):
+            self.raster_settings = raster_settings
+
+        def __call__(self, *args, **kwargs):
+            raise NotImplementedError(
+                "diff_gaussian_rasterization is a stub in this Job: the sm_61 build of the RaDe-GS "
+                "fork was not available. Splat export does not need it; only preview renders do."
+            )
+
+        def sample(self, *args, **kwargs):
+            raise NotImplementedError("stub rasterizer: sample() is training-only")
+    '''
+
+
+    def write(path: str, content: str, root: str) -> bool:
+        """Write `content` to `path` unless it already matches; keep the original once."""
+        full = os.path.join(root, path)
+        if not os.path.isdir(os.path.dirname(full)):
+            print(f"  ! missing directory for {path}")
+            return False
+        original = os.path.join(root, path + ".upstream")
+        if os.path.exists(full) and not os.path.exists(original):
+            with open(full, "rb") as fh:
+                data = fh.read()
+            with open(original, "wb") as fh:
+                fh.write(data)
+        if os.path.exists(full):
+            with open(full, "r", encoding="utf-8") as fh:
+                if fh.read() == content:
+                    print(f"  = {path} (already patched)")
+                    return False
+        with open(full, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        print(f"  + {path}")
+        return True
+
+
+    def main() -> int:
+        repo = sys.argv[1] if len(sys.argv) > 1 else "/data/cache/repo/DiffSplat"
+        print(f"patching {repo}")
+        changed = 0
+        for path, content in {
+            "src/utils/__init__.py": UTILS_INIT,
+            "extensions/diffusers_diffsplat/__init__.py": EXT_INIT,
+            "extensions/diffusers_diffsplat/models/__init__.py": MODELS_INIT,
+            "extensions/diffusers_diffsplat/pipelines/__init__.py": PIPELINES_INIT,
+        }.items():
+            changed += int(write(path, content, repo))
+
+        # stub rasterizer, only if the real extension is not importable and not already installed
+        try:
+            import diff_gaussian_rasterization  # noqa: F401
+            print("  - diff_gaussian_rasterization importable: no stub")
+        except Exception:
+            stub_dir = os.environ.get("G2_STUB_DIR", "/data/cache/g2/stub")
+            pkg = os.path.join(stub_dir, "diff_gaussian_rasterization")
+            os.makedirs(pkg, exist_ok=True)
+            with open(os.path.join(pkg, "__init__.py"), "w", encoding="utf-8") as fh:
+                fh.write(STUB)
+            print(f"  + stub diff_gaussian_rasterization -> {pkg}")
+        print(f"patches applied: {changed}")
+        return 0
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
+  setup.sh: |
+    #!/usr/bin/env bash
+    # splat-lab g2 · Job environment preparation (DiffSplat / SD1.5 variant on a Pascal GTX 1070).
+    #
+    # Everything expensive is cached on the splat-lab-data PVC under /data/cache/g2 so a re-run of
+    # the Job costs model-load + inference, not download + compile:
+    #   /data/cache/venv-g2            venv (--system-site-packages: torch/torchvision/cuDNN from
+    #                                  the pytorch image; our pins layered on top)
+    #   /data/cache/repo/DiffSplat     pinned checkout, patched
+    #   /data/cache/repo/RaDe-GS       source of the 3DGS rasterizer fork DiffSplat uses
+    #   /data/cache/g2/wheels          the diff_gaussian_rasterization wheel built for sm_61
+    #   /data/cache/ckpt/DiffSplat     HF weights (DiffSplat SD1.5 UNet-EMA + GSVAE)
+    #   /data/cache/hf                 HF hub cache (SD1.5 text encoder/VAE/tokenizer/scheduler, taesd)
+    #   /data/cache/pip                pip wheel cache
+    #
+    # Not run locally on purpose: this box has no GPU. See tools/splats/g2/README.md.
+    set -uo pipefail
+
+    : "${OUT:=/data/out/diffsplat-1}"
+    CACHE=/data/cache
+    VENV=$CACHE/venv-g2
+    REPO=$CACHE/repo/DiffSplat
+    RADEGS=$CACHE/repo/RaDe-GS
+    G2=$CACHE/g2
+    WHEELS=$G2/wheels
+    CKPT=$CACHE/ckpt/DiffSplat
+    STUB=$G2/stub
+
+    DIFFSPLAT_COMMIT=a99d75707541009283bc5c073f1a07b5add41d00   # main, 2026-03-19 ("minor")
+    RADEGS_COMMIT=d72f20792005ae1d6555a82aa2d15345f247604e      # main, RaDe-GS (rasterizer fork)
+
+    mkdir -p "$OUT" "$G2" "$WHEELS" "$STUB" "$CACHE/repo" "$CKPT" "$CACHE/hf" "$CACHE/pip"
+    exec > >(tee -a "$OUT/setup.log") 2>&1
+    say() { echo "[setup $(date +%H:%M:%S)] $*"; }
+
+    say "=== 0. node / image ==============================================="
+    date -u
+    python -V
+    nvcc --version | tail -2 || echo "no nvcc (runtime image?)"
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || say "nvidia-smi failed"
+    python - <<'PY'
+    import torch
+    print("torch", torch.__version__, "cuda", torch.version.cuda, "avail", torch.cuda.is_available())
+    print("arch list", torch.cuda.get_arch_list())
+    print("capability", torch.cuda.get_device_capability(0), "name", torch.cuda.get_device_name(0))
+    print("bf16 supported", torch.cuda.is_bf16_supported())
+    PY
+
+    say "=== 1. venv (cached) ==============================================="
+    REQ_HASH=$(sha256sum /scripts/requirements.txt | cut -c1-12)
+    PYV=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    MARK=$G2/venv-$REQ_HASH-py$PYV.ok
+    if [[ ! -f $MARK ]]; then
+      say "creating venv (requirements hash $REQ_HASH, python $PYV)"
+      rm -rf "$VENV"
+      python -m venv --system-site-packages "$VENV"
+      "$VENV/bin/python" -m pip install -q --upgrade pip
+      PIP_CACHE_DIR=$CACHE/pip "$VENV/bin/python" -m pip install -q -r /scripts/requirements.txt
+      touch "$MARK"
+    else
+      say "venv cache hit ($MARK)"
+      PIP_CACHE_DIR=$CACHE/pip "$VENV/bin/python" -m pip install -q -r /scripts/requirements.txt
+    fi
+    "$VENV/bin/python" -m pip freeze | sort > "$OUT/pip-freeze.txt"
+    say "venv python: $VENV/bin/python ($($VENV/bin/python -V 2>&1))"
+    head -1 "$OUT/pip-freeze.txt" >/dev/null && say "pip freeze -> $OUT/pip-freeze.txt"
+
+    say "=== 2. sources (pinned) ============================================"
+    clone_at() { # url dir commit [subpath]
+      local url=$1 dir=$2 commit=$3 sub=${4:-}
+      if [[ -d $dir/.git && $(git -C "$dir" rev-parse HEAD 2>/dev/null) == $commit ]]; then
+        say "already at $commit: $dir"
+      else
+        say "fetching $url @ $commit"
+        rm -rf "$dir"; mkdir -p "$dir"
+        git -C "$dir" init -q
+        git -C "$dir" remote add origin "$url"
+        git -C "$dir" fetch -q --depth 1 origin "$commit"
+        git -C "$dir" checkout -q FETCH_HEAD
+      fi
+      if [[ -n $sub ]]; then
+        say "submodules for $sub"
+        git -C "$dir" submodule sync -q -- "$sub" || true
+        git -C "$dir" submodule update -q --init --depth 1 -- "$sub" || say "submodule update failed for $sub"
+      fi
+    }
+    clone_at https://github.com/chenguolin/DiffSplat.git "$REPO" "$DIFFSPLAT_COMMIT"
+    clone_at https://github.com/BaowenZ/RaDe-GS.git "$RADEGS" "$RADEGS_COMMIT" \
+      "submodules/diff-gaussian-rasterization/third_party/glm"
+    say "DiffSplat $(git -C "$REPO" rev-parse --short HEAD) · RaDe-GS $(git -C "$RADEGS" rev-parse --short HEAD)"
+    ls "$RADEGS/submodules/diff-gaussian-rasterization/third_party/glm" >/dev/null 2>&1 \
+      && say "glm headers: $(find "$RADEGS/submodules/diff-gaussian-rasterization/third_party/glm" -name '*.hpp' | wc -l) files" \
+      || say "glm headers MISSING (rasterizer build will fail)"
+
+    say "=== 3. patches ====================================================="
+    G2_STUB_DIR=$STUB "$VENV/bin/python" /scripts/apply_patches.py "$REPO"
+
+    say "=== 4. rasterizer for sm_61 ========================================="
+    export TORCH_CUDA_ARCH_LIST="6.1"
+    RASTER_STATUS=$G2/rasterizer.txt
+    existing=$(ls "$WHEELS"/diff_gaussian_rasterization-*.whl 2>/dev/null | head -1)
+    if [[ -z $existing ]]; then
+      say "building diff_gaussian_rasterization for TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST (this is the slow step)"
+      build_log=$G2/rasterizer-build.log
+      if TMPDIR=$G2 PIP_CACHE_DIR=$CACHE/pip MAX_JOBS=4 \
+           "$VENV/bin/python" -m pip wheel --no-deps -w "$WHEELS" \
+           "$RADEGS/submodules/diff-gaussian-rasterization" > "$build_log" 2>&1; then
+        say "build ok"
+      else
+        say "build FAILED - last 40 lines of $build_log:"
+        tail -40 "$build_log"
+        rm -f "$WHEELS"/diff_gaussian_rasterization-*.whl
+      fi
+      existing=$(ls "$WHEELS"/diff_gaussian_rasterization-*.whl 2>/dev/null | head -1)
+    fi
+    if [[ -n $existing ]]; then
+      say "installing $existing"
+      "$VENV/bin/python" -m pip install -q --no-deps --force-reinstall "$existing" || true
+    fi
+    # Does the *compiled* extension import (it must also load on sm_61, not just exist)?
+    # The stub lives outside site-packages, so it is only ever visible through PYTHONPATH -
+    # never add it unconditionally, it would shadow the real build.
+    if "$VENV/bin/python" -c 'import sys, diff_gaussian_rasterization as d; sys.exit(0 if hasattr(d, "_C") else 1)' 2>/dev/null; then
+      echo real > "$RASTER_STATUS"
+      "$VENV/bin/python" -c 'import torch, diff_gaussian_rasterization as d; print("rasterizer loaded from", d.__file__)' || true
+    else
+      echo stub > "$RASTER_STATUS"
+    fi
+    say "rasterizer status: $(cat "$RASTER_STATUS" 2>/dev/null || echo unknown)"
+    cat > $G2/run.env <<EOF
+    export G2_VENV=$VENV
+    export G2_PYTHON=$VENV/bin/python
+    export DIFFSPLAT_REPO=$REPO
+    export DIFFSPLAT_CKPT=$CKPT
+    EOF
+    if [[ $(cat "$RASTER_STATUS") == stub ]]; then
+      echo "export PYTHONPATH=$STUB" >> $G2/run.env
+      say "stub rasterizer will be on PYTHONPATH (no preview sheets)"
+    fi
+
+    say "=== 5. weights (cached) ============================================"
+    # DiffSplat SD1.5 text-conditioned UNet-EMA (3.28 GB fp32) + GSVAE (SD) (324 MB).
+    # GSRecon (160 MB) is deliberately NOT downloaded: the upstream README says only its rendering
+    # function is used at inference, and run.py calls that math itself.
+    HF_HOME=$CACHE/hf "$VENV/bin/python" - <<'PY'
+    import os, time
+    from huggingface_hub import snapshot_download
+    t = time.time()
+    for pat in ["gsdiff_gobj83k_sd15__render/*", "gsvae_gobj265k_sd/*"]:
+        p = snapshot_download(repo_id="chenguolin/DiffSplat", local_dir="/data/cache/ckpt/DiffSplat",
+                             allow_patterns=[pat])
+        print("cached", pat, "->", p)
+    print(f"weights ready in {time.time()-t:.1f}s")
+    PY
+    du -sh "$CKPT" "$CACHE/hf" 2>/dev/null
+
+    say "=== 6. import check ================================================"
+    . $G2/run.env
+    "$G2_PYTHON" - <<'PY'
+    import sys
+    sys.path.insert(0, "/data/cache/repo/DiffSplat")
+    import torch
+    from src.options import opt_dict
+    from src.models.gsvae import GSAutoencoderKL
+    from src.utils import plucker_ray, unproject_depth, patchify, IMAGENET_MEAN
+    from extensions.diffusers_diffsplat import UNetMV2DConditionModel, StableMVDiffusionPipeline
+    try:
+        import diff_gaussian_rasterization as d
+        print("rasterizer:", "real" if hasattr(d, "_C") else "stub", d.__file__)
+    except Exception as e:
+        print("rasterizer: unavailable", type(e).__name__, e)
+    print("imports ok; opt_type gsdiff_sd15 ->", opt_dict["gsdiff_sd15"].pretrained_model_name_or_path)
+    PY
+    say "setup done in $(date -u +%H:%M:%S)"
+  run.py: |
+    #!/usr/bin/env python3
+    # /// splat-lab g2 · DiffSplat (SD1.5) text -> 3D Gaussian splats on a Pascal GTX 1070
+    #
+    # Upstream: DiffSplat, ICLR 2025, MIT, https://github.com/chenguolin/DiffSplat
+    # (commit pinned in setup.sh). This is our own lean runner for the *text-conditioned SD1.5*
+    # path, not a copy of `src/infer_gsdiff_sd.py`: it imports the same upstream classes
+    # (`GSAutoencoderKL`, `UNetMV2DConditionModel`, `StableMVDiffusionPipeline`, `geo_util`) and
+    # calls them the same way, but drops everything the deck does not need (videos, metrics,
+    # controlnets, GSRecon weights) and replaces the precision strategy, because the upstream
+    # defaults do not run inside the 5000 MiB HAMi slice on sm_61:
+    #
+    #   * upstream runs the denoiser in fp32 (`torch.autocast("cuda", torch.float32)`) and offers
+    #     `--half_precision` = **bf16**; PyTorch raises on bf16 autocast where
+    #     `torch.cuda.is_bf16_supported()` is false, i.e. on Pascal. Here every generation-side
+    #     module (CLIP text encoder, SD1.5 VAE, the 0.86 B multi-view UNet) is loaded in **fp16**
+    #     and the loop runs under `torch.autocast("cuda", torch.float16)`, which keeps fp32
+    #     accumulate in cuBLAS/cuDNN and fp32 for the autocast "fp32 cast policy" ops
+    #     (softmax, layer-norm, reductions).
+    #   * the GSVAE decoder and the Gaussian-parameter unprojection run *outside* autocast in
+    #     fp32 (~0.34 GB, cheap) - the exported splats come from here.
+    #   * GSRecon's 42 M weights are never loaded: per the upstream README only its *rendering*
+    #     function is used at inference. We redo the same pre-rasterisation math ourselves
+    #     (`gs_renderer.render` lines 48-71), so writing the .ply does not touch the CUDA
+    #     rasterizer at all. The rasterizer is only used for the optional verification sheet, and
+    #     a stub stands in when the sm_61 build is unavailable.
+    #
+    # Outputs under --out:
+    #   raw/<slug>.ply            exported splats (upstream `compatible=True` column semantics)
+    #   raw/<slug>.json           per-asset stats (splat count, bounds, opacity, timings, VRAM)
+    #   preview-<slug>.png        verification contact sheet (only with a working rasterizer)
+    #   metrics.json              everything above in one file + environment record
+    import argparse
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+    import threading
+    import time
+    import traceback
+    from typing import Any, Dict, List, Optional
+
+
+    def log(msg: str) -> None:
+        print(f"[g2 {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+    def parse_args() -> argparse.Namespace:
+        p = argparse.ArgumentParser(
+            description="DiffSplat (SD1.5) text->3DGS runner for the splat-lab GTX 1070 Job",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        p.add_argument("--repo", default="/data/cache/repo/DiffSplat", help="DiffSplat checkout")
+        p.add_argument("--ckpt", default="/data/cache/ckpt/DiffSplat", help="downloaded DiffSplat weights")
+        p.add_argument("--out", default="/data/out/diffsplat-1")
+        p.add_argument("--prompts", default="/scripts/prompts.tsv", help="lines: <slug>\\t<prompt>")
+        p.add_argument("--sd-model", default="stable-diffusion-v1-5/stable-diffusion-v1-5")
+        p.add_argument("--tag", default="gsdiff_gobj83k_sd15__render", help="DiffSplat (SD1.5) text-cond ckpt dir name")
+        p.add_argument("--gsvae-tag", default="gsvae_gobj265k_sd", help="GSVAE (SD) ckpt dir name")
+        p.add_argument("--seed", type=int, default=0)
+        p.add_argument("--steps", type=int, default=20, help="upstream --num_inference_steps default")
+        p.add_argument("--guidance-scale", type=float, default=7.5, help="upstream text-cond default")
+        p.add_argument("--negative-prompt", default="", help="upstream text-cond default (empty)")
+        p.add_argument("--scheduler-type", default="sde-dpmsolver++", help="upstream --scheduler_type default")
+        p.add_argument("--eta", type=float, default=1.0, help="only used by ddim; passed as upstream does")
+        p.add_argument("--elevation", type=float, default=10.0, help="upstream default for text-cond")
+        p.add_argument("--distance", type=float, default=1.4, help="camera radius (GObjaverse norm)")
+        p.add_argument("--res", type=int, default=256, help="opt.input_res (latent 32x32 per view)")
+        p.add_argument("--num-views", type=int, default=4, help="opt.num_input_views (hard-coded azimuths 0/90/180/270)")
+        p.add_argument(
+            "--rescale-betas-zero-snr-at-init",
+            action="store_true",
+            help="build the scheduler with rescale_betas_zero_snr=True. Off by default: upstream sets "
+                 "that flag on `scheduler.config` *after* construction, where diffusers 0.32 ignores it "
+                 "(betas are fixed in __init__), so the off state is what upstream actually runs.",
+        )
+        p.add_argument("--no-render", action="store_true", help="skip the verification contact sheet")
+        p.add_argument("--render-res", type=int, default=256)
+        p.add_argument("--orbit-frames", type=int, default=12)
+        p.add_argument("--report-opacity", type=float, default=0.05, help="threshold for the reported splat count only")
+        p.add_argument("--limit", type=int, default=0, help="stop after N prompts (debug)")
+        return p.parse_args()
+
+
+    class GpuMemSampler(threading.Thread):
+        """Poll `nvidia-smi` so the log also carries the device-wide peak, next to the
+        per-process `torch.cuda.max_memory_allocated()` (HAMi accounts ~5000 MiB to this
+        container; nvidia-smi reports the whole 8 GiB card, including qwen3-asr's Vulkan
+        allocations - so the two numbers answer different questions and both are recorded)."""
+
+        def __init__(self, interval: float = 1.0):
+            super().__init__(daemon=True)
+            self.interval = interval
+            self.peak_mib = 0
+            self.samples: List[int] = []
+            self._stop = threading.Event()
+
+        def run(self) -> None:
+            while not self._stop.is_set():
+                try:
+                    out = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True, timeout=10,
+                    ).stdout.strip().splitlines()[0]
+                    mib = int(float(out))
+                    self.samples.append(mib)
+                    self.peak_mib = max(self.peak_mib, mib)
+                except Exception:
+                    pass
+                self._stop.wait(self.interval)
+
+        def stop(self) -> None:
+            self._stop.set()
+
+
+    def latest_ckpt_dir(root: str) -> str:
+        iters = sorted(d for d in os.listdir(root) if re.fullmatch(r"\d{6}", d))
+        if not iters:
+            raise RuntimeError(f"no 6-digit checkpoint dirs under {root}: {os.listdir(root)}")
+        return os.path.join(root, iters[-1])
+
+
+    def main() -> int:
+        args = parse_args()
+        os.makedirs(args.out, exist_ok=True)
+        os.makedirs(os.path.join(args.out, "raw"), exist_ok=True)
+        sys.path.insert(0, args.repo)
+        os.chdir(args.repo)  # upstream code resolves a few paths relative to cwd
+
+        import numpy as np
+        import torch
+        from einops import rearrange
+        from plyfile import PlyElement, PlyData
+        from transformers import CLIPTokenizer, CLIPTextModel
+        from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
+        from accelerate import load_checkpoint_and_dispatch
+
+        from src.options import opt_dict
+        from src.models.gsvae import GSAutoencoderKL
+        from src.utils.geo_util import orbit_camera, plucker_ray, unproject_depth
+        from extensions.diffusers_diffsplat import StableMVDiffusionPipeline, UNetMV2DConditionModel
+
+        SH_C0 = 0.28209479177387814
+        t_start = time.time()
+        dev = torch.device("cuda:0")
+        sampler = GpuMemSampler()
+        sampler.start()
+
+        env: Dict[str, Any] = {
+            "torch": torch.__version__,
+            "cuda": torch.version.cuda,
+            "arch_list": torch.cuda.get_arch_list(),
+            "device": torch.cuda.get_device_name(0),
+            "capability": list(torch.cuda.get_device_capability(0)),
+            "bf16_supported": bool(torch.cuda.is_bf16_supported()),
+            "fp16_supported": bool(torch.cuda.get_device_properties(0).major >= 5),
+            "mem_total_gib": round(torch.cuda.get_device_properties(0).total_memory / 2**30, 3),
+            "diffusers": __import__("diffusers").__version__,
+            "transformers": __import__("transformers").__version__,
+            "numpy": np.__version__,
+            "precision": "fp16 weights + torch.autocast(cuda, float16) for the UNet; fp32 GSVAE decode",
+        }
+        free, total = torch.cuda.mem_get_info()
+        env["mem_free_gib_at_start"] = round(free / 2**30, 3)
+        env["mem_visible_gib"] = round(total / 2**30, 3)  # HAMi slice, not the physical 8 GiB
+        log(f"env torch={env['torch']} cuda={env['cuda']} device={env['device']} "
+            f"sm_{env['capability'][0]}{env['capability'][1]} bf16={env['bf16_supported']} "
+            f"slice={env['mem_visible_gib']} GiB free={env['mem_free_gib_at_start']} GiB")
+
+        # ---------------------------------------------------------------- models
+        opt = opt_dict["gsdiff_sd15"]
+        opt.num_input_views = args.num_views
+        opt.input_res = args.res
+        log(f"opt: input_res={opt.input_res} views={opt.num_input_views} "
+            f"plucker={opt.input_concat_plucker} binary_mask={opt.input_concat_binary_mask} "
+            f"view_concat={opt.view_concat_condition} fxfy={opt.fxfy:.4f} common_tricks={opt.common_tricks}")
+
+        tok = CLIPTokenizer.from_pretrained(args.sd_model, subfolder="tokenizer")
+        text_encoder = CLIPTextModel.from_pretrained(
+            args.sd_model, subfolder="text_encoder", variant="fp16", torch_dtype=torch.float16
+        ).to(dev).eval()
+
+        # The plain SD1.5 VAE is only touched by the pipeline for *image* latents (single-view
+        # conditioning); the text-conditioned path never encodes/decodes with it. Load it in fp16
+        # anyway because the pipeline requires the attribute, and it costs 160 MB.
+        vae = AutoencoderKL.from_pretrained(
+            args.sd_model, subfolder="vae", variant="fp16", torch_dtype=torch.float16
+        ).to(dev).eval()
+
+        gsvae = GSAutoencoderKL(opt).eval()
+        gsvae_ckpt = latest_ckpt_dir(os.path.join(args.ckpt, args.gsvae_tag, "checkpoints"))
+        log(f"GSVAE checkpoint: {gsvae_ckpt}")
+        load_checkpoint_and_dispatch(gsvae, gsvae_ckpt, strict=True)  # same call as upstream util.load_ckpt
+        gsvae = gsvae.to(dev)  # fp32: the decoder is what produces the exported Gaussians
+        log(f"gsvae scaling_factor={gsvae.scaling_factor} shift_factor={gsvae.shift_factor} "
+            f"dtype={next(gsvae.parameters()).dtype}")
+
+        scheduler = DPMSolverMultistepScheduler.from_pretrained(args.sd_model, subfolder="scheduler")
+        # Upstream mutates `scheduler.config` after construction (src/infer_gsdiff_sd.py). diffusers
+        # 0.32.2 reads `self.config.algorithm_type` / `self.config.timestep_spacing` dynamically, so
+        # those two do take effect; `rescale_betas_zero_snr` is consumed in __init__ only, so the
+        # upstream mutation is a silent no-op there. We reproduce that exactly by default.
+        scheduler.config.algorithm_type = args.scheduler_type
+        if opt.common_tricks:
+            scheduler.config.timestep_spacing = "trailing"
+            scheduler.config.rescale_betas_zero_snr = True
+        if opt.prediction_type is not None:
+            scheduler.config.prediction_type = opt.prediction_type
+        if opt.beta_schedule is not None:
+            scheduler.config.beta_schedule = opt.beta_schedule
+        if args.rescale_betas_zero_snr_at_init:
+            scheduler = DPMSolverMultistepScheduler.from_config(
+                dict(scheduler.config), rescale_betas_zero_snr=True
+            )
+            scheduler.config.algorithm_type = args.scheduler_type
+            scheduler.config.timestep_spacing = "trailing"
+        env["scheduler"] = {
+            "class": type(scheduler).__name__,
+            "config.algorithm_type": scheduler.config.algorithm_type,
+            "config.timestep_spacing": scheduler.config.timestep_spacing,
+            "config.prediction_type": str(scheduler.config.prediction_type),
+            "config.beta_schedule": scheduler.config.beta_schedule,
+            "betas_rescaled_zero_snr": bool(args.rescale_betas_zero_snr_at_init),
+        }
+        log(f"scheduler {env['scheduler']}")
+
+        unet_dir = latest_ckpt_dir(os.path.join(args.ckpt, args.tag, "checkpoints"))
+        in_channels = 4 + (6 if opt.input_concat_plucker else 0) + (1 if opt.input_concat_binary_mask else 0)
+        log(f"UNet: {unet_dir}/unet_ema in_channels={in_channels} sample_size={args.res // 8} (fp16)")
+        unet, loading_info = UNetMV2DConditionModel.from_pretrained_new(
+            unet_dir, subfolder="unet_ema",
+            sample_size=args.res // 8,
+            in_channels=in_channels,
+            zero_init_conv_in=opt.zero_init_conv_in,
+            view_concat_condition=opt.view_concat_condition,
+            input_concat_plucker=opt.input_concat_plucker,
+            input_concat_binary_mask=opt.input_concat_binary_mask,
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True,
+            output_loading_info=True,
+        )
+        env["unet_loading_info"] = {k: list(v) for k, v in loading_info.items()}
+        log(f"UNet loading_info (counts): { {k: len(v) for k, v in loading_info.items()} }")
+        for key in ("missing_keys", "unexpected_keys", "mismatched_keys"):
+            if len(loading_info[key]) > 0:
+                raise RuntimeError(f"UNet checkpoint did not load cleanly: {key} = {loading_info[key][:8]}")
+        unet = unet.to(dev).eval()
+        n_params = sum(p.numel() for p in unet.parameters())
+        env["unet_params_millions"] = round(n_params / 1e6, 1)
+        log(f"UNet loaded: {env['unet_params_millions']} M params, dtype={next(unet.parameters()).dtype}, "
+            f"cuda alloc after load = {torch.cuda.memory_allocated() / 2**30:.2f} GiB")
+
+        pipeline = StableMVDiffusionPipeline(
+            text_encoder=text_encoder, tokenizer=tok, vae=vae, unet=unet, scheduler=scheduler
+        )
+        pipeline.set_progress_bar_config(disable=False)
+
+        # ---------------------------------------------------------------- cameras
+        # Exactly src/infer_gsdiff_sd.py: 4 orbit views at azimuth 0/90/180/270, elevation
+        # `--elevation`, radius 1.4, normalised intrinsics (cx=cy=0.5), OpenGL world -> OpenCV C2W.
+        fxfycxcy = torch.tensor([opt.fxfy, opt.fxfy, 0.5, 0.5], device=dev).float()
+        elevations = torch.tensor([-args.elevation] * args.num_views, device=dev).deg2rad().float()
+        azimuths = torch.tensor([0.0, 90.0, 180.0, 270.0], device=dev).deg2rad().float()
+        radius = torch.tensor([args.distance] * args.num_views, device=dev).float()
+        input_C2W = orbit_camera(elevations, azimuths, radius, is_degree=False)
+        input_C2W[:, :3, 1:3] *= -1  # OpenGL -> OpenCV
+        input_fxfycxcy = fxfycxcy.unsqueeze(0).repeat(args.num_views, 1)
+        plucker, _ = plucker_ray(args.res, args.res, input_C2W.unsqueeze(0), input_fxfycxcy.unsqueeze(0))
+        plucker = plucker.squeeze(0)  # (V, 6, H, W)
+        if opt.view_concat_condition:
+            plucker = torch.cat([plucker[0:1, ...], plucker], dim=0)
+        env["camera"] = {
+            "views": args.num_views, "azimuth_deg": [0, 90, 180, 270], "elevation_deg": args.elevation,
+            "radius": args.distance, "fx_fy_normalized": round(opt.fxfy, 4), "cx_cy": [0.5, 0.5],
+            "world_convention": "OpenGL (x right, y up, z back); C2W flipped to OpenCV for geometry",
+        }
+
+        # Optional verification renders. `diff_gaussian_rasterization` is the RaDe-GS fork of the
+        # 3DGS CUDA extension compiled for sm_61; if setup.sh could not build it, the stub raises
+        # and we simply record that no sheet was made.
+        rasterizer = "not requested" if args.no_render else "stub"
+        render_fn = None
+        GaussianModel = None
+        if not args.no_render:
+            try:
+                import diff_gaussian_rasterization as dgr
+                if hasattr(dgr, "_C"):  # the compiled sm_61 extension
+                    from src.models.gs_render.gs_util import GaussianModel as _GM, render as _render
+                    GaussianModel, render_fn = _GM, _render
+                    rasterizer = "real"
+                else:
+                    rasterizer = "stub (pure-python placeholder; no verification sheet)"
+            except Exception as exc:  # pragma: no cover
+                rasterizer = f"unavailable: {type(exc).__name__}: {exc}"
+        env["rasterizer"] = rasterizer
+        log(f"rasterizer: {rasterizer}")
+
+        # ---------------------------------------------------------------- helpers
+        def gaussians_from_image_format(outs: Dict[str, torch.Tensor]):
+            """The pre-rasterisation half of src/models/gs_render/gs_renderer.py::render
+            (`in_image_format=True`, `input_normalized=True`), returned as flat arrays."""
+            rgb, scale, rotation, opacity, depth = (
+                outs["rgb"], outs["scale"], outs["rotation"], outs["opacity"], outs["depth"])
+            cam_d = torch.linalg.norm(input_C2W[:, :3, 3], ord=2, dim=1)   # (V,) camera distance
+            depth = depth + cam_d.view(1, -1, 1, 1, 1)                     # (1,V,1,H,W)
+            xyz = unproject_depth(depth.squeeze(2), input_C2W.unsqueeze(0), input_fxfycxcy.unsqueeze(0))
+            xyz = xyz + outs.get("offset", torch.zeros_like(xyz))
+            flat = lambda t: rearrange(t, "b v c h w -> b (v h w) c")  # noqa: E731
+            xyz, rgb = flat(xyz), flat(rgb) * 0.5 + 0.5
+            s = flat(scale) * 0.5 + 0.5
+            scale = opt.scale_min * s + opt.scale_max * (1.0 - s)          # upstream scale_activation
+            opacity = flat(opacity) * 0.5 + 0.5
+            rotation = flat(rotation)
+            rotation = rotation / rotation.norm(dim=-1, keepdim=True).clamp_min(1e-8)  # see README
+            return {k: v[0].detach().float().cpu().numpy() for k, v in
+                    dict(xyz=xyz, rgb=rgb, scale=scale, rotation=rotation, opacity=opacity).items()}
+
+        def write_ply(path: str, g: Dict[str, np.ndarray]) -> None:
+            """Column layout and `compatible=True` activations copied from upstream
+            GaussianModel.save_ply: f_dc = (rgb-0.5)/SH_C0, opacity -> logit (eps 1e-6, as
+            kiui.op.inverse_sigmoid), scale -> ln(scale + 1e-8), rot_0..3 = (w,x,y,z), plus the
+            redundant red/green/blue uint8 columns."""
+            xyz, rgb = g["xyz"], g["rgb"]
+            f_dc = (rgb - 0.5) / SH_C0
+            op = np.clip(g["opacity"], 1e-6, 1 - 1e-6)
+            opacity = np.log(op / (1 - op))
+            scale = np.log(g["scale"] + 1e-8)
+            rot = g["rotation"]
+            rgb8 = (rgb * 255.0).clip(0, 255).astype(np.uint8)
+            dtype = [(a, "f4") for a in
+                     ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+                      "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]]
+            dtype += [("red", "u1"), ("green", "u1"), ("blue", "u1")]
+            elements = np.empty(xyz.shape[0], dtype=dtype)
+            elements[:] = list(map(tuple, np.concatenate((xyz, f_dc, opacity, scale, rot, rgb8), axis=1)))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            PlyData([PlyElement.describe(elements, "vertex")]).write(path)
+
+        def contact_sheet(g: Dict[str, np.ndarray], path: str) -> bool:
+            if render_fn is None or GaussianModel is None:
+                return False
+            from PIL import Image
+            pc = GaussianModel().set_data(
+                torch.from_numpy(g["xyz"]).to(dev), torch.from_numpy(g["rgb"]).to(dev),
+                torch.from_numpy(g["scale"]).to(dev), torch.from_numpy(g["rotation"]).to(dev),
+                torch.from_numpy(g["opacity"]).to(dev))
+            cams = [input_C2W[v] for v in range(args.num_views)]
+            azis = np.linspace(0.0, 360.0, args.orbit_frames, endpoint=False)
+            e = torch.full((len(azis),), -args.elevation, device=dev).deg2rad().float()
+            a = torch.from_numpy(azis.astype("float32")).to(dev).deg2rad()
+            r = torch.full((len(azis),), args.distance, device=dev).float()
+            orb = orbit_camera(e, a, r, is_degree=False)
+            orb[:, :3, 1:3] *= -1
+            cams += list(orb)
+            tiles = []
+            for c2w in cams:
+                img = render_fn(pc, args.render_res, args.render_res, c2w, fxfycxcy,
+                                opt.znear, opt.zfar, (1.0, 1.0, 1.0), 1.0)["image"]
+                arr = (img.clamp(0, 1) * 255).byte().permute(1, 2, 0).cpu().numpy()
+                tiles.append(Image.fromarray(arr).convert("RGB"))
+            cols = args.num_views
+            rows = (len(tiles) + cols - 1) // cols
+            sheet = Image.new("RGB", (cols * args.render_res, rows * args.render_res), (255, 255, 255))
+            for i, t in enumerate(tiles):
+                sheet.paste(t, ((i % cols) * args.render_res, (i // cols) * args.render_res))
+            sheet.save(path)
+            return True
+
+        # ---------------------------------------------------------------- generate
+        rows: List[List[str]] = []
+        with open(args.prompts) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    slug, prompt = line.split("\t", 1)
+                    rows.append([slug.strip(), prompt.strip()])
+        if args.limit:
+            rows = rows[: args.limit]
+        log(f"prompts: {[r[0] for r in rows]}")
+
+        assets: Dict[str, Any] = {}
+        failures: Dict[str, str] = {}
+        for slug, prompt in rows:
+            torch.cuda.reset_peak_memory_stats()
+            t0 = time.time()
+            try:
+                generator = torch.Generator(device=dev).manual_seed(args.seed)
+                with torch.no_grad(), torch.autocast("cuda", torch.float16):
+                    latents = pipeline(
+                        None, prompt=prompt, negative_prompt=args.negative_prompt,
+                        num_inference_steps=args.steps, guidance_scale=args.guidance_scale,
+                        triangle_cfg_scaling=False, min_guidance_scale=1.0,
+                        max_guidance_scale=args.guidance_scale,
+                        output_type="latent", eta=args.eta, generator=generator,
+                        plucker=plucker, num_views=args.num_views,
+                        init_std=0.0, init_noise_strength=0.98, init_bg=0.0,
+                    ).images
+                    latents = latents.float() / gsvae.scaling_factor + gsvae.shift_factor
+                    outs = gsvae.decode_gslatents(latents)  # chunked (opt.chunk_size = 1)
+                g = {k: v for k, v in gaussians_from_image_format(outs).items()}
+                if not np.isfinite(g["xyz"]).all() or not np.isfinite(g["rgb"]).all():
+                    raise RuntimeError("non-finite Gaussian parameters (fp16 overflow?)")
+                ply = os.path.join(args.out, "raw", f"{slug}.ply")
+                write_ply(ply, g)
+                dur = time.time() - t0
+                b = g["xyz"]
+                keep = g["opacity"] > args.report_opacity
+                peak_alloc = torch.cuda.max_memory_allocated()
+                peak_resv = torch.cuda.max_memory_reserved()
+                rec = {
+                    "prompt": prompt,
+                    "seconds": round(dur, 2),
+                    "splat_count": int(g["xyz"].shape[0]),
+                    "splat_count_above_report_opacity": int(keep.sum()),
+                    "report_opacity": args.report_opacity,
+                    "bounds_min": [round(float(v), 4) for v in b.min(0)],
+                    "bounds_max": [round(float(v), 4) for v in b.max(0)],
+                    "extent": [round(float(v), 4) for v in b.max(0) - b.min(0)],
+                    "opacity_mean": round(float(g["opacity"].mean()), 4),
+                    "scale_mean_world_units": [round(float(v), 6) for v in g["scale"].mean(0)],
+                    "ply_bytes": os.path.getsize(ply),
+                    "vram_peak_allocated_gib": round(peak_alloc / 2**30, 3),
+                    "vram_peak_reserved_gib": round(peak_resv / 2**30, 3),
+                    "preview": None,
+                }
+                sheet = os.path.join(args.out, f"preview-{slug}.png")
+                try:
+                    if contact_sheet(g, sheet):
+                        rec["preview"] = os.path.basename(sheet)
+                except Exception as exc:
+                    rec["preview_error"] = f"{type(exc).__name__}: {exc}"
+                    log(f"  preview failed for {slug}: {rec['preview_error']}")
+                assets[slug] = rec
+                with open(os.path.join(args.out, "raw", f"{slug}.json"), "w") as fh:
+                    json.dump(rec, fh, indent=2)
+                log(f"{slug}: {dur:.1f}s  {rec['splat_count']} splats  "
+                    f"extent={rec['extent']}  peak {rec['vram_peak_allocated_gib']} GiB alloc / "
+                    f"{rec['vram_peak_reserved_gib']} reserved  preview={rec['preview']}")
+            except Exception as exc:
+                failures[slug] = f"{type(exc).__name__}: {exc}"
+                log(f"{slug}: FAILED {failures[slug]}")
+                traceback.print_exc()
+
+        sampler.stop()
+        summary = {
+            "env": env,
+            "args": {k: v for k, v in vars(args).items()},
+            "assets": assets,
+            "failures": failures,
+            "vram_peak_allocated_gib_overall": round(torch.cuda.max_memory_allocated() / 2**30, 3),
+            "vram_peak_reserved_gib_overall": round(torch.cuda.max_memory_reserved() / 2**30, 3),
+            "nvidia_smi_device_wide_peak_mib": sampler.peak_mib,
+            "nvidia_smi_samples": len(sampler.samples),
+            "total_seconds": round(time.time() - t_start, 1),
+        }
+        with open(os.path.join(args.out, "metrics.json"), "w") as fh:
+            json.dump(summary, fh, indent=2)
+        log(f"wrote {os.path.join(args.out, 'metrics.json')}: {len(assets)} assets, "
+            f"{len(failures)} failures, total {summary['total_seconds']}s, "
+            f"peak {summary['vram_peak_allocated_gib_overall']} GiB allocated "
+            f"(device-wide nvidia-smi peak {summary['nvidia_smi_device_wide_peak_mib']} MiB)")
+        return 0 if assets and not failures else (1 if not assets else 2)
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: splat-lab-diffsplat-1
+  namespace: default
+  labels: { app: splat-lab-diffsplat }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels: { app: splat-lab-diffsplat }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      nodeSelector: { kubernetes.io/hostname: dave-droid }
+      tolerations:
+        - { key: dedicated, operator: Equal, value: pascal, effect: NoSchedule }
+      containers:
+        - name: run
+          # -devel tag: nvcc is needed to compile DiffSplat's 3DGS rasterizer fork for
+          # sm_61 (TORCH_CUDA_ARCH_LIST=6.1). CUDA 12.6 still ships Pascal kernels; CUDA 13
+          # dropped them. Same torch build as the smoke Job that passed on this card.
+          image: pytorch/pytorch:2.7.1-cuda12.6-cudnn9-devel@sha256:639b8229ccfd8a3aa803cf49c33d6d6fe406750d79aaf723fe8c0eb1060d8cff
+          command:
+            - bash
+            - -ec
+            - |
+              set -euo pipefail
+              bash /scripts/setup.sh
+              . /data/cache/g2/run.env
+              status=0
+              "$G2_PYTHON" /scripts/run.py \
+                  --out "$OUT" \
+                  --repo /data/cache/repo/DiffSplat \
+                  --ckpt /data/cache/ckpt/DiffSplat \
+                  --prompts /scripts/prompts.tsv \
+                  --seed 0 --steps 20 --guidance-scale 7.5 --elevation 10 --res 256 \
+                  2>&1 | tee "$OUT/run.log" || status=$?
+              echo "--- run.py exit status: $status (0 = all prompts ok, 2 = partial, 1 = none)"
+              echo "--- outputs of $OUT"
+              ls -l "$OUT" "$OUT/raw"
+              cat "$OUT/metrics.json"
+              exit $status
+          env:
+            - { name: OUT, value: /data/out/diffsplat-1 }
+            - { name: HF_HOME, value: /data/cache/hf }
+            - { name: TORCH_HOME, value: /data/cache/torch }
+            - { name: PIP_CACHE_DIR, value: /data/cache/pip }
+            - { name: TORCH_CUDA_ARCH_LIST, value: "6.1" }
+            - { name: HF_HUB_DISABLE_TELEMETRY, value: "1" }
+            - { name: DISABLE_TELEMETRY, value: "1" }
+            - { name: WANDB_MODE, value: disabled }
+          resources:
+            requests: { cpu: "2", memory: 6Gi }
+            limits: { cpu: "6", memory: 24Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "5000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: splat-lab-data } }
+        - { name: scripts, configMap: { name: splat-lab-diffsplat-scripts, defaultMode: 0755 } }
