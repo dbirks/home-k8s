@@ -10,10 +10,12 @@
 # nvs-bench/tanksandtemples (Hugging Face; images/ + COLMAP sparse/0), so NO SfM has to run here.
 #
 # VRAM: HAMi's gpumem quota is CUDA-only — it does NOT limit a Vulkan process (same caveat as qwen3-asr).
-# The 5000 MiB request is accounting so the GPU still schedules one job at a time. Actual headroom is
-# 8192 MiB minus qwen3-asr's ~2.1 GiB, so the job runs a watchdog on `nvidia-smi` free memory and KILLS
-# Brush before the card runs out (that would take the ASR service down with it). Keep --max-splats and
-# --max-resolution small unless you re-check that.
+# The 5000 MiB request is accounting so the GPU still schedules one job at a time. Card-level usage was
+# measured from the cluster metrics instead: train-3 peaked ~3.7 GiB used on the whole 8 GiB card, which
+# includes qwen3-asr's ~2.1 GiB, i.e. Brush itself wanted ~1.6 GiB at 512 px / 800k splats. Keep
+# --max-splats and --max-resolution modest; the nvidia-smi in the container is HAMi-patched (quota view,
+# CUDA-only) so the in-job sampler below cannot guard the real card — check gpu_device_memory_used_bytes
+# {pod=gpu-vram-exporter-<dave-droid>} in Prometheus while the job runs.
 #
 # Re-run: copy the Job block, bump the -N suffix and OUT, delete the old Job block in the same commit
 # (Jobs are immutable; Flux prunes the deleted one), then poke flux:
@@ -22,10 +24,15 @@
 # Watch: kubectl get pods -l job-name=<job> -w    Logs: kubectl logs job/<job>
 # Fetch: kubectl cp default/$(kubectl get pod -l app=splat-lab-files -o name | cut -d/ -f2):/data/out/<OUT> ./<OUT>
 #
-# train-1 failed after ~30 s: pytorch/pytorch:-runtime has no curl (apt + the injected /etc/vulkan/icd.d/
-# nvidia_icd.json were fine) -> downloads now use python urllib. train-2 then failed because the binary
-# inside the cargo-dist archive is called `brush_app`, not `brush-app` -> extract.py now looks for either
-# and calls it `brush`. train-3+ cache brush + the dataset under /data/cache, so re-runs skip the fetch.
+# Run history (each failed attempt is deleted from this file so Flux prunes it):
+#   train-1 failed in ~30 s: the pytorch runtime image has no curl (apt + the injected
+#     /etc/vulkan/icd.d/nvidia_icd.json were fine) -> downloads use python urllib now.
+#   train-2 failed: the binary inside the cargo-dist archive is `brush_app`, not `brush-app` ->
+#     extract.py accepts either name and calls it `brush`.
+#   train-3 SUCCEEDED in 4m17s (10k steps @512 px, sh0, 800k cap): 10000 steps in 192 s on the 1070,
+#     465,602 splats exported. Its log has no progress lines (indicatif is TTY-only).
+#   train-4 = the keeper run: 15k steps @600 px, checkpoints every 2500 so the deck can show the scene
+#     mid-refinement, eval views saved to disk as proof, RUST_LOG=info.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -144,14 +151,15 @@ data:
     : "${MAX_RES:=512}"
     : "${MAX_SPLATS:=800000}"
     : "${SH_DEG:=0}"
+    : "${EXPORT_EVERY:=2500}"
     : "${BRUSH_URL:=https://github.com/ArthurBrussee/brush/releases/download/v0.3.0/brush-app-x86_64-unknown-linux-gnu.tar.xz}"
     : "${BRUSH_SHA:=4f0f9a8785d1951c62df26aae247c02c5bba32b00f40b06df4e1c9b867399e20}"
     : "${BRUSH_VER:=v0.3.0}"
     FREE_FLOOR=900   # MiB free that must stay for qwen3-asr + headroom before we abort
 
     T0=$(date +%s)
-    mkdir -p "$OUT"
-    cd "$OUT"
+    mkdir -p "$OUT" /data/cache/runhome
+    cd /data/cache/runhome          # cubecl writes ./target/autotune next to the cwd; keep it on the PVC
     exec > >(tee -a "$OUT/job.log") 2>&1
     echo "== splat-lab-train: $(date -u +%FT%TZ) host=$(hostname) out=$OUT steps=$STEPS maxres=$MAX_RES maxsplats=$MAX_SPLATS sh=$SH_DEG"
 
@@ -187,13 +195,17 @@ data:
     echo "images=$(ls "$DS/images" | wc -l) sparse=$(ls "$DS"/sparse/0 2>/dev/null | tr '\n' ' ')"
     du -sh "$DS"
 
-    # ---- 3. VRAM watchdog (Brush is Vulkan: HAMi's gpumem quota does not bound it) ----------
+    # ---- 3. GPU sampler ---------------------------------------------------------------------
+    # Brush talks Vulkan, so HAMi's gpumem quota does not bound it and the nvidia-smi in this container is
+    # HAMi-patched (it reports the 5000 MiB quota and only counts CUDA allocations -> "0 MiB used" here).
+    # Card-level usage is therefore read from the cluster metrics (gpu_device_memory_used_bytes on
+    # gpu-vram-exporter-<dave-droid>); the guard below only fires if nvidia-smi ever shows the real card.
     : > "$OUT/nvsmi.csv"
     ( while true; do
         read -r used total <<<"$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits | tr ',' ' ')"
         echo "$(date +%s),$used,$total" >> "$OUT/nvsmi.csv"
         free=$((total - used))
-        if [ "$free" -lt "$FREE_FLOOR" ]; then
+        if [ "$total" -ge 6000 ] && [ "$free" -lt "$FREE_FLOOR" ]; then
           echo "[watchdog] $(date -u +%T) only ${free} MiB free on the GPU -> stopping trainer to protect qwen3-asr"
           pkill -x brush || true
           touch "$OUT/ABORTED_OOM"
@@ -203,6 +215,7 @@ data:
       done ) &
     WATCHDOG=$!
     trap 'kill $WATCHDOG 2>/dev/null || true' EXIT
+    echo "[gpu] nvidia-smi inside this container sees $(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits) MiB total (HAMi view, CUDA-only accounting)"
 
     # ---- 4. Preflight: 60 steps, fails in ~1 min if Vulkan/Pascal cannot run Brush ----------
     echo "-- preflight"
@@ -216,6 +229,7 @@ data:
     # ---- 5. Train ---------------------------------------------------------------------------
     echo "-- train ${STEPS} steps"
     TT=$(date +%s)
+    export RUST_LOG=info
     if "$BRUSH_BIN" "$DS" \
       --total-steps "$STEPS" \
       --max-resolution "$MAX_RES" \
@@ -223,7 +237,8 @@ data:
       --max-splats "$MAX_SPLATS" \
       --growth-stop-iter $((STEPS * 3 / 4)) \
       --seed 7 \
-      --export-every "$STEPS" \
+      --eval-split-every 8 --eval-every $((STEPS / 3)) --eval-save-to-disk \
+      --export-every "$EXPORT_EVERY" \
       --export-path "$OUT" \
       --export-name "truck_{iter}.ply" \
       2>&1 | tee "$OUT/train.log"; then :; else echo "[train] brush exited nonzero (see above)"; fi
@@ -246,14 +261,14 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-train-3
+  name: splat-lab-train-4
   namespace: default
   labels: { app: splat-lab }
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 3600
   template:
-    metadata: { labels: { app: splat-lab, job: splat-lab-train-3 } }
+    metadata: { labels: { app: splat-lab, job: splat-lab-train-4 } }
     spec:
       restartPolicy: Never
       runtimeClassName: nvidia
@@ -269,12 +284,13 @@ spec:
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: WGPU_BACKEND, value: vulkan }
             - { name: HOME, value: /data }
-            - { name: OUT, value: /data/out/train-3 }
+            - { name: OUT, value: /data/out/train-4 }
             - { name: DATA, value: nvs-bench/tanksandtemples/truck }
-            - { name: STEPS, value: "10000" }
-            - { name: MAX_RES, value: "512" }
-            - { name: MAX_SPLATS, value: "800000" }
+            - { name: STEPS, value: "15000" }
+            - { name: MAX_RES, value: "600" }
+            - { name: MAX_SPLATS, value: "1200000" }
             - { name: SH_DEG, value: "0" }
+            - { name: EXPORT_EVERY, value: "2500" }
           resources:
             requests: { cpu: "2", memory: 4Gi }
             limits: { cpu: "6", memory: 14Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "5000" }
