@@ -17,7 +17,8 @@
 #
 # Re-run: bump JOB_N (Jobs are immutable) and delete the old Job block in the same commit.
 # Results: kubectl cp default/<splat-lab-files pod>:/data/out/g1-<JOB_N> ./out   (see public/splats/g1/README.md)
-# Sizes: 66 KiB of scripts in one ConfigMap (limit 3 MiB).
+# Sizes: 67 KiB of scripts in one ConfigMap (limit 3 MiB). Keys are flat (vendor-kiui-cam.py);
+# run.sh rebuilds the package tree — see key() below.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -83,14 +84,34 @@ data:
     STAGE=${1:-all}
 
     mkdir -p "$OUT" "$WORK" "$CACHE/pip" "$CACHE/repos" "$CACHE/torch" "$U2NET_HOME" "$HF_HOME" "$DATA/in/g1"
-    rm -rf "$G1_VENDOR"
-    cp -r "$SCRIPTS/vendor" "$G1_VENDOR"
-
     START_TS=$(date +%s)
     LOG=$OUT/run-$STAGE.log
     exec > >(tee -a "$LOG") 2>&1
 
     log() { echo "[g1 $(date -u +%H:%M:%S)] $*"; }
+
+    # The ConfigMap's keys are flat (`vendor-kiui-cam.py`), because kubelet does not materialise
+    # ConfigMap volume items whose path contains a directory — splat-lab-lgm-1 got an empty
+    # /work/vendor/kiui and died on `import kiui`. Rebuild the package tree here instead.
+    VENDOR_FILES="kiui/__init__.py kiui/cam.py kiui/op.py kiui/lpips.py xformers/__init__.py
+                  xformers/ops/__init__.py diff_gaussian_rasterization/__init__.py"
+    stage_vendor() {
+      local rel key src n=0
+      rm -rf "$G1_VENDOR"; mkdir -p "$G1_VENDOR"
+      for rel in $VENDOR_FILES; do
+        key="vendor-${rel//\//-}"
+        if [ -f "$SCRIPTS/$key" ]; then src="$SCRIPTS/$key"
+        elif [ -f "$SCRIPTS/vendor/$rel" ]; then src="$SCRIPTS/vendor/$rel"   # in case a mount ever nests
+        else log "MISSING vendored module $rel (looked for $SCRIPTS/$key)"; exit 3; fi
+        mkdir -p "$G1_VENDOR/$(dirname "$rel")"
+        cp "$src" "$G1_VENDOR/$rel"
+        n=$((n + 1))
+      done
+      log "vendor tree staged: $n/$VENDOR_COUNT modules -> $G1_VENDOR"
+      find "$G1_VENDOR" -name '*.py' | sort | sed 's|^|[g1]   |'
+    }
+    VENDOR_COUNT=$(echo $VENDOR_FILES | wc -w)
+    stage_vendor
 
     # nvidia-smi sampler: HAMi's view of the vGPU, every 5 s, while this script runs.
     (
@@ -128,6 +149,7 @@ data:
 
     st_setup() {
       log "--- setup ---"
+      find "$SCRIPTS" -type f | sort | sed 's|^|[g1] scripts: |'
       if [ ! -x "$PY" ]; then
         python -m venv --system-site-packages "$VENV"
         "$PIP" install -q --upgrade pip
@@ -1647,7 +1669,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-lgm-1
+  name: splat-lab-lgm-2
   namespace: default
   labels:
     app.kubernetes.io/part-of: splat-lab
@@ -1671,7 +1693,7 @@ spec:
           image: pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime@sha256:2b59b1b91885677814f78be1f8df48a25d5dc952eb6580eaecfefca510f9afd3
           command: [bash, /scripts/run.sh, all]
           env:
-            - { name: OUT, value: /data/out/g1-1 }
+            - { name: OUT, value: /data/out/g1-2 }
             - { name: SCRIPTS, value: /scripts }
             - { name: IMAGE, value: "pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime@sha256:2b59b1b91885677814f78be1f8df48a25d5dc952eb6580eaecfefca510f9afd3" }
             - { name: LGM_REV, value: "fe8d12cff8c827df7bb77a3c8e8b37408cb6fe4c" }
@@ -1686,23 +1708,6 @@ spec:
             - { name: scripts, mountPath: /scripts, readOnly: true }
       volumes:
         - { name: data, persistentVolumeClaim: { claimName: splat-lab-data } }
-        - name: scripts
-          configMap:
-            name: splat-lab-lgm-scripts
-            defaultMode: 420   # 0644 as decimal: kubectl parses this through JSON
-            items:
-              - { key: run.sh, path: run.sh }
-              - { key: requirements.txt, path: requirements.txt }
-              - { key: inputs.json, path: inputs.json }
-              - { key: mvgen.py, path: mvgen.py }
-              - { key: lgm2ply.py, path: lgm2ply.py }
-              - { key: fetch_inputs.py, path: fetch_inputs.py }
-              - { key: selftest.py, path: selftest.py }
-              - { key: report.py, path: report.py }
-              - { key: vendor-kiui-__init__.py, path: vendor/kiui/__init__.py }
-              - { key: vendor-kiui-cam.py, path: vendor/kiui/cam.py }
-              - { key: vendor-kiui-op.py, path: vendor/kiui/op.py }
-              - { key: vendor-kiui-lpips.py, path: vendor/kiui/lpips.py }
-              - { key: vendor-xformers-__init__.py, path: vendor/xformers/__init__.py }
-              - { key: vendor-xformers-ops-__init__.py, path: vendor/xformers/ops/__init__.py }
-              - { key: vendor-diff_gaussian_rasterization-__init__.py, path: vendor/diff_gaussian_rasterization/__init__.py }
+        # whole-ConfigMap mount (no `items:` — nested item paths are not materialised); all keys
+        # are flat file names, see key() in tools/splats/g1/gen-manifest.py
+        - { name: scripts, configMap: { name: splat-lab-lgm-scripts, defaultMode: 420 } }
