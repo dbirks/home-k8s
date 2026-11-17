@@ -36,7 +36,7 @@ jobs:
           df -h /
 
       - name: Check out Infernix at the pinned commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Wallawalla47/Infernix
           ref: ${{ inputs.ref }}
