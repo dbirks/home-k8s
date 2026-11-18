@@ -26,30 +26,56 @@ data:
   # Slide ids to shoot, one per line (everything after # is a comment). Full splat-lab set as of
   # 2026-11-16 (src/slides.ts + src/slides/splat-lab/*.ts in the deck repo).
   ids.txt: |
+    autoround-a
+    autoround-b
+    autoround-c
+    batching-a
+    batching-b
+    block-drafters-a
     block-drafters-b
+    close-a
+    collective-a
     collective-b
     collective-request-a
     collective-request-b
-    embed-vec-a
-    embed-vec-b
-    embed-vec-c
+    drafter-vram-a
+    drafter-vram-b
+    engines-cache-a
+    engines-cache-b
+    engines-cache-c
+    kv-cache-a
     kv-cache-b
     kv-cache-c
+    moe-a
+    mtp-a
     mtp-b
+    my-drafter-a
+    my-drafter-b
+    new-engines-a
+    ngram-tables-a
     ngram-tables-b
     nvfp4-a
     nvfp4-b
     ple-a
     ple-b
+    prefix-cache-a
+    prefix-cache-b
+    quant-types-a
+    quant-types-b
+    quant-what-a
     quant-what-b
     quant-what-c
     setup-egpu-a
+    setup-egpu-b
+    setup-hardware-a
     setup-hardware-b
     setup-hardware-c
     setup-slow-link-a
     setup-slow-link-b
+    spec-decode-a
     spec-decode-b
     spec-decode-c
+    train-vs-infer-a
     train-vs-infer-b
   # Change to a preview build URL later, e.g. a tunnel into a `vite preview`; env BASE_URL wins.
   base-url.txt: |
@@ -190,7 +216,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-26
+  name: splat-lab-shots-27
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -212,7 +238,7 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-26 }
+            - { name: OUT_DIR, value: /data/out/shots-27 }
             - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
