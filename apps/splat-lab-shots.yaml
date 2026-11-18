@@ -35,6 +35,11 @@ data:
     setup-hardware-c
     mtp-b
     block-drafters-b
+    setup-egpu-a
+    setup-slow-link-a
+    setup-slow-link-b
+    spec-decode-b
+    spec-decode-c
   # Change to a preview build URL later, e.g. a tunnel into a `vite preview`; env BASE_URL wins.
   base-url.txt: |
     https://dbirks.github.io/aise-nov-2026-local-llms
@@ -174,7 +179,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-24
+  name: splat-lab-shots-25
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -196,7 +201,7 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-24 }
+            - { name: OUT_DIR, value: /data/out/shots-25 }
             - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
