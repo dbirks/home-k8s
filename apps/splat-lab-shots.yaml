@@ -26,44 +26,9 @@ data:
   # Slide ids to shoot, one per line (everything after # is a comment). Full splat-lab set as of
   # 2026-11-16 (src/slides.ts + src/slides/splat-lab/*.ts in the deck repo).
   ids.txt: |
-    title
-    ch00
-    a01
-    a02
-    ch01
-    b01
-    b02
-    b03
-    b04
-    b05
-    ch02
-    c01
-    c02
-    c03
-    c04
-    c05
-    ch03
-    d01
-    d02
-    d03
-    d04
-    d05
-    ch04
-    e01
-    e02
-    e03
-    e04
-    e05
-    e06
-    ch05
-    f01
-    f02
-    f03
-    f04
-    ch06
-    g01
-    ch07
-    a03
+    quant-what-b
+    quant-what-c
+    quant-what-a
   # Change to a preview build URL later, e.g. a tunnel into a `vite preview`; env BASE_URL wins.
   base-url.txt: |
     https://dbirks.github.io/aise-nov-2026-local-llms
@@ -203,7 +168,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-22
+  name: splat-lab-shots-23
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -225,7 +190,7 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-22 }
+            - { name: OUT_DIR, value: /data/out/shots-23 }
             - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
