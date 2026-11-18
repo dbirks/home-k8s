@@ -167,7 +167,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-16
+  name: splat-lab-shots-17
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -189,7 +189,7 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-16 }
+            - { name: OUT_DIR, value: /data/out/shots-17 }
             - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
