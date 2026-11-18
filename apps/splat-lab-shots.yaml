@@ -40,6 +40,9 @@ data:
     collective-request-b
     drafter-vram-a
     drafter-vram-b
+    embed-vec-a
+    embed-vec-b
+    embed-vec-c
     engines-cache-a
     engines-cache-b
     engines-cache-c
@@ -216,7 +219,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-27
+  name: splat-lab-shots-28
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -238,7 +241,7 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-27 }
+            - { name: OUT_DIR, value: /data/out/shots-28 }
             - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
