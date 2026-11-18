@@ -27,11 +27,13 @@ data:
   # 2026-11-16 (src/slides.ts + src/slides/splat-lab/*.ts in the deck repo).
   ids.txt: |
     c01
-    c03
     d03
-    b05
     f01
     f04
+    b01
+    b03
+    e05
+    e03
   # Change to a preview build URL later, e.g. a tunnel into a `vite preview`; env BASE_URL wins.
   base-url.txt: |
     https://dbirks.github.io/aise-nov-2026-local-llms
@@ -171,7 +173,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: splat-lab-shots-11
+  name: splat-lab-shots-12
   namespace: default
   labels: { app: splat-lab }
 spec:
@@ -193,7 +195,7 @@ spec:
             - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }   # graphics = the Vulkan ICD (as qwen3-asr)
             - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
             - { name: HOME, value: /tmp }
-            - { name: OUT_DIR, value: /data/out/shots-11 }
+            - { name: OUT_DIR, value: /data/out/shots-12 }
             - { name: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD, value: "1" }
           resources:
             requests: { cpu: "2", memory: 2Gi }
