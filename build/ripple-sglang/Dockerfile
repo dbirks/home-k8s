@@ -11,7 +11,7 @@
 # NOT taken from inference/local/spark.py: its SM121 (GB10) hacks - PDL-off softmax patch for the DFlash
 # accept kernel, k/v_scale reset (this checkpoint has no KV scales), the cc==(12,1) gate, and its
 # max-running-requests 1 / disable-radix-cache defaults.
-FROM lmsysorg/sglang:v0.5.19-cu130@sha256:d6e7288627be8b02be88e4bba38e73f6d50e2826869f753c13a4c4385ab3eda9
+FROM lmsysorg/sglang:v0.5.23-cu130@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f
 
 # CUDA forward-compat libs must never shadow the node's 580 driver (same fix as build/vllm-flint).
 RUN rm -rf /usr/local/cuda-*/compat /usr/local/cuda/compat || true
