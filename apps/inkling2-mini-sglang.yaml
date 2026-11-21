@@ -63,7 +63,7 @@ metadata:
   name: inkling2-mini-weights-server
   namespace: default
 spec:
-  replicas: 1
+  replicas: 0                    # copy verified 2026-11-21; set to 1 to re-copy
   selector:
     matchLabels: { app.kubernetes.io/name: inkling2-mini-weights-server }
   template:
@@ -156,7 +156,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 0                     # 1 once the copy Job says "verified" (step 3 above)
+  replicas: 1                     # LIVE 2026-11-21: weights copied + verified on talos-8me-tcy
   strategy:
     type: Recreate                # one whole-card pod
   selector:
