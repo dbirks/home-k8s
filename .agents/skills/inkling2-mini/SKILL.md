@@ -58,7 +58,7 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
 - **Never hold/remove a file that defines the weights PVC**: Flux prunes it and local-path deletes the data. That is
   why the PVC lives in its own file. A re-copy is ~15 min (set the weights server to 1, delete the copy Job if done).
 
-## NVFP4 KV (our fork, tested 2026-11-21, not live yet)
+## NVFP4 KV (our fork, LIVE since 2026-11-21: 360K context, block multiplier 8)
 - Code: github.com/dbirks/vllm branch `inkling2-mini-sm120` (PR #69028 head eb7981b + #69096 + NVFP4 KV). Image:
   `build/vllm-inkling/Dockerfile` = the pinned day-0 image + the 9 patched .py files fetched at a fork commit (one
   ~500 kB layer), built by `gh workflow run build-vllm-inkling.yaml -f tag=... -f vllm_ref=<fork sha>`.
@@ -68,12 +68,16 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
 - Results on the 5090 (DSpark on, 2 seqs, 1024-token chunks, no util cap): pool 410,604 tokens at max-model-len 262144
   (fp8 313,818), 466,416 at 393216, 484,639 at 458752. 20/20 arithmetic, needles PASS at 250K x3, 380K x2, 445K.
   Decode same as fp8 (code ~264, prose ~154 tok/s 1 stream); prefill ~15-25% slower (250K: ~65 s vs 54 s).
-- Cost: NVFP4 blocks are 512 tokens (see below) and vLLM's scheduler block becomes 18,432 tokens, so prefix-cache hits
-  round DOWN to 18,432-token multiples (a repeated 23.5K prompt reused 18,432 tokens: TTFT 5.4 s vs 0.4 s on fp8).
-- Gotchas found on the GPU (the CPU interpreter hides both): compiled @triton.jit code can only read module globals
-  wrapped in `tl.constexpr`; vLLM unifies KV page sizes across groups by integer block-size ratios else PADS to the
-  largest page, and the BF16 DSpark draft (512 B/head-token) vs NVFP4 (144) is 3.56x, so block-16 NVFP4 pages were
-  padded and used more memory than fp8. Fix: NVFP4 block = 32 x block_size (page = 9x the draft page).
+- Block multiplier (env INKLING_NVFP4_BLOCK_MULT, default 8). vLLM unifies page sizes across KV groups (integer
+  block-size ratio, else pad to the largest page). Our 144 B/head-token is 9 x 16; the DSpark draft's full-attention BF16
+  cache (512 B/head-token, block 64) and the sconv windows are powers of two. Measured (256K/360K/384K context):
+  x4 ~358K max ctx; x8 pool 344K @256K, 372K @360K, hits align to 4,608 tokens (draft padded 2.25x) -> LIVE;
+  x16 does not fit 256K; x32 pool 411K @256K / 466K @384K, no padding, but hits align to 18,432 tokens (a repeated
+  23.5K prompt: 18,432 reused, TTFT 5.4 s vs 0.5 s at x8). Prefix-hit alignment = LCM of all group block sizes (vLLM
+  only allows sub-block hits for Mamba groups).
+- Debug trick: in a lab pod, log the groups from `vllm/v1/core/kv_cache_utils.py::resolve_kv_cache_block_sizes`
+  (spec type, block size, page bytes, page_size_padded); the 48 per-pass caches, 48 sconv windows and 3 draft layers
+  show up as separate groups.
 - 524K (Justin's number) does not fit with DSpark on (484K pool max at 448K context).
 
 ## Research notes (2026-11-21 pi wave)
@@ -98,6 +102,6 @@ One commit: vLLM `replicas: 0` and rename the SGLang `.hold` to `.yaml` (or the 
 ## Collective
 Model `inkling-2-mini` (backend `inkling-2-mini` in both `apps/llm-collective-contributor*.yaml`), concurrency prod 2 =
 vLLM `--max-num-seqs 2`, dev 1 on top (dev is rarely used; vLLM queues any overflow). If you change max-num-seqs (or
-switch to SGLang `--max-running-requests`), keep prod equal to it. Context 262144 (on SGLang it would be ~123K: lower `limits.context`). openai + anthropic protocols, text +
+switch to SGLang `--max-running-requests`), keep prod equal to it. Context 368640 (= max-model-len; on SGLang it would be ~123K: lower `limits.context`). openai + anthropic protocols, text +
 image. Reasoning: the template maps none/minimal/low/medium/high/xhigh/max to an effort number (default 0.9 = high); there is
 no off switch, so "none" still emits a short thought. Server default is medium (`--default-chat-template-kwargs`); request values override it.
