@@ -1,0 +1,42 @@
+# Worker patch for the laptop + Thunderbolt eGPU (RTX 5090) node. DRAFT: fill the TODOs once the
+# laptop is booted from the ISO in maintenance mode (talosctl get disks / links --insecure).
+#
+# Image: Image Factory schematic 3db1175d83c7769336f0461dfd4158894164ea3e07cffa72c90dc56495bbc506
+# (~/Downloads/talos-egpu/schematic.yaml), Talos v1.13.12 to match the cluster's v1.13 line:
+#   thunderbolt, nvidia-open-gpu-kernel-modules-lts + nvidia-container-toolkit-lts (580.178.04),
+#   intel-ucode, amd-ucode, i915, realtek-firmware; kernel args
+#   pcie_aspm=off pcie_port_pm=off pcie_ports=native thunderbolt.clx=0 iommu=pt
+# (the eGPU stability baseline from the working RTX 5080/TB5 Linux report, NVIDIA forum 366919).
+#
+# Apply on top of the cluster's worker.yaml, like dave-droid:
+#   talosctl gen config ... / talosctl machineconfig patch worker.yaml \
+#     --patch @talos/patches/egpu-laptop-worker.yaml --patch @talos/patches/nvidia-module-options.yaml -o egpu-laptop.yaml
+#   talosctl apply-config --insecure -n <laptop-ip> -f egpu-laptop.yaml
+# (nvidia-module-options.yaml carries NVreg_DynamicPowerManagement=0x00, which eGPU reports also need.)
+machine:
+  install:
+    image: factory.talos.dev/metal-installer/3db1175d83c7769336f0461dfd4158894164ea3e07cffa72c90dc56495bbc506:v1.13.12
+    diskSelector:
+      wwid: "TODO"          # TODO: the laptop's internal NVMe, from `talosctl get disks --insecure -n <ip>`
+    wipe: false
+  kernel:
+    modules:
+      # Thunderbolt/USB4 driver from the siderolabs/thunderbolt extension. Its udev rule
+      # auto-authorizes every Thunderbolt device at boot and turns off port power management.
+      - name: thunderbolt
+      - name: nvidia
+        parameters:
+          - NVreg_DynamicPowerManagement=0x00
+      - name: nvidia_uvm
+      - name: nvidia_drm
+      - name: nvidia_modeset
+  nodeLabels:
+    gpu: "on"                                            # HAMi device plugin selector
+    feature.node.kubernetes.io/pci-10de.present: "true"  # GPU DaemonSets selector (no NFD in-cluster)
+  nodeTaints:
+    dedicated: egpu:NoSchedule    # keep ordinary pods off the laptop; GPU workloads tolerate this
+  kubelet:
+    image: ghcr.io/siderolabs/kubelet:v1.36.2   # match the control plane
+cluster:
+  controlPlane:
+    endpoint: https://10.0.0.194:6443

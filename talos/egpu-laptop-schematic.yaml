@@ -1,0 +1,18 @@
+# Talos laptop + Thunderbolt eGPU (RTX 5090) worker, v1.13.12 to match the cluster.
+customization:
+  extraKernelArgs:
+    # eGPU stability baseline from the working RTX 5080/TB5 Linux report (NVIDIA forum 366919):
+    - pcie_aspm=off
+    - pcie_port_pm=off
+    - pcie_ports=native
+    - thunderbolt.clx=0
+    - iommu=pt
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/thunderbolt
+      - siderolabs/nvidia-open-gpu-kernel-modules-lts
+      - siderolabs/nvidia-container-toolkit-lts
+      - siderolabs/intel-ucode
+      - siderolabs/amd-ucode
+      - siderolabs/i915
+      - siderolabs/realtek-firmware
