@@ -47,7 +47,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 0                     # PAUSED 2026-11-21: NVFP4 KV lab test on the card; set back to 1
+  replicas: 1                     # LIVE 2026-11-21
   strategy:
     type: Recreate                # one whole-card pod
   selector:

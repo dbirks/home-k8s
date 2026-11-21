@@ -58,10 +58,26 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
 - **Never hold/remove a file that defines the weights PVC**: Flux prunes it and local-path deletes the data. That is
   why the PVC lives in its own file. A re-copy is ~15 min (set the weights server to 1, delete the copy Job if done).
 
+## NVFP4 KV (our fork, tested 2026-11-21, not live yet)
+- Code: github.com/dbirks/vllm branch `inkling2-mini-sm120` (PR #69028 head eb7981b + #69096 + NVFP4 KV). Image:
+  `build/vllm-inkling/Dockerfile` = the pinned day-0 image + the 9 patched .py files fetched at a fork commit (one
+  ~500 kB layer), built by `gh workflow run build-vllm-inkling.yaml -f tag=... -f vllm_ref=<fork sha>`.
+- Format: 72-byte rows per (head, token) = 64 B packed E2M1 + 8 E4M3 scales per 16 values; reference
+  `vllm/models/inkling2/nvidia/ops/nvfp4_kv_ref.py`. Writer fused into `ops/sconv.py` (attention_prologue) via
+  `ops/nvfp4_kv_write.py`; reader in `ops/attention_sm90.py` (`_load_nvfp4_kv`). CPU tests run under TRITON_INTERPRET.
+- Results on the 5090 (DSpark on, 2 seqs, 1024-token chunks, no util cap): pool 410,604 tokens at max-model-len 262144
+  (fp8 313,818), 466,416 at 393216, 484,639 at 458752. 20/20 arithmetic, needles PASS at 250K x3, 380K x2, 445K.
+  Decode same as fp8 (code ~264, prose ~154 tok/s 1 stream); prefill ~15-25% slower (250K: ~65 s vs 54 s).
+- Cost: NVFP4 blocks are 512 tokens (see below) and vLLM's scheduler block becomes 18,432 tokens, so prefix-cache hits
+  round DOWN to 18,432-token multiples (a repeated 23.5K prompt reused 18,432 tokens: TTFT 5.4 s vs 0.4 s on fp8).
+- Gotchas found on the GPU (the CPU interpreter hides both): compiled @triton.jit code can only read module globals
+  wrapped in `tl.constexpr`; vLLM unifies KV page sizes across groups by integer block-size ratios else PADS to the
+  largest page, and the BF16 DSpark draft (512 B/head-token) vs NVFP4 (144) is 3.56x, so block-16 NVFP4 pages were
+  padded and used more memory than fp8. Fix: NVFP4 block = 32 x block_size (page = 9x the draft page).
+- 524K (Justin's number) does not fit with DSpark on (484K pool max at 448K context).
+
 ## Research notes (2026-11-21 pi wave)
-- NVFP4 KV needs a fork: `vllm/models/inkling2/nvidia/attention.py` hard-allows only auto/bf16 (+fp16/fp8 on SM12x),
-  and on SM12x Inkling runs its own Triton `ops/attention_sm90.py::rel_attention`, which would need an e2m1 loader. Multi-day
-  kernel work, est. +40-75% pool. SGLang FP8 KV on SM120 would need PR #45871 ported into Inkling's rel-bias attention.
+- SGLang FP8 KV on SM120 would need PR #45871 ported into Inkling's rel-bias attention.
 - Other engines (llama.cpp mainline is broken on CUDA SM120 as of b12606; ingine is 1 day old, single-flight, text-only;
   Basalt and NInfer-all exist) are not better than vLLM + DSpark here.
 - HiCache/host KV tier: not worth it with a 20 Gi pod limit (host tier smaller than the device pool).
