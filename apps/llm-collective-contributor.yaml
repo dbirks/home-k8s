@@ -225,9 +225,9 @@ data:
             # Declaring it earns the VISION chip and lets the gateway route
             # image traffic here instead of rejecting it with a 400.
             inputs: [text, image]
-      # Inkling 2 Mini on vLLM with DSpark, FP8 KV, on the laptop's Thunderbolt RTX 5090 (apps/inkling2-mini-vllm.yaml,
-      # talos-8me-tcy), 2026-11-21. vLLM --max-num-seqs 2 behind it: prod 2, dev 1 (dev is rarely used). ~314K-token
-      # shared KV pool, so one full 256K request fits (inkling2-mini skill). Probed live 2026-11-21: /v1/messages works;
+      # Inkling 2 Mini on vLLM with DSpark, NVFP4 KV (our fork), on the laptop's Thunderbolt RTX 5090 (apps/inkling2-mini-vllm.yaml,
+      # talos-8me-tcy), 2026-11-21. vLLM --max-num-seqs 2 behind it: prod 2, dev 1 (dev is rarely used). ~466K-token
+      # shared KV pool, so one full 384K request fits (inkling2-mini skill). Probed live 2026-11-21: /v1/messages works;
       # image input works. The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number
       # (default 0.9 = high); there is no off switch, so "none" still thinks briefly.
       - name: inkling-2-mini
@@ -238,7 +238,7 @@ data:
           - alias: inkling-2-mini
             model: inkling-2-mini
             limits:
-              context: 262144   # = vLLM --max-model-len
+              context: 393216   # = vLLM --max-model-len (NVFP4 KV)
             reasoning:
               levels:
                 - none
