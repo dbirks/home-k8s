@@ -58,7 +58,7 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
 - **Never hold/remove a file that defines the weights PVC**: Flux prunes it and local-path deletes the data. That is
   why the PVC lives in its own file. A re-copy is ~15 min (set the weights server to 1, delete the copy Job if done).
 
-## NVFP4 KV (our fork, LIVE since 2026-11-21: 360K context, block multiplier 8)
+## NVFP4 KV (our fork, LIVE since 2026-11-21: target + draft NVFP4, 576K context, block multiplier 1)
 - Code: github.com/dbirks/vllm branch `inkling2-mini-sm120` (PR #69028 head eb7981b + #69096 + NVFP4 KV). Image:
   `build/vllm-inkling/Dockerfile` = the pinned day-0 image + the 9 patched .py files fetched at a fork commit (one
   ~500 kB layer), built by `gh workflow run build-vllm-inkling.yaml -f tag=... -f vllm_ref=<fork sha>`.
@@ -82,7 +82,12 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
 - WITHOUT DSpark (no draft BF16 cache): multiplier 1 works (only the tiny sconv windows get padded), pool 847,998 tokens
   at max-model-len 819200, prefix hits align to 64 tokens, 158 tok/s 1 stream (code = prose), 229 for 2, 20/20
   arithmetic, needles PASS at 500K (234 s) and 780K (531 s). The draft's BF16 full-attention cache (~12 KB/token) is
-  bigger than the whole NVFP4 target cache (~9 KB/token): quantizing it is the next lever.
+  bigger than the whole NVFP4 target cache (~9 KB/token).
+- NVFP4 DRAFT KV (image d, LIVE): `--speculative-config '{..., "kv_cache_dtype": "nvfp4"}'` +
+  `INKLING_NVFP4_BLOCK_MULT=1` (no BF16 pages left, so no page mismatch). Pool 608,743 at max-model-len 589824 (vLLM's
+  estimate at 1M said ~949K, but warmup at a long max-model-len reserves more; at 921600 the real max was ~605K), 64-token
+  hit alignment, 20/20, needle PASS at 570K. DSpark acceptance drops a little (code ~206-246 tok/s vs ~264 with a BF16
+  draft cache). Draft code: `Inkling2DraftAttention` + `write_kv_paged_nvfp4` in dspark.py / ops/dspark.py.
 
 ## Research notes (2026-11-21 pi wave)
 - SGLang FP8 KV on SM120 would need PR #45871 ported into Inkling's rel-bias attention.
@@ -106,6 +111,6 @@ One commit: vLLM `replicas: 0` and rename the SGLang `.hold` to `.yaml` (or the 
 ## Collective
 Model `inkling-2-mini` (backend `inkling-2-mini` in both `apps/llm-collective-contributor*.yaml`), concurrency prod 2 =
 vLLM `--max-num-seqs 2`, dev 1 on top (dev is rarely used; vLLM queues any overflow). If you change max-num-seqs (or
-switch to SGLang `--max-running-requests`), keep prod equal to it. Context 368640 (= max-model-len; on SGLang it would be ~123K: lower `limits.context`). openai + anthropic protocols, text +
+switch to SGLang `--max-running-requests`), keep prod equal to it. Context 589824 (= max-model-len; on SGLang it would be ~123K: lower `limits.context`). openai + anthropic protocols, text +
 image. Reasoning: the template maps none/minimal/low/medium/high/xhigh/max to an effort number (default 0.9 = high); there is
 no off switch, so "none" still emits a short thought. Server default is medium (`--default-chat-template-kwargs`); request values override it.
