@@ -1,0 +1,108 @@
+# inkling-2-mini on Basalt (github.com/jesdga95/basalt, MIT): a C++ engine for Blackwell sm_120 with its own Inkling 2
+# Mini path (DSpark drafting, FP8 KV, up to 1M context, least-routed experts spill to page-locked RAM only when a long
+# context needs the room). Laptop RTX 5090 (talos-8me-tcy). Alternative to apps/inkling2-mini-vllm.yaml; both carry
+# app.kubernetes.io/name: inkling-2-mini so the shared Service there routes to whichever runs. Run ONE at a time.
+# ============================================================================================
+# Image: ghcr.io/dbirks/basalt:<release> = upstream release archive on nvidia/cuda:13.0.2-runtime (build/basalt/,
+#   .github/workflows/build-basalt.yaml). Laptop driver R580 (580.178) meets the archive's 580.95 minimum.
+# Pack: apps/inkling2-mini-basalt-weights.yaml (Inkling-2-Mini-NVFP4-q8.basalt, 19.7 GB): the release's NVFP4 experts
+#   bit for bit, layers 20-23 + projections Q8_0, vision + DSpark drafter. Upstream: KLD 0.00305 vs the release.
+# Upstream numbers (5090 @ 400 W, ours is 300 W-class Thunderbolt): conversation 347 tok/s, prose 296, struct 628,
+#   16K prompt 12,310 tok/s; at 1M fp8 context 264 tok/s short chat, 173 at 131K, 108 at 400K (plain decode).
+#
+# Flags and why:
+#   --max-context 1048576 --parallel 2  two slots of 524,288 each (Basalt splits max-context between slots).
+#   --kv fp8                       E4M3 full-attention caches, 16 KiB/token (fp16 is 32). Window layers are fixed rings.
+#   --vision dynamic               the engine's own image encoder.
+#   --reasoning-effort medium      default when a request names none (the template's own default is high).
+#   --allowed-host                 Basalt checks the Host header; the Collective calls the Service DNS name.
+#   CUDA_DISABLE_CONTROL=true      HAMi's in-container allocator cap passthrough (only GPU tenant on the laptop).
+# ============================================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inkling-2-mini-basalt
+  namespace: default
+  labels:
+    app.kubernetes.io/name: inkling-2-mini
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inkling-2-mini
+      app.kubernetes.io/component: basalt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inkling-2-mini
+        app.kubernetes.io/component: basalt
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: main
+          image: ghcr.io/dbirks/basalt:v0.5.5@sha256:7009457f0026840e42200c54ed71d30dc850c29b3213d471602f69c950da4606
+          args:
+            - "/models/Inkling-2-Mini-NVFP4-q8.basalt"
+            - "--alias"
+            - "inkling-2-mini"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--allowed-host"
+            - "inkling-2-mini.default.svc.cluster.local"
+            - "--allowed-host"
+            - "inkling-2-mini"
+            - "--gpu"
+            - "0"
+            - "--max-context"
+            - "1048576"
+            - "--parallel"
+            - "2"
+            - "--kv"
+            - "fp8"
+            - "--vision"
+            - "dynamic"
+            - "--reasoning-effort"
+            - "medium"
+          env:
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+            - { name: CUDA_DISABLE_CONTROL, value: "true" }
+          ports:
+            - containerPort: 8000
+          startupProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 120
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem-percentage: "100", cpu: "6", memory: 24Gi }
+            requests: { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: pack, mountPath: /models, readOnly: true }
+            - { name: home, mountPath: /data }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: pack
+          persistentVolumeClaim:
+            claimName: inkling2-mini-basalt-pack
+            readOnly: true
+        - name: home
+          emptyDir: { sizeLimit: 4Gi }
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 2Gi }
