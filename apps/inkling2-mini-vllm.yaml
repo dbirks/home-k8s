@@ -39,7 +39,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 0                     # 1 once job/inkling2-mini-weights-copy logs "verified" (re-copy after 2026-11-21 PVC prune)
+  replicas: 1                     # LIVE 2026-11-21
   strategy:
     type: Recreate                # one whole-card pod
   selector:
