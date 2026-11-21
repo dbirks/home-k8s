@@ -32,7 +32,14 @@ UUIDFILE="${GPU_WEDGE_UUID_FILE:-$DIR/gpu-uuids.list}"   # expected GPU UUIDs (o
 CONFIRM_SECONDS=120   # wedge must persist this long before we act (skip transients)
 COOLDOWN=1800         # min 30 min between power-cycles (reboot-loop guard)
 POD_NS=${GPU_WEDGE_POD_NS:-default}                  # where the always-on GPU pod lives
-POD=${GPU_WEDGE_POD:-ds/gpu-power-limit}   # privileged + NVIDIA_VISIBLE_DEVICES=all
+POD=${GPU_WEDGE_POD:-}   # default: the gpu-power-limit pod ON $NODE (privileged + NVIDIA_VISIBLE_DEVICES=all)
+# NOT "ds/gpu-power-limit": since the eGPU laptop joined (2026-11-21) that DaemonSet has a pod per GPU
+# node and "exec ds/..." picks any of them, which would report the PRO 6000 as missing.
+if [ -z "$POD" ]; then
+  POD=pod/$(kubectl -n "$POD_NS" get pods -l app=gpu-power-limit --field-selector "spec.nodeName=$NODE" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  [ "$POD" = "pod/" ] && POD=ds/gpu-power-limit   # lookup failed: the query just fails later, never "GPU missing"
+fi
 
 log(){ echo "[$(date -Is)] $*" >>"$LOG"; }
 
