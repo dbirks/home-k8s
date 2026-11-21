@@ -225,6 +225,28 @@ data:
             # Declaring it earns the VISION chip and lets the gateway route
             # image traffic here instead of rejecting it with a 400.
             inputs: [text, image]
+      # Inkling 2 Mini on vLLM, FP8 KV, on the laptop's Thunderbolt RTX 5090 (apps/inkling2-mini-vllm.yaml, talos-8me-tcy),
+      # 2026-11-21. vLLM --max-num-seqs 2 behind it: prod 1 + dev 1. ~274K-token KV pool, so one full 256K request fits
+      # (inkling2-mini skill). Probed live 2026-11-21: /v1/messages works; image input works (red PNG read correctly).
+      # The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number (default 0.9 = high);
+      # there is no off switch, so "none" still thinks briefly. No speculative decoding (vLLM DSpark fails on SM120).
+      - name: inkling-2-mini
+        url: http://inkling-2-mini.default.svc.cluster.local:8000
+        protocols: [openai, anthropic]
+        concurrency: 1         # vLLM max-num-seqs 2 (dev 1)
+        models:
+          - alias: inkling-2-mini
+            model: inkling-2-mini
+            limits:
+              context: 262144   # = vLLM --max-model-len
+            reasoning:
+              levels:
+                - none
+                - low
+                - medium
+                - high
+                - xhigh
+            inputs: [text, image]
       # REMOVED 2026-10-13: iPhone backend (gemma-3n-e4b). The tailscale egress
       # Service `iphone-llm` (apps/iphone-tailnet-egress.yaml) is still in place —
       # re-add a backend block pointing at http://iphone-llm.default.svc.cluster.local:8889

@@ -61,4 +61,11 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
 
 ## Switching engines
 One commit: vLLM `replicas: 0` and rename the SGLang `.hold` to `.yaml` (or the reverse). Both pod templates carry
-`app.kubernetes.io/name=inkling-2-mini`, so the Service follows whichever runs. Collective is not wired yet.
+`app.kubernetes.io/name=inkling-2-mini`, so the Service follows whichever runs.
+
+## Collective
+Model `inkling-2-mini` (backend `inkling-2-mini` in both `apps/llm-collective-contributor*.yaml`), concurrency prod 1 /
+dev 1 = vLLM `--max-num-seqs 2`; if you change max-num-seqs (or switch to SGLang `--max-running-requests`), keep the
+sum equal. Context 262144 (on SGLang it would be ~123K: lower `limits.context`). openai + anthropic protocols, text +
+image. Reasoning: the template maps none/minimal/low/medium/high/xhigh/max to an effort number (default 0.9 = high); there is
+no off switch, so "none" still emits a short thought.
