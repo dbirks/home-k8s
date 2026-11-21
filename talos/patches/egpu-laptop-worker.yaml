@@ -17,7 +17,7 @@ machine:
   install:
     image: factory.talos.dev/metal-installer/3db1175d83c7769336f0461dfd4158894164ea3e07cffa72c90dc56495bbc506:v1.13.12
     diskSelector:
-      wwid: "TODO"          # TODO: the laptop's internal NVMe, from `talosctl get disks --insecure -n <ip>`
+      wwid: eui.335a48304b7463240025384600000001   # Samsung PM981 512GB, serial S3ZHNF0K746324 (read 2026-11-21)
     wipe: false
   kernel:
     modules:
