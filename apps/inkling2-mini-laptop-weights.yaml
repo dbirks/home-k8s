@@ -1,0 +1,112 @@
+# Inkling 2 Mini weights on the eGPU laptop's NVMe (talos-8me-tcy), shared by apps/inkling2-mini-vllm.yaml (live)
+# and apps/inkling2-mini-sglang.yaml.hold. Kept in its own file so holding either engine never prunes the PVC.
+#
+# The copy: a read-only HTTP server over the HDD copy (apps/inkling2-mini-models.yaml, talos-210-73x) and a Job on
+# the laptop that fetches every file and checks SHA256SUMS. Done and verified 2026-11-21; the server is parked at 0.
+# To re-copy: delete the Job and the .verified marker is honoured (it skips verified files), set the server to 1.
+---
+# Laptop-local copy of the weights (NVMe, /var/lib/local-path-provisioner). Bound on first consumer.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inkling2-mini-models-laptop
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 30Gi
+---
+# Read-only HTTP server for the HDD copy, so the laptop pulls 20 GB over the LAN instead of from Hugging Face.
+# Scale to 0 (or delete this block) once the copy Job reports "verified".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inkling2-mini-weights-server
+  namespace: default
+spec:
+  replicas: 1                    # re-copying 2026-11-21 (PVC was pruned by a bad commit); set to 0 once verified
+  selector:
+    matchLabels: { app.kubernetes.io/name: inkling2-mini-weights-server }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: inkling2-mini-weights-server }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: http
+          image: python:3.12-slim
+          command: ["python3", "-I", "-m", "http.server", "8080", "--directory", "/models/inkling-2-mini"]
+          ports: [{ containerPort: 8080 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: inkling2-mini-models-hdd, readOnly: true }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inkling2-mini-weights-server
+  namespace: default
+spec:
+  selector: { app.kubernetes.io/name: inkling2-mini-weights-server }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inkling2-mini-weights-copy
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 10                     # retries while the weights server is still starting
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      containers:
+        - name: copy
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              M=/models/inkling-2-mini
+              SRC=http://inkling2-mini-weights-server.default.svc.cluster.local:8080
+              if [ -f "$M/.verified" ]; then echo "already verified"; exit 0; fi
+              mkdir -p "$M"; cd "$M"
+              python3 -I -c 'import sys,urllib.request; open("SHA256SUMS","wb").write(urllib.request.urlopen(sys.argv[1]+"/SHA256SUMS").read())' "$SRC"
+              # resumable per file: an existing file with the right hash is skipped
+              while read -r sum path; do
+                f=${path#./}
+                if [ -f "$f" ] && echo "$sum  $f" | sha256sum --check --status; then echo "have $f"; continue; fi
+                mkdir -p "$(dirname "$f")"
+                echo "fetch $f"
+                python3 -I -c 'import shutil,sys,urllib.request; shutil.copyfileobj(urllib.request.urlopen(sys.argv[1]), open(sys.argv[2],"wb"), 16<<20)' "$SRC/$f" "$f"
+              done < SHA256SUMS
+              sha256sum --check SHA256SUMS
+              touch .verified && echo verified && ls -l "$M"
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: inkling2-mini-models-laptop }

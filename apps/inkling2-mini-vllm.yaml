@@ -1,0 +1,140 @@
+# inkling-2-mini on vLLM: Thinking Machines Inkling 2 Mini with an FP8 KV cache and 256K context, on the laptop's
+# Thunderbolt RTX 5090 (talos-8me-tcy, 32 GB, SM120). LIVE since 2026-11-21.
+# ============================================================================================
+# Image: vllm/vllm-openai:inkling-2-mini (vLLM PR #69028 pre-release, v0.1.dev25855+g7cb5dae22), pinned by digest.
+# Weights: apps/inkling2-mini-laptop-weights.yaml (native NVFP4 + MXFP8 checkpoint on the laptop NVMe).
+# The tuned SGLang alternative (faster decode, half the context, BF16 KV only) is apps/inkling2-mini-sglang.yaml.hold.
+#
+# Measured 2026-11-21 in a lab pod (same flags):
+#   KV pool 277,039 tokens (FP8) -> one 256K request, or two sessions sharing the pool.
+#   Decode ~158 tok/s 1 stream, ~230 tok/s for 2 streams (115 each), warm. (The first requests after a start are slower.)
+#   Needle-in-haystack PASS at 120K and at 245K (depths 0.15 / 0.4 / 0.8); 245K prefill ~43 s (~5.7K tok/s).
+#   20/20 random 3x3-digit multiplications correct. Prefix cache: a repeated 23.5K-token system prompt reports
+#   23,488 cached tokens, TTFT 3.6 s -> 0.9 s.
+#
+# Flags and why:
+#   --kv-cache-dtype fp8           ~2x the BF16 pool. vLLM's Inkling2 accepts only auto/bfloat16/float16/fp8/fp8_e4m3
+#                                  (nvfp4 etc. are refused for this model).
+#   --max-model-len 262144         fits one full-length request in the 277K pool.
+#   --max-num-seqs 2               two parallel sessions.
+#   --max-num-batched-tokens 2048  SM12x crashes above 2048 batched tokens until vLLM PR #69021 lands.
+#   --gpu-memory-utilization 0.91  0.90 was 0.01 GiB short of one 256K request.
+#   prefix caching                 vLLM default (on); --enable-prompt-tokens-details reports cached_tokens.
+#   NO DSpark                      the drafter dies on SM120 with "no kernel image is available" (same with BF16 KV);
+#                                  vLLM does not list the 5090 as verified. Re-test on a newer image:
+#                                  --speculative-config '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}'
+#   CUDA_DISABLE_CONTROL=true      HAMi's in-container allocator cap otherwise refuses allocations near the top of the card.
+#                                  Safe: this is the only GPU tenant on the laptop.
+# Sampling per the model card: temperature 1.0, top_p 1.0, top_k 0, min_p 0.
+#
+# Collective: not wired yet. To add: a backend for model inkling-2-mini at
+# http://inkling-2-mini.default.svc.cluster.local:8000 in apps/llm-collective-contributor*.yaml, concurrency prod 1 / dev 1.
+# ============================================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inkling-2-mini-vllm
+  namespace: default
+  labels:
+    app.kubernetes.io/name: inkling-2-mini
+spec:
+  replicas: 0                     # 1 once job/inkling2-mini-weights-copy logs "verified" (re-copy after 2026-11-21 PVC prune)
+  strategy:
+    type: Recreate                # one whole-card pod
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inkling-2-mini
+      app.kubernetes.io/component: vllm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inkling-2-mini
+        app.kubernetes.io/component: vllm
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false   # a Service named "vllm" would clash with vLLM's VLLM_PORT env
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: main
+          image: docker.io/vllm/vllm-openai:inkling-2-mini@sha256:c2dc759f5984f69c1e2418c6af7c26eb756f5ed2a8934c768ae1253645d1449e
+          command: ["vllm", "serve"]
+          args:
+            - "/models/inkling-2-mini"
+            - "--served-model-name"
+            - "inkling-2-mini"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--tensor-parallel-size"
+            - "1"
+            - "--kv-cache-dtype"
+            - "fp8"
+            - "--max-model-len"
+            - "262144"
+            - "--max-num-seqs"
+            - "2"
+            - "--max-num-batched-tokens"
+            - "2048"
+            - "--gpu-memory-utilization"
+            - "0.91"
+            - "--reasoning-parser"
+            - "inkling"
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser"
+            - "inkling"
+            - "--enable-prompt-tokens-details"
+          env:
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: TRANSFORMERS_OFFLINE, value: "1" }
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+            - { name: CUDA_DISABLE_CONTROL, value: "true" }   # HAMi allocator passthrough (see header)
+          ports:
+            - containerPort: 8000
+          startupProbe:                   # ~30-80 s to ready in the lab; allow 20 min for JIT on a cold node
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 120
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            # whole 5090 through HAMi; percentage avoids guessing the MiB figure HAMi registers for the card
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem-percentage: "100", cpu: "6", memory: 20Gi }
+            requests: { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: inkling2-mini-models-laptop
+            readOnly: true
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 4Gi }
+---
+# Shared by both engines: routes to whichever inkling-2-mini Deployment is running.
+apiVersion: v1
+kind: Service
+metadata:
+  name: inkling-2-mini
+  namespace: default
+  labels:
+    app.kubernetes.io/name: inkling-2-mini
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: inkling-2-mini
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

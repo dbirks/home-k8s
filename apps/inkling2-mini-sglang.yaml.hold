@@ -1,0 +1,154 @@
+# inkling-2-mini on SGLang: Thinking Machines Inkling 2 Mini, day-0 image, DSpark speculative decoding, BF16 KV,
+# tuned for long context on the laptop's Thunderbolt RTX 5090 (talos-8me-tcy, 32 GB, SM120). HELD 2026-11-21: the
+# live engine is apps/inkling2-mini-vllm.yaml (FP8 KV, 256K). Use this when decode speed matters more than context.
+# ============================================================================================
+# Model: sparse-MoE looped transformer, 26.4B total / 3.4B active, layers 6-17 run 3x (48 layer visits/token),
+# 20 sliding-window (1024) + 4 full-attention layers (= 8 full-attention visits/token, ~32 KiB/token of BF16 KV).
+# Native ModelOpt NVFP4 + MXFP8 checkpoint (~20 GB) with a bundled DSpark drafter. Weights:
+# apps/inkling2-mini-laptop-weights.yaml (laptop NVMe PVC).
+#
+# Image: lmsysorg/sglang:inkling-2-mini (SGLang PR #51926), pinned by digest 2026-11-21.
+#
+# Measured 2026-11-21 (lab pod, our bench: 800-token stories, needle-in-haystack, 23K shared system prompt):
+#   cookbook recipe (ctx 32768, 4 running, default mem): 49K-token KV pool, 172 tok/s 1 stream, 263 tok/s for 2.
+#   THIS config (0.85 mem, no prefill graphs, swa 0.05): 123K-token pool (speed measured at 0.82: 176 tok/s 1 stream, 283 for 2);
+#     needle PASS at 120K, and two 59K sessions in parallel both PASS; prefix cache reuses 23.4K of 23.5K tokens.
+#   0.88 also passed (141K pool, 138K needle); 0.91 OOMs at warmup; text-only (no --enable-multimodal) adds ~14K.
+#
+# What does NOT work here (SGLang, SM120), so do not retry without a new image:
+#   --kv-cache-dtype fp8_e4m3 / fp8_e5m2  FA4 on SM120 has no FP8 path (prefill: "q.dtype bfloat16 != k.dtype fp8").
+#   --kv-cache-dtype mxfp8                "FP8 is only supported on SM100 for FA4 CuTe".
+#   --attention-backend triton            Inkling2 attention asserts FA4 ("Inkling2 requires FA4 attention"); the
+#                                         DSpark drafter also requires FA4 draft attention.
+#   --inkling2-loop-share-cache / --inkling2-loop-num-passes  need loop_config.is_varloop=true; this checkpoint is false
+#                                         (only thinkingmachines/TML-d24-varloop-research has it).
+#   prefill CUDA graphs at mem >= 0.86    capture OOMs. They are off here: costs nothing measurable on decode.
+#
+# Flags beyond the cookbook and why:
+#   --mem-fraction-static 0.85      KV pool 2.5x the default. The default left ~6 GB idle.
+#   --swa-full-tokens-ratio 0.05    40 of 48 visits are sliding-window (~160 KiB/token); each live request only needs its
+#                                   last 1024 tokens + a prefill chunk, so a small SWA pool frees GB for full-attn KV.
+#   --cuda-graph-backend-prefill disabled, --chunked-prefill-size 2048   the activation headroom that lets 0.85 fit.
+#   --context-length 262144         one request may use the whole pool (~123K); SGLang rejects anything longer.
+#   --max-running-requests 2        two parallel sessions.
+#   CUDA_DISABLE_CONTROL=true       HAMi's in-container allocator cap otherwise refuses allocations near the top of
+#                                   the card. Safe: this is the only GPU tenant on the laptop.
+#
+# Switch to this engine: set apps/inkling2-mini-vllm.yaml replicas to 0 and rename this file to .yaml in ONE commit.
+# Its pods carry app.kubernetes.io/name=inkling-2-mini, so the Service in the vLLM file routes to whichever runs.
+# ============================================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inkling-2-mini-sglang
+  namespace: default
+  labels:
+    app.kubernetes.io/name: inkling-2-mini
+spec:
+  replicas: 1                     # held file; see the switch note above
+  strategy:
+    type: Recreate                # one whole-card pod
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inkling-2-mini
+      app.kubernetes.io/component: sglang
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inkling-2-mini
+        app.kubernetes.io/component: sglang
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: main
+          image: docker.io/lmsysorg/sglang:inkling-2-mini@sha256:efac853b46811ccb760545b7b29e7119bdf907537ccf6e863fac3011fe8b98de
+          command: ["sglang", "serve"]       # as the cookbook recipe
+          args:
+            - "--model-path"
+            - "/models/inkling-2-mini"
+            - "--served-model-name"
+            - "inkling-2-mini"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--tp"
+            - "1"
+            - "--ep"
+            - "1"
+            - "--attention-backend"
+            - "fa4"
+            - "--dtype"
+            - "bfloat16"
+            - "--page-size"
+            - "128"
+            - "--speculative-algorithm"
+            - "DSPARK"                    # drafter = the bundled mtp.safetensors (mtp_config in config.json)
+            - "--speculative-num-draft-tokens"
+            - "8"
+            - "--context-length"
+            - "262144"
+            - "--max-running-requests"
+            - "2"
+            - "--mem-fraction-static"
+            - "0.85"
+            - "--swa-full-tokens-ratio"
+            - "0.05"
+            - "--cuda-graph-backend-prefill"
+            - "disabled"
+            - "--chunked-prefill-size"
+            - "2048"
+            - "--grammar-backend"
+            - "xgrammar"
+            - "--enable-multimodal"
+            - "--reasoning-parser"
+            - "inkling"
+            - "--tool-call-parser"
+            - "inkling2"
+            - "--enable-metrics"
+            - "--enable-cache-report"
+            - "--watchdog-timeout"
+            - "1800"
+          env:
+            - { name: SGLANG_OPT_INKLING2_VERIFY_REL_BIAS_KERNEL, value: "1" }
+            - { name: SGLANG_OPT_DSV41_DSPARK_MID_FOLD, value: "1" }
+            - { name: SGLANG_OPT_DSV41_DSPARK_PREPARE_INPUTS_ONCE, value: "1" }
+            - { name: SGLANG_OPT_DSV41_DSPARK_SKIP_PREFILLED_INPUTS, value: "1" }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: TRANSFORMERS_OFFLINE, value: "1" }
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+            - { name: CUDA_DISABLE_CONTROL, value: "true" }   # HAMi allocator passthrough (see header)
+          ports:
+            - containerPort: 8000
+          startupProbe:                   # 20 GB off NVMe is quick; FA4/kernel JIT + CUDA graphs are the long part
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 10            # /health runs a 1-token generate
+            failureThreshold: 180
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            # whole 5090 through HAMi; percentage avoids guessing the MiB figure HAMi registers for the card
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem-percentage: "100", cpu: "6", memory: 20Gi }
+            requests: { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: inkling2-mini-models-laptop
+            readOnly: true
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 4Gi }
