@@ -80,8 +80,8 @@ One commit: vLLM `replicas: 0` and rename the SGLang `.hold` to `.yaml` (or the 
 `app.kubernetes.io/name=inkling-2-mini`, so the Service follows whichever runs.
 
 ## Collective
-PARKED 2026-11-21 (block commented out while tuning; uncomment to re-add). Model `inkling-2-mini` (backend `inkling-2-mini` in both `apps/llm-collective-contributor*.yaml`), concurrency prod 4 =
-vLLM `--max-num-seqs 4`, dev 1 on top (dev is rarely used; vLLM queues any overflow). If you change max-num-seqs (or
+Model `inkling-2-mini` (backend `inkling-2-mini` in both `apps/llm-collective-contributor*.yaml`), concurrency prod 2 =
+vLLM `--max-num-seqs 2`, dev 1 on top (dev is rarely used; vLLM queues any overflow). If you change max-num-seqs (or
 switch to SGLang `--max-running-requests`), keep prod equal to it. Context 262144 (on SGLang it would be ~123K: lower `limits.context`). openai + anthropic protocols, text +
 image. Reasoning: the template maps none/minimal/low/medium/high/xhigh/max to an effort number (default 0.9 = high); there is
 no off switch, so "none" still emits a short thought. Server default is medium (`--default-chat-template-kwargs`); request values override it.

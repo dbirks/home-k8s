@@ -21,7 +21,8 @@
 #   --speculative-config dspark 7  the bundled drafter (mtp.safetensors); draft KV stays BF16 on SM12 (forced by vLLM).
 #   --kv-cache-dtype fp8           ~2x the BF16 pool. vLLM's Inkling2 accepts only auto/bfloat16/float16/fp8/fp8_e4m3.
 #   --max-model-len 262144         one full-length request fits.
-#   --max-num-seqs 4               four parallel sessions share one pool (they only use memory for what they hold).
+#   --max-num-seqs 2               two parallel sessions share one pool (4 also works: ~620 tok/s code aggregate, but each
+#                                  long session gets less of the 314K pool; chosen 2026-11-21).
 #   --max-num-batched-tokens 1024  smaller prefill chunks shrink the activation + SWA reservation; with 2048 the
 #                                  drafter + 256K did not fit (177K max). Also stays under the SM12x shared-memory limit
 #                                  that PR #69021 fixes (>= 2048 batched tokens).
@@ -35,7 +36,7 @@
 #                                  Safe: this is the only GPU tenant on the laptop.
 # Sampling per the model card: temperature 1.0, top_p 1.0, top_k 0, min_p 0.
 #
-# Collective: model inkling-2-mini in apps/llm-collective-contributor*.yaml, prod 4 (= max-num-seqs), dev 1.
+# Collective: model inkling-2-mini in apps/llm-collective-contributor*.yaml, prod 2 (= max-num-seqs), dev 1.
 # ============================================================================================
 ---
 apiVersion: apps/v1
@@ -95,7 +96,7 @@ spec:
             - "--max-model-len"
             - "262144"
             - "--max-num-seqs"
-            - "4"
+            - "2"
             - "--max-num-batched-tokens"
             - "1024"
             - "--speculative-config"
