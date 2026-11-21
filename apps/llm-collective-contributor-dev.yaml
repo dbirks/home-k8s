@@ -99,15 +99,15 @@ data:
             # Declaring it earns the VISION chip and lets the gateway route
             # image traffic here instead of rejecting it with a 400.
             inputs: [text, image]
-      # Inkling 2 Mini on vLLM, FP8 KV, on the laptop's Thunderbolt RTX 5090 (apps/inkling2-mini-vllm.yaml, talos-8me-tcy),
-      # 2026-11-21. vLLM --max-num-seqs 2 behind it: prod 2, dev 1 (dev is rarely used). ~274K-token KV pool, so one full 256K request fits
-      # (inkling2-mini skill). Probed live 2026-11-21: /v1/messages works; image input works (red PNG read correctly).
-      # The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number (default 0.9 = high);
-      # there is no off switch, so "none" still thinks briefly. No speculative decoding (vLLM DSpark fails on SM120).
+      # Inkling 2 Mini on vLLM with DSpark, FP8 KV, on the laptop's Thunderbolt RTX 5090 (apps/inkling2-mini-vllm.yaml,
+      # talos-8me-tcy), 2026-11-21. vLLM --max-num-seqs 4 behind it: prod 4, dev 1 (dev is rarely used). ~314K-token
+      # shared KV pool, so one full 256K request fits (inkling2-mini skill). Probed live 2026-11-21: /v1/messages works;
+      # image input works. The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number
+      # (default 0.9 = high); there is no off switch, so "none" still thinks briefly.
       - name: inkling-2-mini
         url: http://inkling-2-mini.default.svc.cluster.local:8000
         protocols: [openai, anthropic]
-        concurrency: 1         # prod has 2 = vLLM max-num-seqs; overflow queues in vLLM
+        concurrency: 1         # prod has 4 = vLLM max-num-seqs; overflow queues in vLLM
         models:
           - alias: inkling-2-mini
             model: inkling-2-mini

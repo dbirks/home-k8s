@@ -1,34 +1,38 @@
-# inkling-2-mini on vLLM: Thinking Machines Inkling 2 Mini with an FP8 KV cache and 256K context, on the laptop's
-# Thunderbolt RTX 5090 (talos-8me-tcy, 32 GB, SM120). LIVE since 2026-11-21.
+# inkling-2-mini on vLLM: Thinking Machines Inkling 2 Mini with DSpark speculative decoding, an FP8 KV cache and 256K
+# context, on the laptop's Thunderbolt RTX 5090 (talos-8me-tcy, 32 GB, SM120). LIVE since 2026-11-21.
 # ============================================================================================
-# Image: vllm/vllm-openai:inkling-2-mini (vLLM PR #69028 pre-release, v0.1.dev25855+g7cb5dae22), pinned by digest.
+# Image: vllm/vllm-openai:inkling-2-mini (vLLM PR #69028 pre-release, v0.1.dev25855+g7cb5dae22), pinned by digest,
+# plus vLLM PR #69096 applied at container start (ConfigMap inkling2-mini-vllm-patches below, PR head 6fab5385).
 # Weights: apps/inkling2-mini-laptop-weights.yaml (native NVFP4 + MXFP8 checkpoint on the laptop NVMe).
-# The tuned SGLang alternative (faster decode, half the context, BF16 KV only) is apps/inkling2-mini-sglang.yaml.hold.
+# The tuned SGLang alternative (BF16 KV only, ~123K) is apps/inkling2-mini-sglang.yaml.hold.
 #
-# Measured 2026-11-21 in a lab pod (same flags):
-#   KV pool 277,039 tokens (FP8) -> one 256K request, or two sessions sharing the pool.
-#   Decode ~158 tok/s 1 stream, ~230 tok/s for 2 streams (115 each), warm. (The first requests after a start are slower.)
-#   Needle-in-haystack PASS at 120K and at 245K (depths 0.15 / 0.4 / 0.8); 245K prefill ~43 s (~5.7K tok/s).
-#   20/20 random 3x3-digit multiplications correct. Prefix cache: a repeated 23.5K-token system prompt reports
-#   23,488 cached tokens, TTFT 3.6 s -> 0.9 s.
+# Why the patch: the image is compiled for sm_100/sm_103 only, and the DSpark drafter's KV write calls
+# reshape_and_cache_flash, which has no SM120 kernel ("no kernel image is available", vLLM issue #69081). #69096
+# replaces that write with a Triton kernel (Python only). Drop the patch (and this command wrapper) once an image
+# containing #69096 is pinned; the start fails loudly if the diff stops applying.
+#
+# Measured 2026-11-21 in a lab pod (same flags, warm; recipe borrowed from github.com/mxfp0/Inkling-2-Mini-RTX-5090):
+#   KV pool 313,818 tokens (FP8) -> one 256K request with room to spare, 4 sessions sharing the pool.
+#   Code: ~244 tok/s 1 stream, ~340 for 2, ~620 for 4.  Prose: ~151 tok/s 1 stream, ~265 for 2, ~440 for 4.
+#   (No drafter, same card: ~158 tok/s 1 stream, ~233 for 2, 274K pool.) DSpark acceptance ~2.8 on code, ~1.85 prose.
+#   Needle PASS at 250K (prefill ~54 s). Math correct. Prefix cache: 23,424 of 23,539 tokens cached, TTFT 3.0 s -> 0.4 s.
 #
 # Flags and why:
-#   --kv-cache-dtype fp8           ~2x the BF16 pool. vLLM's Inkling2 accepts only auto/bfloat16/float16/fp8/fp8_e4m3
-#                                  (nvfp4 etc. are refused for this model).
-#   --max-model-len 262144         fits one full-length request in the 277K pool.
-#   --max-num-seqs 2               two parallel sessions.
-#   --max-num-batched-tokens 2048  SM12x crashes above 2048 batched tokens until vLLM PR #69021 lands.
-#   --gpu-memory-utilization 0.91  0.90 was 0.01 GiB short of one 256K request.
+#   --speculative-config dspark 7  the bundled drafter (mtp.safetensors); draft KV stays BF16 on SM12 (forced by vLLM).
+#   --kv-cache-dtype fp8           ~2x the BF16 pool. vLLM's Inkling2 accepts only auto/bfloat16/float16/fp8/fp8_e4m3.
+#   --max-model-len 262144         one full-length request fits.
+#   --max-num-seqs 4               four parallel sessions share one pool (they only use memory for what they hold).
+#   --max-num-batched-tokens 1024  smaller prefill chunks shrink the activation + SWA reservation; with 2048 the
+#                                  drafter + 256K did not fit (177K max). Also stays under the SM12x shared-memory limit
+#                                  that PR #69021 fixes (>= 2048 batched tokens).
+#   NO --gpu-memory-utilization    vLLM's extensible KV cache is then sized from what is free after warmup and CUDA graph
+#                                  capture (11.6 GiB here vs 8.7 at 0.91). Startup takes ~4 min.
 #   prefix caching                 vLLM default (on); --enable-prompt-tokens-details reports cached_tokens.
-#   NO DSpark                      the drafter dies on SM120 with "no kernel image is available" (same with BF16 KV);
-#                                  vLLM does not list the 5090 as verified. Re-test on a newer image:
-#                                  --speculative-config '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}'
 #   CUDA_DISABLE_CONTROL=true      HAMi's in-container allocator cap otherwise refuses allocations near the top of the card.
 #                                  Safe: this is the only GPU tenant on the laptop.
 # Sampling per the model card: temperature 1.0, top_p 1.0, top_k 0, min_p 0.
 #
-# Collective: not wired yet. To add: a backend for model inkling-2-mini at
-# http://inkling-2-mini.default.svc.cluster.local:8000 in apps/llm-collective-contributor*.yaml, concurrency prod 1 / dev 1.
+# Collective: model inkling-2-mini in apps/llm-collective-contributor*.yaml, prod 4 (= max-num-seqs), dev 1.
 # ============================================================================================
 ---
 apiVersion: apps/v1
@@ -39,7 +43,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 0                     # PAUSED 2026-11-21: lab test of DSpark + extensible KV (mxfp0 recipe); set back to 1
+  replicas: 1                     # LIVE 2026-11-21
   strategy:
     type: Recreate                # one whole-card pod
   selector:
@@ -59,7 +63,20 @@ spec:
       containers:
         - name: main
           image: docker.io/vllm/vllm-openai:inkling-2-mini@sha256:c2dc759f5984f69c1e2418c6af7c26eb756f5ed2a8934c768ae1253645d1449e
-          command: ["vllm", "serve"]
+          # Apply vLLM PR #69096 to the image's site-packages, then exec vllm serve with the args below.
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              cd /usr/local/lib/python3.14/dist-packages
+              if patch -p1 -R --dry-run --silent < /patches/pr69096.diff >/dev/null 2>&1; then
+                echo "PR #69096 already applied"
+              else
+                patch -p1 --forward < /patches/pr69096.diff
+              fi
+              exec vllm serve "$@"
+            - vllm-serve
           args:
             - "/models/inkling-2-mini"
             - "--served-model-name"
@@ -75,11 +92,11 @@ spec:
             - "--max-model-len"
             - "262144"
             - "--max-num-seqs"
-            - "2"
+            - "4"
             - "--max-num-batched-tokens"
-            - "2048"
-            - "--gpu-memory-utilization"
-            - "0.91"
+            - "1024"
+            - "--speculative-config"
+            - '{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"probabilistic"}'
             - "--reasoning-parser"
             - "inkling"
             - "--enable-auto-tool-choice"
@@ -93,7 +110,7 @@ spec:
             - { name: CUDA_DISABLE_CONTROL, value: "true" }   # HAMi allocator passthrough (see header)
           ports:
             - containerPort: 8000
-          startupProbe:                   # ~30-80 s to ready in the lab; allow 20 min for JIT on a cold node
+          startupProbe:                   # ~4 min to ready in the lab (extensible KV sizing); allow 20 min on a cold node
             httpGet: { path: /health, port: 8000 }
             periodSeconds: 10
             timeoutSeconds: 5
@@ -114,6 +131,7 @@ spec:
           volumeMounts:
             - { name: models, mountPath: /models, readOnly: true }
             - { name: dshm, mountPath: /dev/shm }
+            - { name: patches, mountPath: /patches, readOnly: true }
       volumes:
         - name: models
           persistentVolumeClaim:
@@ -121,6 +139,8 @@ spec:
             readOnly: true
         - name: dshm
           emptyDir: { medium: Memory, sizeLimit: 4Gi }
+        - name: patches
+          configMap: { name: inkling2-mini-vllm-patches }
 ---
 # Shared by both engines: routes to whichever inkling-2-mini Deployment is running.
 apiVersion: v1
@@ -138,3 +158,64 @@ spec:
     - name: http
       port: 8000
       targetPort: 8000
+---
+# vLLM PR #69096 (vllm/ files only): DSpark KV write without reshape_and_cache_flash, so the drafter runs on SM120.
+apiVersion: v1
+data:
+  pr69096.diff: "diff --git a/vllm/models/inkling2/nvidia/dspark.py b/vllm/models/inkling2/nvidia/dspark.py\nindex
+    6e1755a18b4a..59860b25d3e2 100644\n--- a/vllm/models/inkling2/nvidia/dspark.py\n+++
+    b/vllm/models/inkling2/nvidia/dspark.py\n@@ -28,6 +28,7 @@\n )\n from vllm.model_executor.layers.rotary_embedding
+    import get_rope\n from vllm.model_executor.model_loader.weight_utils import default_weight_loader\n+from
+    vllm.platforms import current_platform\n from vllm.utils.torch_utils import canonicalize_singleton_dim_strides\n
+    from vllm.v1.attention.backends.flash_attn import (\n     FlashAttentionBackend,\n@@
+    -46,6 +47,7 @@\n     qk_norm_rope_,\n     rope_,\n     silu_and_mul,\n+    write_kv_paged,\n
+    )\n from .ops.linear import linear\n \n@@ -189,7 +191,16 @@ def _write_kv(\n         self,
+    k: torch.Tensor, v: torch.Tensor, slot_mapping: torch.Tensor\n     ) -> None:\n
+    \        impl = cast(FlashAttentionImpl, self.attn.impl)\n-        impl.do_kv_cache_update(self.attn,
+    k, v, self.attn.kv_cache, slot_mapping)\n+        cache = self.attn.kv_cache\n+
+    \       if (\n+            current_platform.is_device_capability_family(120)\n+
+    \           and impl.kv_cache_dtype == \"auto\"\n+            and cache.dtype
+    == k.dtype == v.dtype\n+        ):\n+            key_cache, value_cache = cache.transpose(1,
+    2).split(self.head_dim, dim=-1)\n+            write_kv_paged(k, v, key_cache,
+    value_cache, slot_mapping)\n+            return\n+        impl.do_kv_cache_update(self.attn,
+    k, v, cache, slot_mapping)\n \n     def forward(\n         self, positions: torch.Tensor,
+    x: torch.Tensor, cos_sin_cache: torch.Tensor\ndiff --git a/vllm/models/inkling2/nvidia/ops/dspark.py
+    b/vllm/models/inkling2/nvidia/ops/dspark.py\nindex 293c39f6353b..233659ae4e5a
+    100644\n--- a/vllm/models/inkling2/nvidia/ops/dspark.py\n+++ b/vllm/models/inkling2/nvidia/ops/dspark.py\n@@
+    -7,6 +7,102 @@\n from vllm.triton_utils import tl, tldevice, triton\n \n \n+@triton.jit\n+def
+    _write_kv_kernel(\n+    K,\n+    V,\n+    KEY_CACHE,\n+    VALUE_CACHE,\n+    SLOT_MAPPING,\n+
+    \   K_TOKEN_STRIDE,\n+    K_HEAD_STRIDE,\n+    V_TOKEN_STRIDE,\n+    V_HEAD_STRIDE,\n+
+    \   KC_BLOCK_STRIDE,\n+    KC_PAGE_STRIDE,\n+    KC_HEAD_STRIDE,\n+    VC_BLOCK_STRIDE,\n+
+    \   VC_PAGE_STRIDE,\n+    VC_HEAD_STRIDE,\n+    PAGE: tl.constexpr,\n+    HEAD_DIM:
+    tl.constexpr,\n+    BLOCK_DIM: tl.constexpr,\n+):\n+    token = tl.program_id(0)\n+
+    \   head = tl.program_id(1)\n+    slot = tl.load(SLOT_MAPPING + token).to(tl.int64)\n+
+    \   if slot < 0:\n+        return\n+\n+    block = slot // PAGE\n+    offset =
+    slot % PAGE\n+    dim = tl.arange(0, BLOCK_DIM)\n+    mask = dim < HEAD_DIM\n+\n+
+    \   k_src = K + token * K_TOKEN_STRIDE + head * K_HEAD_STRIDE + dim\n+    v_src
+    = V + token * V_TOKEN_STRIDE + head * V_HEAD_STRIDE + dim\n+    k_dst = (\n+        KEY_CACHE\n+
+    \       + block * KC_BLOCK_STRIDE\n+        + offset * KC_PAGE_STRIDE\n+        +
+    head * KC_HEAD_STRIDE\n+        + dim\n+    )\n+    v_dst = (\n+        VALUE_CACHE\n+
+    \       + block * VC_BLOCK_STRIDE\n+        + offset * VC_PAGE_STRIDE\n+        +
+    head * VC_HEAD_STRIDE\n+        + dim\n+    )\n+    tl.store(k_dst, tl.load(k_src,
+    mask=mask), mask=mask)\n+    tl.store(v_dst, tl.load(v_src, mask=mask), mask=mask)\n+\n+\n+def
+    write_kv_paged(\n+    k: torch.Tensor,\n+    v: torch.Tensor,\n+    key_cache:
+    torch.Tensor,\n+    value_cache: torch.Tensor,\n+    slot_mapping: torch.Tensor,\n+)
+    -> None:\n+    \"\"\"Scatter K/V into a FlashAttention paged cache, skipping padding
+    slots.\n+\n+    The inputs use `(tokens, heads, head_dim)` and the caches use\n+
+    \   `(blocks, page, heads, head_dim)`. One program handles one token/head pair.\n+
+    \   \"\"\"\n+    num_tokens = slot_mapping.numel()\n+    num_heads, head_dim =
+    k.shape[1], k.shape[2]\n+    if num_tokens == 0 or num_heads == 0:\n+        return\n+
+    \   assert k.shape == v.shape\n+    assert k.stride(2) == v.stride(2) == 1\n+
+    \   assert key_cache.stride(3) == value_cache.stride(3) == 1\n+    assert key_cache.shape[1]
+    == value_cache.shape[1]\n+    assert key_cache.shape[2] == value_cache.shape[2]
+    == num_heads\n+\n+    _write_kv_kernel[(num_tokens, num_heads)](\n+        k,\n+
+    \       v,\n+        key_cache,\n+        value_cache,\n+        slot_mapping,\n+
+    \       k.stride(0),\n+        k.stride(1),\n+        v.stride(0),\n+        v.stride(1),\n+
+    \       key_cache.stride(0),\n+        key_cache.stride(1),\n+        key_cache.stride(2),\n+
+    \       value_cache.stride(0),\n+        value_cache.stride(1),\n+        value_cache.stride(2),\n+
+    \       PAGE=key_cache.shape[1],\n+        HEAD_DIM=head_dim,\n+        BLOCK_DIM=triton.next_power_of_2(head_dim),\n+
+    \   )\n+\n+\n @triton.jit\n def _mix_rmsnorm_kernel(\n     X,\n"
+kind: ConfigMap
+metadata:
+  name: inkling2-mini-vllm-patches
+  namespace: default
