@@ -1,0 +1,95 @@
+# Inkling 2 Mini weights for the laptop + Thunderbolt RTX 5090 node (apps/inkling2-mini-sglang.yaml.hold).
+# Staging only: no GPU is touched.
+#
+#   /models/inkling-2-mini/   thinkingmachines/Inkling-2-Mini @ ed40e7da (20.2 GB, Apache-2.0)
+#
+# This is the NATIVE checkpoint, which is what SGLang serves: Thinking Machines trained and shipped it as
+# ModelOpt NVFP4 (routed experts, layers 0-19) + MXFP8 (layers 20-23), the rest BF16. There is no separate
+# "NVFP4 version" to pick. The DSpark speculative-decoding drafter is bundled in the same repo as
+# mtp.safetensors (3 layers, block size 8; mtp_config in config.json), so it is downloaded here too.
+# GGUFs (ggml-org / unsloth) are llama.cpp-only and deliberately not staged.
+#
+# It lands on talos-210-73x's HDD because the laptop is not in the cluster yet. Once the laptop joins, the
+# weights-to-laptop step in apps/inkling2-mini-sglang.yaml.hold copies them over the LAN onto its NVMe.
+# Standalone PVC so retiring this Job never prunes the weights. LFS sha256 from the HF API; the small files
+# were hashed from the pinned revision, 2026-11-21.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inkling2-mini-models-hdd
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path-hdd
+  resources:
+    requests:
+      storage: 30Gi             # 20.2 GB + slack; local-path does not enforce it
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inkling2-mini-models-download
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }   # the HDD
+      containers:
+        - name: dl
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              REV=ed40e7da625f594fc9c4990f5f66be24873c22d7
+              M=/models/inkling-2-mini
+              MARK=/models/.verified-$REV
+              if [ -f "$MARK" ]; then echo "already verified"; ls -l "$M"; exit 0; fi
+              pip install -q -U "huggingface_hub[cli]"
+              mkdir -p "$M.dl"
+              # resumable: a restarted pod picks up the partial files in $M.dl
+              hf download thinkingmachines/Inkling-2-Mini --revision "$REV" --local-dir "$M.dl" \
+                model-00001-of-00001.safetensors mtp.safetensors model.safetensors.index.json \
+                config.json generation_config.json hf_quant_config.json chat_template.jinja \
+                processor_config.json special_tokens_map.json tokenizer.json tokenizer_config.json \
+                tiktoken/tokenizer.model README.md
+              (cd "$M.dl" && sha256sum --check <<'SUMS'
+              65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1  model-00001-of-00001.safetensors
+              7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2  mtp.safetensors
+              c1631065b7b00787993522dddc66a68b3abee869192977fb3dcb796e63bc5838  model.safetensors.index.json
+              a7a349601f0984c4abf999c480ef775d8567d21f5f84b4e8a3e035b44f288dc2  config.json
+              a08737c07a65a8fdf69f7cf086576210e5aad4b241437090b26d7b0c4f7905f7  generation_config.json
+              7c656207d3ce37879c7be209a036b0dde43bf01f78159bff06880b868ed57143  hf_quant_config.json
+              53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc  chat_template.jinja
+              d7350adce18c8be4b607f261c8f0f7eabbf720bb7aaf648a43d4f8372bbacc2d  processor_config.json
+              c16f44b3594563d82743ddb0417a2be1bfe3e2000dfad2da4b8f32554593e1a0  special_tokens_map.json
+              7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6  tokenizer.json
+              bf09342d285139fd37ce10c70878af1d52cb390e9901e10248654293a80ee636  tokenizer_config.json
+              f170372dd655728909228220d77cf6b8104a59f38a91262a7d2c4027906ec0d8  tiktoken/tokenizer.model
+              02f4cd9085aebde693ba95bfefca487eb6c098fccce6fe826fd8e90dfac56034  README.md
+              SUMS
+              )
+              # the manifest the laptop copy step verifies against
+              (cd "$M.dl" && find . -type f ! -path './.cache/*' ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+              rm -rf "$M.dl/.cache" "$M" /models/.hf-home && mv "$M.dl" "$M"
+              touch "$MARK" && ls -l "$M" && df -h /models
+          env:
+            - { name: HF_HUB_DISABLE_TELEMETRY, value: "1" }
+            - { name: HF_HUB_ENABLE_HF_TRANSFER, value: "0" }
+            - { name: HF_XET_HIGH_PERFORMANCE, value: "1" }        # unauthenticated + default xet ran at 2-6 MiB/s
+            - { name: HF_HOME, value: /models/.hf-home }            # xet chunk cache survives a pod restart
+            - name: HF_TOKEN                                       # authenticated rate limits; read-only token
+              valueFrom: { secretKeyRef: { name: hf-token, key: HF_TOKEN } }
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: inkling2-mini-models-hdd }
