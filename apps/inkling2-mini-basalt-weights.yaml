@@ -1,0 +1,53 @@
+# Basalt's Inkling 2 Mini pack (jesdga/Inkling-2-Mini-Basalt, Inkling-2-Mini-NVFP4-q8.basalt, 19.7 GB, Apache-2.0
+# weights) on the eGPU laptop's NVMe (talos-8me-tcy), for apps/inkling2-mini-basalt.yaml. Own file so holding the
+# engine never prunes the PVC. The Job pulls straight from Hugging Face (public, no token), resumable, and checks the
+# LFS sha256; a .verified marker makes re-runs a no-op.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inkling2-mini-basalt-pack
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 25Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inkling2-mini-basalt-pack-download
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      containers:
+        - name: download
+          image: curlimages/curl:8.11.1
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              cd /models
+              F=Inkling-2-Mini-NVFP4-q8.basalt
+              SUM=f7b4e5f8e17681c4735a7dfc51ffd8e805c44184fad4e1778b13187d79dc3787
+              if [ -f .verified ]; then echo "already verified"; exit 0; fi
+              curl -fL --retry 20 --retry-all-errors -C - -o "$F" \
+                "https://huggingface.co/jesdga/Inkling-2-Mini-Basalt/resolve/main/$F"
+              echo "$SUM  $F" | sha256sum -c -
+              touch .verified && echo verified && ls -l
+          resources:
+            requests: { cpu: 200m, memory: 64Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: pack, mountPath: /models }
+      volumes:
+        - name: pack
+          persistentVolumeClaim: { claimName: inkling2-mini-basalt-pack }
