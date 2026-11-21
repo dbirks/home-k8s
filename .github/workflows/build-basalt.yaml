@@ -1,0 +1,38 @@
+name: build-basalt
+
+# Basalt inference engine image (build/basalt/Dockerfile): upstream release archive on the CUDA 13.0 runtime.
+# Manual trigger only. Usage: gh workflow run build-basalt.yaml -f version=v0.5.5 -f sha256=<archive sha256>
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Basalt release tag (github.com/jesdga95/basalt/releases)"
+        default: "v0.5.5"
+        required: true
+      sha256:
+        description: "sha256 of basalt-<version>-linux-x64.tar.gz"
+        default: "89da792322248de80d9866dea87f2869fe595ed8311008572405fd3cea5b9c08"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build
+        run: |
+          docker build --build-arg BASALT_VERSION=${{ inputs.version }} --build-arg BASALT_SHA256=${{ inputs.sha256 }} \
+            -t ghcr.io/dbirks/basalt:${{ inputs.version }} build/basalt
+          docker history --format '{{.Size}}\t{{.CreatedBy}}' ghcr.io/dbirks/basalt:${{ inputs.version }} | head -4
+
+      - name: Push to GHCR
+        run: |
+          docker push ghcr.io/dbirks/basalt:${{ inputs.version }}
+          docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/dbirks/basalt:${{ inputs.version }}
