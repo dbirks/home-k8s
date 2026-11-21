@@ -156,7 +156,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 1                     # LIVE 2026-11-21: weights copied + verified on talos-8me-tcy
+  replicas: 0                     # PAUSED 2026-11-21 for KV/context experiments in a lab pod; baseline was LIVE + passing
   strategy:
     type: Recreate                # one whole-card pod
   selector:
