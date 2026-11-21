@@ -50,7 +50,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 1                     # LIVE 2026-11-21
+  replicas: 0                     # PAUSED 2026-11-21 for the Basalt lab (apps/inkling2-mini-basalt.yaml)
   strategy:
     type: Recreate                # one whole-card pod
   selector:
