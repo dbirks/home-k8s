@@ -1,0 +1,269 @@
+# inkling-2-mini: Thinking Machines Inkling 2 Mini on SGLang (day-0 image) with DSpark speculative decoding,
+# on the laptop + Thunderbolt RTX 5090 eGPU node (32 GB, SM120). STAGED, not live: rename to .yaml to deploy.
+# ============================================================================================
+# Model: sparse-MoE looped transformer, 26.4B total / 3.4B active (5.4B effective: core layers 6-17 run 3x),
+# 128 experts top-8, 20 sliding-window (1024) + 4 full-attention layers, text+image in, 1M-token positions.
+# Shipped natively as ModelOpt NVFP4 (experts, layers 0-19) + MXFP8 (layers 20-23), ~20 GB, with a bundled
+# 3-layer DSpark drafter (mtp.safetensors). Weights: apps/inkling2-mini-models.yaml (HDD on talos-210-73x),
+# copied onto the laptop's NVMe by the weights-to-laptop step below.
+#
+# Image: lmsysorg/sglang:inkling-2-mini (SGLang PR #51926, unreleased day-0 build), pinned by index digest
+# 2026-11-21. The cookbook names this same image for rtx5090 and rtxpro6000.
+#
+# Flags: SGLang cookbook "rtx5090 / nvfp4 / dspark", marked verified (sgl-project/sglang PR #51927,
+# python/sglang/cli/_commands/thinkingmachines--Inkling-2-Mini.json):
+#   tp 1 / ep 1        NVFP4 experts cannot be TP-sharded; keep EP = TP.
+#   fa4 attention      as the recipe. (The GB300/H200 recipes add --bf16-gemm-backend torch; the 5090 one does not.)
+#   page-size 128      as the recipe.
+#   DSPARK, 8 drafts   the bundled drafter's block size. DSpark needs the checkpoint's default 3 loop passes,
+#                      so do NOT add --inkling2-num-passes or the loop-share-cache knob with it.
+#   context 32768,     the recipe's DSpark limits on 32 GB: 48 KV + 48 conv caches per token (one per layer visit)
+#   max-running 4      make KV the binding constraint. The "balanced" recipe (no DSpark) runs 65536 instead.
+#   4 SGLANG_OPT_* env the recipe's DSpark fast paths.
+# Claimed: ~350 tok/s batch-1 decode on a 5090 (SGLang blog, with SIMULATED 3.5 acceptance). Measure it ourselves.
+#
+# Node: the laptop joins via talos/patches/egpu-laptop-worker.yaml, which labels it home-k8s/egpu=rtx5090
+# (selected below) and gpu=on + pci-10de (HAMi device plugin, gpu-power-limit, vram exporter). gpu-power-limit
+# runs there too and caps the 5090 at TARGET_WATTS (300 W) unless GPU_POWER_MAP says otherwise: a sane
+# eGPU-enclosure number, leave it. Host RAM is 32 GB.
+#
+# To deploy, in order:
+#   1. The laptop is a Ready node with nvidia.com/gpu > 0 (kubectl describe node), and the download Job in
+#      apps/inkling2-mini-models.yaml has finished (kubectl logs job/inkling2-mini-models-download -> "OK").
+#   2. Rename this file to .yaml. The weights server (talos-210-73x) and the copy Job (laptop) start; the
+#      inkling-2-mini Deployment stays at replicas 0 until step 3.
+#   3. kubectl logs job/inkling2-mini-weights-copy ends in "verified", then set replicas: 1 below and set the
+#      weights server to replicas: 0.
+#   4. Smoke test: kubectl port-forward svc/inkling-2-mini 8000 then
+#      curl localhost:8000/v1/chat/completions -d '{"model":"inkling-2-mini","messages":[{"role":"user","content":"hi"}]}'
+#      Sampling per the model card: temperature 1.0, top_p 1.0, top_k 0, min_p 0.
+#   5. Collective: add a backend block for model inkling-2-mini at
+#      http://inkling-2-mini.default.svc.cluster.local:8000 in apps/llm-collective-contributor*.yaml,
+#      concurrency prod 3 / dev 1 (max-running-requests 4).
+# ============================================================================================
+---
+# Laptop-local copy of the weights (NVMe, /var/lib/local-path-provisioner). Bound on first consumer.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inkling2-mini-models-laptop
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 30Gi
+---
+# Read-only HTTP server for the HDD copy, so the laptop pulls 20 GB over the LAN instead of from Hugging Face.
+# Scale to 0 (or delete this block) once the copy Job reports "verified".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inkling2-mini-weights-server
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: inkling2-mini-weights-server }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: inkling2-mini-weights-server }
+    spec:
+      enableServiceLinks: false
+      nodeSelector: { kubernetes.io/hostname: talos-210-73x }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: http
+          image: python:3.12-slim
+          command: ["python3", "-I", "-m", "http.server", "8080", "--directory", "/models/inkling-2-mini"]
+          ports: [{ containerPort: 8080 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: inkling2-mini-models-hdd, readOnly: true }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inkling2-mini-weights-server
+  namespace: default
+spec:
+  selector: { app.kubernetes.io/name: inkling2-mini-weights-server }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inkling2-mini-weights-copy
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 10                     # retries while the weights server is still starting
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      containers:
+        - name: copy
+          image: python:3.12-slim
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              M=/models/inkling-2-mini
+              SRC=http://inkling2-mini-weights-server.default.svc.cluster.local:8080
+              if [ -f "$M/.verified" ]; then echo "already verified"; exit 0; fi
+              mkdir -p "$M"; cd "$M"
+              python3 -I -c 'import sys,urllib.request; open("SHA256SUMS","wb").write(urllib.request.urlopen(sys.argv[1]+"/SHA256SUMS").read())' "$SRC"
+              # resumable per file: an existing file with the right hash is skipped
+              while read -r sum path; do
+                f=${path#./}
+                if [ -f "$f" ] && echo "$sum  $f" | sha256sum --check --status; then echo "have $f"; continue; fi
+                mkdir -p "$(dirname "$f")"
+                echo "fetch $f"
+                python3 -I -c 'import shutil,sys,urllib.request; shutil.copyfileobj(urllib.request.urlopen(sys.argv[1]), open(sys.argv[2],"wb"), 16<<20)' "$SRC/$f" "$f"
+              done < SHA256SUMS
+              sha256sum --check SHA256SUMS
+              touch .verified && echo verified && ls -l "$M"
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: inkling2-mini-models-laptop }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inkling-2-mini
+  namespace: default
+  labels:
+    app.kubernetes.io/name: inkling-2-mini
+spec:
+  replicas: 0                     # 1 once the copy Job says "verified" (step 3 above)
+  strategy:
+    type: Recreate                # one whole-card pod
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inkling-2-mini
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inkling-2-mini
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: main
+          image: docker.io/lmsysorg/sglang:inkling-2-mini@sha256:efac853b46811ccb760545b7b29e7119bdf907537ccf6e863fac3011fe8b98de
+          command: ["sglang", "serve"]       # as the cookbook recipe
+          args:
+            - "--model-path"
+            - "/models/inkling-2-mini"
+            - "--served-model-name"
+            - "inkling-2-mini"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--tp"
+            - "1"
+            - "--ep"
+            - "1"
+            - "--attention-backend"
+            - "fa4"
+            - "--dtype"
+            - "bfloat16"
+            - "--page-size"
+            - "128"
+            - "--speculative-algorithm"
+            - "DSPARK"                    # drafter = the bundled mtp.safetensors (mtp_config in config.json)
+            - "--speculative-num-draft-tokens"
+            - "8"
+            - "--context-length"
+            - "32768"
+            - "--max-running-requests"
+            - "4"
+            - "--grammar-backend"
+            - "xgrammar"
+            - "--enable-multimodal"
+            - "--reasoning-parser"
+            - "inkling"
+            - "--tool-call-parser"
+            - "inkling2"
+            - "--enable-metrics"
+            - "--enable-cache-report"
+            - "--watchdog-timeout"
+            - "1800"
+          env:
+            - { name: SGLANG_OPT_INKLING2_VERIFY_REL_BIAS_KERNEL, value: "1" }
+            - { name: SGLANG_OPT_DSV41_DSPARK_MID_FOLD, value: "1" }
+            - { name: SGLANG_OPT_DSV41_DSPARK_PREPARE_INPUTS_ONCE, value: "1" }
+            - { name: SGLANG_OPT_DSV41_DSPARK_SKIP_PREFILLED_INPUTS, value: "1" }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: TRANSFORMERS_OFFLINE, value: "1" }
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+          ports:
+            - containerPort: 8000
+          startupProbe:                   # 20 GB off NVMe is quick; FA4/kernel JIT + CUDA graphs are the long part
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 10            # /health runs a 1-token generate
+            failureThreshold: 180
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            # whole 5090 through HAMi; percentage avoids guessing the MiB figure HAMi registers for the card
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem-percentage: "100", cpu: "6", memory: 20Gi }
+            requests: { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: models, mountPath: /models, readOnly: true }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: inkling2-mini-models-laptop
+            readOnly: true
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 4Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inkling-2-mini
+  namespace: default
+  labels:
+    app.kubernetes.io/name: inkling-2-mini
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: inkling-2-mini
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

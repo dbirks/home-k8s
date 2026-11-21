@@ -33,8 +33,10 @@ machine:
   nodeLabels:
     gpu: "on"                                            # HAMi device plugin selector
     feature.node.kubernetes.io/pci-10de.present: "true"  # GPU DaemonSets selector (no NFD in-cluster)
-  nodeTaints:
-    dedicated: egpu:NoSchedule    # keep ordinary pods off the laptop; GPU workloads tolerate this
+    home-k8s/egpu: rtx5090                               # what apps/inkling2-mini-sglang.yaml.hold selects
+  # No nodeTaints on purpose: hami-device-plugin (prereqs/hami.yaml) only tolerates dedicated=pascal, so a
+  # dedicated=egpu taint would keep it off the laptop and the 5090 would never be advertised. Adding a
+  # toleration there is a prereqs change (HAMi rollout risk, see AGENTS.md); do that first if a taint is wanted.
   kubelet:
     image: ghcr.io/siderolabs/kubelet:v1.36.2   # match the control plane
 cluster:
