@@ -79,6 +79,10 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
   (spec type, block size, page bytes, page_size_padded); the 48 per-pass caches, 48 sconv windows and 3 draft layers
   show up as separate groups.
 - 524K (Justin's number) does not fit with DSpark on (484K pool max at 448K context).
+- WITHOUT DSpark (no draft BF16 cache): multiplier 1 works (only the tiny sconv windows get padded), pool 847,998 tokens
+  at max-model-len 819200, prefix hits align to 64 tokens, 158 tok/s 1 stream (code = prose), 229 for 2, 20/20
+  arithmetic, needles PASS at 500K (234 s) and 780K (531 s). The draft's BF16 full-attention cache (~12 KB/token) is
+  bigger than the whole NVFP4 target cache (~9 KB/token): quantizing it is the next lever.
 
 ## Research notes (2026-11-21 pi wave)
 - SGLang FP8 KV on SM120 would need PR #45871 ported into Inkling's rel-bias attention.

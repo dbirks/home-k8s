@@ -33,6 +33,9 @@
 #                                  Safe: this is the only GPU tenant on the laptop.
 # Sampling per the model card: temperature 1.0, top_p 1.0, top_k 0, min_p 0.
 #
+# No-drafter option (measured 2026-11-21): drop --speculative-config, set INKLING_NVFP4_BLOCK_MULT=1 and
+# --max-model-len 819200 -> pool 847,998 tokens, 64-token prefix-hit alignment, 158 tok/s 1 stream (code and prose),
+# 229 for 2; needles PASS at 500K (234 s prefill) and 780K (531 s).
 # Rollback to FP8: kv-cache-dtype fp8, max-model-len 262144 (pool ~316K); same image.
 # Collective: model inkling-2-mini in apps/llm-collective-contributor*.yaml, prod 2 (= max-num-seqs), dev 1.
 # ============================================================================================
@@ -45,7 +48,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 0                     # PAUSED 2026-11-21: no-drafter NVFP4 lab test; set back to 1
+  replicas: 1                     # LIVE 2026-11-21
   strategy:
     type: Recreate                # one whole-card pod
   selector:

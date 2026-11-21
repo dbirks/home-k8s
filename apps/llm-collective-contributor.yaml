@@ -230,24 +230,23 @@ data:
       # shared KV pool, so one full 360K request fits (inkling2-mini skill). Probed live 2026-11-21: /v1/messages works;
       # image input works. The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number
       # (default 0.9 = high); there is no off switch, so "none" still thinks briefly.
-      # PARKED 2026-11-21: off the Collective during a no-drafter NVFP4 lab test. Re-add = uncomment.
-      # - name: inkling-2-mini
-      #   url: http://inkling-2-mini.default.svc.cluster.local:8000
-      #   protocols: [openai, anthropic]
-      #   concurrency: 2         # = vLLM max-num-seqs 2; dev 1 on top is rarely used (vLLM queues any overflow)
-      #   models:
-      #     - alias: inkling-2-mini
-      #       model: inkling-2-mini
-      #       limits:
-      #         context: 368640   # = vLLM --max-model-len (NVFP4 KV)
-      #       reasoning:
-      #         levels:
-      #           - none
-      #           - low
-      #           - medium
-      #           - high
-      #           - xhigh
-      #       inputs: [text, image]
+      - name: inkling-2-mini
+        url: http://inkling-2-mini.default.svc.cluster.local:8000
+        protocols: [openai, anthropic]
+        concurrency: 2         # = vLLM max-num-seqs 2; dev 1 on top is rarely used (vLLM queues any overflow)
+        models:
+          - alias: inkling-2-mini
+            model: inkling-2-mini
+            limits:
+              context: 368640   # = vLLM --max-model-len (NVFP4 KV)
+            reasoning:
+              levels:
+                - none
+                - low
+                - medium
+                - high
+                - xhigh
+            inputs: [text, image]
       # REMOVED 2026-10-13: iPhone backend (gemma-3n-e4b). The tailscale egress
       # Service `iphone-llm` (apps/iphone-tailnet-egress.yaml) is still in place —
       # re-add a backend block pointing at http://iphone-llm.default.svc.cluster.local:8889
