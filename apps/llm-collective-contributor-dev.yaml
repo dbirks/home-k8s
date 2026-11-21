@@ -104,23 +104,24 @@ data:
       # shared KV pool, so one full 360K request fits (inkling2-mini skill). Probed live 2026-11-21: /v1/messages works;
       # image input works. The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number
       # (default 0.9 = high); there is no off switch, so "none" still thinks briefly.
-      - name: inkling-2-mini
-        url: http://inkling-2-mini.default.svc.cluster.local:8000
-        protocols: [openai, anthropic]
-        concurrency: 1         # prod has 2 = vLLM max-num-seqs; overflow queues in vLLM
-        models:
-          - alias: inkling-2-mini
-            model: inkling-2-mini
-            limits:
-              context: 368640   # = vLLM --max-model-len (NVFP4 KV)
-            reasoning:
-              levels:
-                - none
-                - low
-                - medium
-                - high
-                - xhigh
-            inputs: [text, image]
+      # PARKED 2026-11-21: off the Collective during a no-drafter NVFP4 lab test. Re-add = uncomment.
+      # - name: inkling-2-mini
+      #   url: http://inkling-2-mini.default.svc.cluster.local:8000
+      #   protocols: [openai, anthropic]
+      #   concurrency: 1         # prod has 2 = vLLM max-num-seqs; overflow queues in vLLM
+      #   models:
+      #     - alias: inkling-2-mini
+      #       model: inkling-2-mini
+      #       limits:
+      #         context: 368640   # = vLLM --max-model-len (NVFP4 KV)
+      #       reasoning:
+      #         levels:
+      #           - none
+      #           - low
+      #           - medium
+      #           - high
+      #           - xhigh
+      #       inputs: [text, image]
       # The typed doors: the same backends and concurrency values as the prod
       # contributor (they are engine-side limits — single-flight ASR, TTS talker
       # KV, one decision at a time — not traffic budgets), so the transcription,
