@@ -84,4 +84,4 @@ PARKED 2026-11-21 (block commented out while tuning; uncomment to re-add). Model
 vLLM `--max-num-seqs 4`, dev 1 on top (dev is rarely used; vLLM queues any overflow). If you change max-num-seqs (or
 switch to SGLang `--max-running-requests`), keep prod equal to it. Context 262144 (on SGLang it would be ~123K: lower `limits.context`). openai + anthropic protocols, text +
 image. Reasoning: the template maps none/minimal/low/medium/high/xhigh/max to an effort number (default 0.9 = high); there is
-no off switch, so "none" still emits a short thought.
+no off switch, so "none" still emits a short thought. Server default is medium (`--default-chat-template-kwargs`); request values override it.

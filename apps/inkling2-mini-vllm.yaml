@@ -28,6 +28,9 @@
 #   NO --gpu-memory-utilization    vLLM's extensible KV cache is then sized from what is free after warmup and CUDA graph
 #                                  capture (11.6 GiB here vs 8.7 at 0.91). Startup takes ~4 min.
 #   prefix caching                 vLLM default (on); --enable-prompt-tokens-details reports cached_tokens.
+#   --default-chat-template-kwargs reasoning_effort medium (0.7) when a request sets none; the template's own default is
+#                                  0.9 (high). A request's reasoning_effort (incl. "none") still wins: vLLM merges request
+#                                  values over these defaults and drops unset ones (renderers/params.py merge_kwargs).
 #   CUDA_DISABLE_CONTROL=true      HAMi's in-container allocator cap otherwise refuses allocations near the top of the card.
 #                                  Safe: this is the only GPU tenant on the laptop.
 # Sampling per the model card: temperature 1.0, top_p 1.0, top_k 0, min_p 0.
@@ -103,6 +106,8 @@ spec:
             - "--tool-call-parser"
             - "inkling"
             - "--enable-prompt-tokens-details"
+            - "--default-chat-template-kwargs"
+            - '{"reasoning_effort":"medium"}'
           env:
             - { name: HF_HUB_OFFLINE, value: "1" }
             - { name: TRANSFORMERS_OFFLINE, value: "1" }
