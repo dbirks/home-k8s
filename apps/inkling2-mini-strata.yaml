@@ -34,7 +34,7 @@ spec:
           image: ghcr.io/dbirks/strata:0.2.19-r1@sha256:8a8ed3346a5d5f8a8451dedac3ffd2b4fcea48ed71691870d73ee97e0f041b6c
           env:
             - { name: MODEL_FILE, value: "Inkling-2-Mini-SQ-20.strata" }
-            - { name: MAX_CONTEXT, value: "524288" }
+            - { name: MAX_CONTEXT, value: "262144" }   # PER SLOT in Strata (not a total like Basalt)
             - { name: PARALLEL, value: "2" }
             - { name: VISION, value: "1" }
             - { name: DRAFTING, value: "dspark" }
