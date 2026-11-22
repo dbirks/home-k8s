@@ -1,0 +1,78 @@
+# inkling-2-mini on Strata (github.com/Niko1221/Strata, MIT): Thinking Machines Inkling 2 Mini on the strata-inkling
+# shape engine (C++/CUDA, .strata v1.1 packs, DSpark drafting, in-process vision) on the laptop's Thunderbolt RTX 5090
+# (talos-8me-tcy). LAB 2026-11-22: being measured against Basalt (apps/inkling2-mini-basalt.yaml).
+# Image: build/strata (official ghcr.io/niko1221/strata:0.2.19-cuda13 + our thinking-levels patch + start script).
+# Packs: apps/inkling2-mini-strata-weights.yaml (SQ-20 lossless, SQ-15, vision shard, tokenizer).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inkling-2-mini-strata
+  namespace: default
+  labels:
+    app.kubernetes.io/name: inkling-2-mini
+spec:
+  replicas: 1                     # LAB 2026-11-22
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inkling-2-mini
+      app.kubernetes.io/component: strata
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inkling-2-mini
+        app.kubernetes.io/component: strata
+    spec:
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: main
+          image: ghcr.io/dbirks/strata:0.2.19-r1@sha256:8a8ed3346a5d5f8a8451dedac3ffd2b4fcea48ed71691870d73ee97e0f041b6c
+          env:
+            - { name: MODEL_FILE, value: "Inkling-2-Mini-SQ-20.strata" }
+            - { name: MAX_CONTEXT, value: "524288" }
+            - { name: PARALLEL, value: "2" }
+            - { name: VISION, value: "1" }
+            - { name: DRAFTING, value: "dspark" }
+            - { name: ENGINE_ARGS, value: "--kv fp8" }
+            - { name: STRATA_INKLING_EFFORT, value: "medium" }
+            # DNS-rebinding guard: without an API key Strata answers only to these Host names (probes send one too)
+            - { name: STRATA_ALLOWED_HOSTS, value: "inkling-2-mini,inkling-2-mini.default,inkling-2-mini.default.svc.cluster.local,localhost" }
+            - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
+            - { name: CUDA_DISABLE_CONTROL, value: "true" }
+          ports:
+            - containerPort: 8000
+          startupProbe:
+            httpGet: { path: /health, port: 8000, httpHeaders: [{ name: Host, value: inkling-2-mini }] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 120
+          livenessProbe:
+            httpGet: { path: /health, port: 8000, httpHeaders: [{ name: Host, value: inkling-2-mini }] }
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /health, port: 8000, httpHeaders: [{ name: Host, value: inkling-2-mini }] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits: { nvidia.com/gpu: "1", nvidia.com/gpumem-percentage: "100", cpu: "6", memory: 24Gi }
+            requests: { cpu: "2", memory: 6Gi }
+          volumeMounts:
+            - { name: packs, mountPath: /models, readOnly: true }
+            - { name: data, mountPath: /data }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: packs
+          persistentVolumeClaim:
+            claimName: inkling2-mini-strata-packs
+            readOnly: true
+        - name: data
+          emptyDir: { sizeLimit: 4Gi }
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 2Gi }

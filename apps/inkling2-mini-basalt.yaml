@@ -37,7 +37,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 1                     # LIVE 2026-11-22
+  replicas: 0                     # PAUSED 2026-11-22: Strata engine lab (apps/inkling2-mini-strata.yaml)
   strategy:
     type: Recreate
   selector:
