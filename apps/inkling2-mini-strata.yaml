@@ -31,6 +31,7 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: main
+          command: ["sleep", "infinity"]   # LAB: idle, engine run by hand with kubectl exec
           image: ghcr.io/dbirks/strata:0.2.19-r1@sha256:8a8ed3346a5d5f8a8451dedac3ffd2b4fcea48ed71691870d73ee97e0f041b6c
           env:
             - { name: MODEL_FILE, value: "Inkling-2-Mini-SQ-20.strata" }
@@ -46,20 +47,6 @@ spec:
             - { name: CUDA_DISABLE_CONTROL, value: "true" }
           ports:
             - containerPort: 8000
-          startupProbe:
-            httpGet: { path: /health, port: 8000, httpHeaders: [{ name: Host, value: inkling-2-mini }] }
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 120
-          livenessProbe:
-            httpGet: { path: /health, port: 8000, httpHeaders: [{ name: Host, value: inkling-2-mini }] }
-            periodSeconds: 20
-            timeoutSeconds: 10
-            failureThreshold: 6
-          readinessProbe:
-            httpGet: { path: /health, port: 8000, httpHeaders: [{ name: Host, value: inkling-2-mini }] }
-            periodSeconds: 10
-            timeoutSeconds: 5
           resources:
             limits: { nvidia.com/gpu: "1", nvidia.com/gpumem-percentage: "100", cpu: "6", memory: 24Gi }
             requests: { cpu: "2", memory: 6Gi }
