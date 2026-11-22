@@ -225,29 +225,28 @@ data:
             # Declaring it earns the VISION chip and lets the gateway route
             # image traffic here instead of rejecting it with a 400.
             inputs: [text, image]
-      # Inkling 2 Mini on vLLM with DSpark, NVFP4 KV (our fork), on the laptop's Thunderbolt RTX 5090 (apps/inkling2-mini-vllm.yaml,
-      # talos-8me-tcy), 2026-11-21. vLLM --max-num-seqs 2 behind it: prod 2, dev 1 (dev is rarely used). ~609K-token
-      # shared KV pool, so one full 576K request fits (inkling2-mini skill). Probed live 2026-11-21: /v1/messages works;
-      # image input works. The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number
-      # (default 0.9 = high); there is no off switch, so "none" still thinks briefly.
-      # PARKED 2026-11-21: off the Collective while Basalt is lab-tested on the laptop 5090 (apps/inkling2-mini-basalt.yaml)
-      # - name: inkling-2-mini
-      #   url: http://inkling-2-mini.default.svc.cluster.local:8000
-      #   protocols: [openai, anthropic]
-      #   concurrency: 2         # = vLLM max-num-seqs 2; dev 1 on top is rarely used (vLLM queues any overflow)
-      #   models:
-      #     - alias: inkling-2-mini
-      #       model: inkling-2-mini
-      #       limits:
-      #         context: 589824   # = vLLM --max-model-len (NVFP4 KV, NVFP4 draft KV)
-      #       reasoning:
-      #         levels:
-      #           - none
-      #           - low
-      #           - medium
-      #           - high
-      #           - xhigh
-      #       inputs: [text, image]
+      # Inkling 2 Mini on Basalt (C++ engine, apps/inkling2-mini-basalt.yaml) on the laptop's Thunderbolt RTX 5090
+      # (talos-8me-tcy), since 2026-11-22. --parallel 2 slots of 262,144 tokens each (Basalt splits --max-context);
+      # longer contexts spill experts over Thunderbolt and collapse (inkling2-mini skill). Prod 2 = slots, dev 1.
+      # The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number; default medium;
+      # there is no off switch, so "none" still thinks briefly.
+      - name: inkling-2-mini
+        url: http://inkling-2-mini.default.svc.cluster.local:8000
+        protocols: [openai, anthropic]
+        concurrency: 2         # = Basalt --parallel 2; dev 1 on top is rarely used (Basalt queues any overflow)
+        models:
+          - alias: inkling-2-mini
+            model: inkling-2-mini
+            limits:
+              context: 262144   # = Basalt slot size (--max-context 524288 / --parallel 2)
+            reasoning:
+              levels:
+                - none
+                - low
+                - medium
+                - high
+                - xhigh
+            inputs: [text, image]
       # REMOVED 2026-10-13: iPhone backend (gemma-3n-e4b). The tailscale egress
       # Service `iphone-llm` (apps/iphone-tailnet-egress.yaml) is still in place —
       # re-add a backend block pointing at http://iphone-llm.default.svc.cluster.local:8889

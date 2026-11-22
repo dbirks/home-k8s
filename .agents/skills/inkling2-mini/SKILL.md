@@ -1,6 +1,6 @@
 ---
 name: inkling2-mini
-description: Operate Thinking Machines Inkling 2 Mini on the eGPU laptop's RTX 5090 (talos-8me-tcy) - the live vLLM DSpark + FP8-KV 256K engine (with the SM120 DSpark patch), the held SGLang DSpark config, what KV dtypes and long-context flags work on SM120 and which fail, how to test context, speed, prefix caching and parallel sessions, and how to switch engines. Use when changing, upgrading, resizing or debugging apps/inkling2-mini-*.yaml.
+description: Operate Thinking Machines Inkling 2 Mini on the eGPU laptop's RTX 5090 (talos-8me-tcy) - the Basalt engine (C++, expert spill over Thunderbolt and where it collapses), the vLLM DSpark + NVFP4-KV engine (our fork), the held SGLang DSpark config, what KV dtypes and long-context flags work on SM120 and which fail, how to test context, speed, prefix caching and parallel sessions, and how to switch engines. Use when changing, upgrading, resizing or debugging apps/inkling2-mini-*.yaml.
 ---
 
 # Inkling 2 Mini on the RTX 5090 eGPU
@@ -57,6 +57,38 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
 - Temperature 1.0 (model-card sampling) occasionally gives an empty answer on a needle; rerun before concluding.
 - **Never hold/remove a file that defines the weights PVC**: Flux prunes it and local-path deletes the data. That is
   why the PVC lives in its own file. A re-copy is ~15 min (set the weights server to 1, delete the copy Job if done).
+
+## Basalt engine (apps/inkling2-mini-basalt.yaml, lab 2026-11-21)
+
+github.com/jesdga95/basalt (MIT, C++, sm_120 only). Image `ghcr.io/dbirks/basalt:<tag>` = release archive on
+`nvidia/cuda:13.0.2-runtime` (build/basalt/, `gh workflow run build-basalt.yaml -f version=vX -f sha256=<archive sha>`;
+the archive is CUDA 13.0.2 and the laptop driver is R580, so do not jump to a 13.4 base). Pack: `jesdga/Inkling-2-Mini-Basalt`
+(19.7 GB, apps/inkling2-mini-basalt-weights.yaml; single-connection curl from HF is 2-6 MB/s, `hf download` with xet ~12).
+Starts in ~25 s once the image is cached (first pull 7 min over the laptop link). KV: only `fp16`/`fp8` for Inkling.
+
+**The one thing to understand: expert spill.** Basalt sizes for the full `--max-context` (split across `--parallel` slots),
+plans the least-routed experts into pinned RAM to make room, then copies them back while caches are small. When a
+conversation's caches grow, experts go back to RAM and every prompt chunk and decode step reads them over the eGPU's
+PCIe Gen3 x4 Thunderbolt link (~3.5 GB/s). Even 0.7 GiB spilled halves decode; 2+ GiB makes it unusable. Watch
+`elastic spill: the caches grow to N positions; X GiB ... go back to RAM` in `/data/.cache/basalt/*/engine.log`.
+Per-slot reservations cost VRAM even when idle, so 1 slot x 512K fits on-card while 2 x 256K plans some spill.
+
+Measured (fp8 KV, drafting on, vision on unless noted; short-chat code ~310-330 tok/s, prose ~255, 20/20 arithmetic,
+prefix reuse 23,526 of 23,539 in 0.4 s with an `x-session-id` header):
+
+| config | long prompt | both slots full |
+|---|---|---|
+| 2 x 512K | 500K: 1,425 s prefill-incl., decode 2.4 tok/s (7.5 GiB spilled) | - |
+| 2 x 128K | 120K: 14.7 s, 195 tok/s | - |
+| 2 x 256K | 250K: 46 s, 152 tok/s | 2 x 250K: 235 s, 75/136 tok/s (0.2 GiB spill) |
+| 2 x 320K | 310K: 67 s, 119 tok/s | 2 x 300K: ~600 s, 7-11 tok/s (3.6 GiB) |
+| 1 x 512K | 500K: 147 s, 104 tok/s, no spill | n/a |
+| 1 x 640K | 600K: 446 s, 47 tok/s (0.7 GiB) | n/a |
+
+Gotchas: `--ram-reserve-mib` above the host's free RAM makes EVERY request wait 30 s ("RAM low ... waits up to 30 s"):
+the pinned RAM copy of the experts (~14.4 GiB) stays allocated, leaving ~5.6 GiB free on the 31 GiB laptop; keep 2048.
+`--allowed-host` must list the Service names (Basalt checks Host). `pkill -f` the port-forward with a bracketed pattern
+in its OWN Bash call. Vision (`--vision dynamic`) keeps 1.37 GiB of the card.
 
 ## NVFP4 KV (our fork, LIVE since 2026-11-21: target + draft NVFP4, 576K context, block multiplier 1)
 - Code: github.com/dbirks/vllm branch `inkling2-mini-sm120` (PR #69028 head eb7981b + #69096 + NVFP4 KV). Image:

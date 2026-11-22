@@ -1,17 +1,24 @@
 # inkling-2-mini on Basalt (github.com/jesdga95/basalt, MIT): a C++ engine for Blackwell sm_120 with its own Inkling 2
-# Mini path (DSpark drafting, FP8 KV, up to 1M context, least-routed experts spill to page-locked RAM only when a long
-# context needs the room). Laptop RTX 5090 (talos-8me-tcy). Alternative to apps/inkling2-mini-vllm.yaml; both carry
+# Mini path (DSpark drafting, FP8 KV, image input). Laptop RTX 5090 over Thunderbolt (talos-8me-tcy). LIVE since
+# 2026-11-22, replacing apps/inkling2-mini-vllm.yaml (parked at 0, the rollback). Both carry
 # app.kubernetes.io/name: inkling-2-mini so the shared Service there routes to whichever runs. Run ONE at a time.
 # ============================================================================================
 # Image: ghcr.io/dbirks/basalt:<release> = upstream release archive on nvidia/cuda:13.0.2-runtime (build/basalt/,
 #   .github/workflows/build-basalt.yaml). Laptop driver R580 (580.178) meets the archive's 580.95 minimum.
 # Pack: apps/inkling2-mini-basalt-weights.yaml (Inkling-2-Mini-NVFP4-q8.basalt, 19.7 GB): the release's NVFP4 experts
 #   bit for bit, layers 20-23 + projections Q8_0, vision + DSpark drafter. Upstream: KLD 0.00305 vs the release.
-# Upstream numbers (5090 @ 400 W, ours is 300 W-class Thunderbolt): conversation 347 tok/s, prose 296, struct 628,
-#   16K prompt 12,310 tok/s; at 1M fp8 context 264 tok/s short chat, 173 at 131K, 108 at 400K (plain decode).
+#
+# Measured 2026-11-21/22 (this config): code ~310-330 tok/s, prose ~255 tok/s per session, two sessions at full speed
+#   each; 20/20 arithmetic; 23.5K prompt 2.7 s cold, 0.4 s on a prefix hit (send x-session-id for slot affinity);
+#   needle 250K PASS in 46 s (5,510 tok/s prefill, 152 tok/s decode); both slots at 250K at once: PASS, 235 s, 75/136 tok/s.
+#   vLLM (NVFP4 KV) for comparison: prose ~151, code ~206-246, 570K needle ~300 s.
+# Why 2 x 256K and not more: Basalt plans for the full --max-context and spills the least-routed experts to pinned RAM
+#   when caches grow; over the eGPU's PCIe Gen3 x4 that collapses (2 x 512K: a 500K prompt took 24 min, 2.4 tok/s).
+#   Alternatives measured: 1 slot x 512K (--parallel 1): 500K needle 147 s, 104 tok/s, no spill; vision off frees
+#   1.37 GiB (~64K tokens): 1 x 576K, 570K needle 187 s, 89 tok/s. Full table: the inkling2-mini skill.
 #
 # Flags and why:
-#   --max-context 1048576 --parallel 2  two slots of 524,288 each (Basalt splits max-context between slots).
+#   --max-context 524288 --parallel 2   two slots of 262,144 each (Basalt splits max-context between slots).
 #   --kv fp8                       E4M3 full-attention caches, 16 KiB/token (fp16 is 32). Window layers are fixed rings.
 #   --vision dynamic               the engine's own image encoder.
 #   --reasoning-effort medium      default when a request names none (the template's own default is high).
@@ -30,7 +37,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 1                     # LAB 2026-11-21
+  replicas: 1                     # LIVE 2026-11-22
   strategy:
     type: Recreate
   selector:
@@ -65,13 +72,13 @@ spec:
             - "--gpu"
             - "0"
             - "--max-context"
-            - "589824"
+            - "524288"
             - "--parallel"
-            - "1"
+            - "2"
             - "--kv"
             - "fp8"
             - "--vision"
-            - "off"
+            - "dynamic"
             - "--reasoning-effort"
             - "medium"
             - "--ram-reserve-mib"
