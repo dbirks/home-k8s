@@ -1,0 +1,45 @@
+#!/bin/sh
+# Start Strata's server for Inkling 2 Mini from env (see build/strata/Dockerfile). Inputs:
+#   MODELS_DIR      folder with the .strata packs + tokenizer.json + chat_template.jinja (default /models)
+#   MODEL_FILE      e.g. Inkling-2-Mini-SQ-20.strata
+#   VISION          1 = load Inkling-2-Mini-Vision.strata (default 1)
+#   MAX_CONTEXT     --max-context (tokens, shared by all slots)
+#   PARALLEL        request slots, 1..64
+#   DRAFTING        dspark | off (default dspark)
+#   ENGINE_ARGS     extra strata-inkling args, space separated (e.g. "--kv fp8 --vram-reserve-mib 512")
+#   SERVER_ARGS     extra serve/server.py args (e.g. "--max-queue 16")
+#   MODEL_NAME      the name /v1/models reports (default inkling-2-mini)
+#   PORT            default 8000
+set -eu
+T=/opt/strata/terminal
+PY=$T/python/bin/python3
+M=${MODELS_DIR:-/models}
+DATA=${DATA_DIR:-/data}
+ENG=$(ls -d /opt/strata/components/shapes/inkling2/engine/*/ | head -1)
+mkdir -p "$DATA/tok" "$DATA/home" "$DATA/state"
+export HOME="$DATA/home" XDG_STATE_HOME="$DATA/state" XDG_CONFIG_HOME="$DATA/home/.config"
+if [ ! -f "$DATA/tok/vocab.json" ]; then
+  (cd "$T" && "$PY" -c 'import sys; sys.path[:0] = ["tools", "."]
+import inkling_tokenizer as t; from pathlib import Path
+t.convert_files(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))' "$M/tokenizer.json" "$M/chat_template.jinja" "$DATA/tok")
+fi
+"$PY" - "$ENG" "$M" "$DATA" <<'PYEOF'
+import json, os, shlex, sys
+eng, m, data = sys.argv[1:4]
+args = ["--native", os.path.join(m, os.environ["MODEL_FILE"]), "--max-context", os.environ.get("MAX_CONTEXT", "131072")]
+if os.environ.get("VISION", "1") == "1":
+    args += ["--vision", os.path.join(m, "Inkling-2-Mini-Vision.strata")]
+args += shlex.split(os.environ.get("ENGINE_ARGS", ""))
+cfg = {
+    "exe": os.path.join(eng, "strata-inkling"), "args": args, "cwd": "/opt/strata/terminal",
+    "tokenizer": os.path.join(data, "tok"), "model_name": os.environ.get("MODEL_NAME", "inkling-2-mini"),
+    "arch": "inkling2_loop", "lib_dirs": [eng.rstrip("/")], "drafting": os.environ.get("DRAFTING", "dspark"),
+    "parallel": int(os.environ.get("PARALLEL", "1")), "log": os.path.join(data, "engine.log"),
+}
+json.dump(cfg, open(os.path.join(data, "run.json"), "w"), indent=1)
+print("[strata-k8s] run config:", json.dumps(cfg), flush=True)
+PYEOF
+cd "$T"
+# shellcheck disable=SC2086
+exec "$PY" serve/server.py --engine strata --config "$DATA/run.json" --host 0.0.0.0 --port "${PORT:-8000}" \
+  --no-api-key --tokenizer "$DATA/tok" ${SERVER_ARGS:-}

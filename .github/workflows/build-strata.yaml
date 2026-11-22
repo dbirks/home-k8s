@@ -1,0 +1,36 @@
+name: build-strata
+
+# Strata image for Inkling 2 Mini (build/strata/Dockerfile): the official ghcr.io/niko1221/strata CUDA 13 image plus our
+# thinking patch and start script. Manual trigger only. Usage: gh workflow run build-strata.yaml -f tag=0.2.19-r1
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (upstream version + our revision, e.g. 0.2.19-r1)"
+        default: "0.2.19-r1"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build
+        run: |
+          docker build -t ghcr.io/dbirks/strata:${{ inputs.tag }} build/strata
+          docker history --format '{{.Size}}\t{{.CreatedBy}}' ghcr.io/dbirks/strata:${{ inputs.tag }} | head -6
+
+      - name: Push to GHCR
+        run: |
+          docker push ghcr.io/dbirks/strata:${{ inputs.tag }}
+          docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/dbirks/strata:${{ inputs.tag }}
