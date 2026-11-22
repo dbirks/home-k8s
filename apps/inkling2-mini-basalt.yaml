@@ -15,8 +15,9 @@
 #   --kv fp8                       E4M3 full-attention caches, 16 KiB/token (fp16 is 32). Window layers are fixed rings.
 #   --vision dynamic               the engine's own image encoder.
 #   --reasoning-effort medium      default when a request names none (the template's own default is high).
-#   --ram-reserve-mib 6144         host RAM the expert spill must leave free (laptop: 31 GiB, pod limit 24Gi; the engine
-#                                  reads host free RAM, not the cgroup limit).
+#   --ram-reserve-mib 2048         host RAM the engine keeps free (its default). It holds a full RAM copy of the experts
+#                                  (~14.4 GiB pinned) even when they sit on the card, leaving ~5.6 GiB free on the
+#                                  laptop; a 6144 guard made EVERY request wait 30 s ("RAM low ... waits up to 30 s").
 #   --allowed-host                 Basalt checks the Host header; the Collective calls the Service DNS name.
 #   CUDA_DISABLE_CONTROL=true      HAMi's in-container allocator cap passthrough (only GPU tenant on the laptop).
 # ============================================================================================
@@ -74,7 +75,7 @@ spec:
             - "--reasoning-effort"
             - "medium"
             - "--ram-reserve-mib"
-            - "6144"
+            - "2048"
           env:
             - { name: NVIDIA_VISIBLE_DEVICES, value: "all" }
             - { name: CUDA_DISABLE_CONTROL, value: "true" }
