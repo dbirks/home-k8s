@@ -1,0 +1,63 @@
+# Strata's Inkling 2 Mini packs (strata-engine/Inkling-2-Mini-Strata, .strata v1.1) on the eGPU laptop's NVMe
+# (talos-8me-tcy), for the Strata engine lab (github.com/Niko1221/Strata, MIT). Own file so holding the engine never
+# prunes the PVC. SQ-20 (19.35 GB, lossless SF4+MX8 + DSpark drafter), SQ-15 (14.35 GB, 96.7% top-1), the BF16 vision
+# shard and the tokenizer/chat template. hf CLI with the parallel xet backend; checks every LFS sha256 against the
+# hashes Strata pins in terminal/strata_control/inkling_family.py; a .verified marker makes re-runs a no-op.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inkling2-mini-strata-packs
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 45Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inkling2-mini-strata-packs
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      containers:
+        - name: download
+          image: python:3.12-slim
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              cd /models
+              if [ -f .verified ]; then echo "already verified"; exit 0; fi
+              pip install --no-cache-dir -q "huggingface_hub[hf_xet]==0.35.3"
+              HF_XET_HIGH_PERFORMANCE=1 hf download strata-engine/Inkling-2-Mini-Strata \
+                Inkling-2-Mini-SQ-20.strata Inkling-2-Mini-SQ-15.strata Inkling-2-Mini-Vision.strata \
+                tokenizer.json chat_template.jinja config.json special_tokens_map.json tokenizer_config.json \
+                SHA256SUMS.txt README.md --local-dir /models
+              sha256sum -c - <<'EOF'
+              0bbfd52344f0dd4779a7807b5f73554a812f24c035e6877b63cd0d499f7e1b97  Inkling-2-Mini-SQ-20.strata
+              2ea32eed533afba257e2cbee7b073dc2c3da80fe55d1d2d794779b5498e30737  Inkling-2-Mini-SQ-15.strata
+              6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677  Inkling-2-Mini-Vision.strata
+              7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6  tokenizer.json
+              EOF
+              rm -rf /models/.cache
+              touch .verified && echo verified && ls -l
+          env:
+            - { name: HOME, value: /tmp }
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits: { memory: 2Gi }
+          volumeMounts:
+            - { name: packs, mountPath: /models }
+      volumes:
+        - name: packs
+          persistentVolumeClaim: { claimName: inkling2-mini-strata-packs }
