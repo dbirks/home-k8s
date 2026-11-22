@@ -1,6 +1,6 @@
 ---
 name: inkling2-mini
-description: Operate Thinking Machines Inkling 2 Mini on the eGPU laptop's RTX 5090 (talos-8me-tcy) - the Basalt engine (C++, expert spill over Thunderbolt and where it collapses), the vLLM DSpark + NVFP4-KV engine (our fork), the held SGLang DSpark config, what KV dtypes and long-context flags work on SM120 and which fail, how to test context, speed, prefix caching and parallel sessions, and how to switch engines. Use when changing, upgrading, resizing or debugging apps/inkling2-mini-*.yaml.
+description: Operate Thinking Machines Inkling 2 Mini on the eGPU laptop's RTX 5090 (talos-8me-tcy) - the Basalt engine (C++, expert spill over Thunderbolt and where it collapses), the Strata engine trial (held, lost to Basalt), the vLLM DSpark + NVFP4-KV engine (our fork), the held SGLang DSpark config, what KV dtypes and long-context flags work on SM120 and which fail, how to test context, speed, prefix caching and parallel sessions, and how to switch engines. Use when changing, upgrading, resizing or debugging apps/inkling2-mini-*.yaml.
 ---
 
 # Inkling 2 Mini on the RTX 5090 eGPU
@@ -89,6 +89,26 @@ Gotchas: `--ram-reserve-mib` above the host's free RAM makes EVERY request wait 
 the pinned RAM copy of the experts (~14.4 GiB) stays allocated, leaving ~5.6 GiB free on the 31 GiB laptop; keep 2048.
 `--allowed-host` must list the Service names (Basalt checks Host). `pkill -f` the port-forward with a bracketed pattern
 in its OWN Bash call. Vision (`--vision dynamic`) keeps 1.37 GiB of the card.
+
+## Strata engine (apps/inkling2-mini-strata.yaml.hold, lab 2026-11-22: HELD, lost to Basalt)
+
+github.com/Niko1221/Strata 0.2.19 (strata-inkling 0.1.65). Image build/strata = official
+ghcr.io/niko1221/strata:0.2.19-cuda13 (has the Inkling shape engine at /opt/strata/components/shapes/inkling2/engine/*)
++ build/strata/patch_inkling_thinking.py (upstream pins reasoning_effort "none" and drops thinking spans) + a start
+script that writes the run config and runs serve/server.py directly. Packs: strata-engine/Inkling-2-Mini-Strata
+(apps/inkling2-mini-strata-weights.yaml): SQ-20 = lossless repack of the official NVFP4+MXFP8 weights, SQ-15 lossy.
+
+What we learned (full numbers in the .hold header):
+- The engine has no HTTP server; it speaks a stdin protocol to serve/server.py (Python), which is the API.
+- `--max-context` is PER SLOT. KV is allocated up front at ~37.5 KiB/token at fp8: ~310K tokens total on the 5090
+  (2x128K max with headroom). Long prefills can still OOM mid-prompt and the server hangs instead of failing.
+- k8v4/k8v8 segfault on long prompts. DSpark gave no speedup. No prefix reuse even for append-only chats.
+- Decode 115-175 tok/s vs Basalt 255-330. Prefill ~6K tok/s short, 4.2K at 60K.
+- Its base image sets PORT=8080; our start script needs PORT=8000 (fixed in the Dockerfile for the next build).
+- Fast lab loop: set `command: ["sleep","infinity"]`, drop the probes, then `kubectl exec` the engine:
+  `strata-inkling --bench --native X.strata --kv fp8 --prompt-len N --gen 256` or `--serve` with stdin held open
+  (`(sleep 40) | strata-inkling --serve ...`) and read nvidia-smi for the real footprint. Do not `pkill -f` a pattern
+  that matches your own `sh -c` (use a bracket: `strata-inklin[g]`).
 
 ## NVFP4 KV (our fork, LIVE since 2026-11-21: target + draft NVFP4, 576K context, block multiplier 1)
 - Code: github.com/dbirks/vllm branch `inkling2-mini-sm120` (PR #69028 head eb7981b + #69096 + NVFP4 KV). Image:

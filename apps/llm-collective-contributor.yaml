@@ -230,24 +230,23 @@ data:
       # longer contexts spill experts over Thunderbolt and collapse (inkling2-mini skill). Prod 2 = slots, dev 1.
       # The template maps reasoning_effort none/minimal/low/medium/high/xhigh/max to an effort number; default medium;
       # there is no off switch, so "none" still thinks briefly.
-      # PARKED 2026-11-22: Strata engine lab (apps/inkling2-mini-strata.yaml)
-      # - name: inkling-2-mini
-      #   url: http://inkling-2-mini.default.svc.cluster.local:8000
-      #   protocols: [openai, anthropic]
-      #   concurrency: 2         # = Basalt --parallel 2; dev 1 on top is rarely used (Basalt queues any overflow)
-      #   models:
-      #     - alias: inkling-2-mini
-      #       model: inkling-2-mini
-      #       limits:
-      #         context: 262144   # = Basalt slot size (--max-context 524288 / --parallel 2)
-      #       reasoning:
-      #         levels:
-      #           - none
-      #           - low
-      #           - medium
-      #           - high
-      #           - xhigh
-      #       inputs: [text, image]
+      - name: inkling-2-mini
+        url: http://inkling-2-mini.default.svc.cluster.local:8000
+        protocols: [openai, anthropic]
+        concurrency: 2         # = Basalt --parallel 2; dev 1 on top is rarely used (Basalt queues any overflow)
+        models:
+          - alias: inkling-2-mini
+            model: inkling-2-mini
+            limits:
+              context: 262144   # = Basalt slot size (--max-context 524288 / --parallel 2)
+            reasoning:
+              levels:
+                - none
+                - low
+                - medium
+                - high
+                - xhigh
+            inputs: [text, image]
       # REMOVED 2026-10-13: iPhone backend (gemma-3n-e4b). The tailscale egress
       # Service `iphone-llm` (apps/iphone-tailnet-egress.yaml) is still in place —
       # re-add a backend block pointing at http://iphone-llm.default.svc.cluster.local:8889

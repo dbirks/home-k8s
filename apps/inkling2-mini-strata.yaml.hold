@@ -1,8 +1,22 @@
 # inkling-2-mini on Strata (github.com/Niko1221/Strata, MIT): Thinking Machines Inkling 2 Mini on the strata-inkling
 # shape engine (C++/CUDA, .strata v1.1 packs, DSpark drafting, in-process vision) on the laptop's Thunderbolt RTX 5090
-# (talos-8me-tcy). LAB 2026-11-22: being measured against Basalt (apps/inkling2-mini-basalt.yaml).
+# (talos-8me-tcy). HELD 2026-11-22 after a lab: it lost to Basalt (apps/inkling2-mini-basalt.yaml) on every axis.
 # Image: build/strata (official ghcr.io/niko1221/strata:0.2.19-cuda13 + our thinking-levels patch + start script).
 # Packs: apps/inkling2-mini-strata-weights.yaml (SQ-20 lossless, SQ-15, vision shard, tokenizer).
+#
+# Measured 2026-11-22 (Strata 0.2.19 / strata-inkling 0.1.65, SQ-20, fp8 KV), same suite as the Basalt lab:
+#   --max-context is PER SLOT (Basalt's is a total). KV is allocated up front at ~37.5 KiB/token at "fp8" (docs say
+#   16 KiB): 1x32K 22.0 GB, 1x128K 25.6 GB, 1x256K 30.4 GB, 2x128K 27.9 GB of 32.6 -> about 310K tokens total
+#   (Basalt: 2x256K + vision). 2x256K and 1x512K OOM at start; 2x128K OOMed mid-prefill at 52.7K of a 120K prompt and
+#   the Python server never noticed (showed "reading the prompt" for 18 min). --kv k8v4/k8v8 report fp16, allocate
+#   nothing up front, and segfault on a 100K-token prompt.
+#   Speed: code 174 / prose 127 tok/s at temp 0, ~115 at temp 1.0 (Basalt ~310-330 / ~255), 2 streams 173 aggregate.
+#   DSpark changed nothing (same tok/s with --draft dspark or DRAFTING=off). Prefill ~6K tok/s at 16K, 4.2K at 60K.
+#   Prefix reuse: none, even for an append-only multi-turn chat (23.5K prompt re-read every turn, ~5 s; Basalt 0.4 s).
+#   Quality fine: 20/20 multiplications, reasoning levels work with our patch.
+# Upstream 0.2.19 also pins Inkling to reasoning_effort "none" (build/strata/patch_inkling_thinking.py restores levels).
+# To retry a later release: rebuild build/strata on the new base image, rename this file back to .yaml, park Basalt
+# (replicas 0) and the Collective inkling block, then remove the sleep command and restore the probes.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -12,7 +26,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 1                     # LAB 2026-11-22
+  replicas: 0                     # HELD 2026-11-22
   strategy:
     type: Recreate
   selector:

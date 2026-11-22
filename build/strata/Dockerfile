@@ -17,6 +17,7 @@ RUN /opt/strata/terminal/python/bin/python3 /opt/strata/patch_inkling_thinking.p
 COPY strata-k8s-serve /usr/local/bin/strata-k8s-serve
 RUN chmod 0755 /usr/local/bin/strata-k8s-serve
 
-ENV STRATA_INKLING_EFFORT=medium
+# the base image sets PORT=8080 for its own entrypoint; ours serves the Service port
+ENV STRATA_INKLING_EFFORT=medium PORT=8000
 EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/strata-k8s-serve"]
