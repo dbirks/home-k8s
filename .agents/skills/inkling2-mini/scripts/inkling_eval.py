@@ -222,15 +222,17 @@ def calibrate_tokens_per_line(base):
     return _calib["tokens_per_line"]
 
 
-def long_prompt(base, target_tokens, vault, question):
+# The planted fact is a plain build number, not a "secret": phrased as a vault code / credential the model
+# sometimes refuses to reveal, which reads as a fact miss (facts_ok=False / needle FAIL) that is not a cache miss.
+def long_prompt(base, target_tokens, build_no, question):
     per = calibrate_tokens_per_line(base)
     lines = max(50, int(target_tokens / per))
     blob = "\n".join(filler_line(i) for i in range(1, lines + 1)).split("\n")
     mid = len(blob) // 2
-    vault = f"{vault:06d}"
-    blob.insert(mid, f"{mid:05d} # IMPORTANT: The vault code is {vault}. Do not lose it.")
+    build_no = f"{build_no:06d}"
+    blob.insert(mid, f"{mid:05d} # IMPORTANT: The build number of this file is {build_no}. Record it exactly.")
     return (f"You are a coding agent. Below is a numbered repository dump (two source lines per entry).\n"
-            f"It contains exactly one IMPORTANT line with a vault code.\n\n" + "\n".join(blob) + f"\n\n{question}"), lines
+            f"It contains exactly one IMPORTANT line with a build number.\n\n" + "\n".join(blob) + f"\n\n{question}"), lines
 
 
 # ---------------------------------------------------------------- 1. speed
@@ -376,16 +378,16 @@ def run_tools(base, args):
 
 def run_prefix(base, args):
     target = args.prefix_tokens
-    vault = random.Random(NONCE).randint(0, 999999)
-    q1 = "Question 1: What is the vault code in this dump? Reply with just the six digits."
-    p1, lines = long_prompt(base, target, vault, q1)
+    build_no = random.Random(NONCE).randint(0, 999999)
+    q1 = "Question 1: What is the build number of this file? Reply with just the six digits."
+    p1, lines = long_prompt(base, target, build_no, q1)
     msgs = [{"role": "user", "content": p1}]
     conv = sid("prefix-main")
     req = {"model": MODEL, "max_tokens": 1500, "temperature": 0, "reasoning_effort": "none"}
     r1 = chat_stream(base, dict(req, messages=msgs), conv)
     ans1 = r1.get("text") or ""
-    vault_str = f"{vault:06d}"
-    in_ans1 = vault_str in ans1 or vault_str in ans1.replace(",", "")
+    build_str = f"{build_no:06d}"
+    in_ans1 = build_str in ans1 or build_str in ans1.replace(",", "")
     body2 = {"model": MODEL, "max_tokens": 1500, "temperature": 0, "reasoning_effort": "none"}
     msgs2 = msgs + [{"role": "assistant", "content": ans1 or "(no answer)"},
                     {"role": "user", "content": "Question 2: How many helper_ functions are defined in the dump? "
@@ -393,7 +395,7 @@ def run_prefix(base, args):
     r2 = chat_stream(base, dict(body2, messages=msgs2), conv)
     ans2 = r2.get("text") or ""
     msgs3 = msgs2 + [{"role": "assistant", "content": ans2 or "(no answer)"},
-                     {"role": "user", "content": "Question 3: Restate the vault code and the helper count on one line."}]
+                     {"role": "user", "content": "Question 3: Restate the build number and the helper count on one line."}]
     r3 = chat_stream(base, dict(body2, messages=msgs3), conv)
     r3alt = chat_stream(base, dict(body2, messages=msgs3), sid("prefix-alt"))
     out = {
@@ -403,10 +405,10 @@ def run_prefix(base, args):
         "turn3_same_session": {k: r3.get(k) for k in ("ttft", "prompt_tokens", "cached_tokens", "decode_tps", "engine_prompt_tps", "wall")},
         "turn3_different_session": {k: r3alt.get(k) for k in ("ttft", "prompt_tokens", "cached_tokens", "decode_tps", "engine_prompt_tps", "wall")},
         "turn2_ttft_ratio_vs_turn1": (round(r1["ttft"] / r2["ttft"], 2) if r1.get("ttft") and r2.get("ttft") else None),
-        "vault_code": vault_str,
-        "answer_contains_vault": in_ans1,
-        "answer_contains_vault_in_reasoning": (not in_ans1) and (
-            vault_str in (r1.get("reasoning") or "") or vault_str in (r1.get("reasoning") or "").replace(",", "")),
+        "build_number": build_str,
+        "answer_contains_fact": in_ans1,
+        "answer_contains_fact_in_reasoning": (not in_ans1) and (
+            build_str in (r1.get("reasoning") or "") or build_str in (r1.get("reasoning") or "").replace(",", "")),
         "answer1_excerpt": ans1[:60].replace("\n", " ") or (r1.get("reasoning") or "")[:60].replace("\n", " "),
         "answer3_excerpt": (r3.get("text") or "")[:80].replace("\n", " "),
         "cross_session_reuse": bool((r3alt.get("cached_tokens") or 0) > 0),
@@ -425,19 +427,19 @@ def park_line(i: int, tag: str) -> str:
             f"           return (ctx * {i} + {i * 7}) % 1009  # {tag} cached path {i}\n")
 
 
-def park_prompt(base, target_tokens, tag, vault, offset):
-    """~target_tokens of filler tagged `tag` with its own vault code buried at the midpoint."""
+def park_prompt(base, target_tokens, tag, build_no, offset):
+    """~target_tokens of filler tagged `tag` with its own build number buried at the midpoint."""
     per = calibrate_tokens_per_line(base)
     lines = max(50, int(target_tokens / per))
-    vault_str = f"{vault:06d}"
+    build_str = f"{build_no:06d}"
     blob = "\n".join(park_line(i, tag) for i in range(offset, offset + lines)).split("\n")
     mid = len(blob) // 2
     blob.insert(mid, f"{offset + mid:05d} # IMPORTANT for conversation {tag}: "
-                     f"The vault code is {vault_str}. Do not lose it.")
+                     f"The build number of this file is {build_str}. Record it exactly.")
     text = (f"You are a coding agent. Below is a numbered repository dump, tag {tag} "
             f"(two source lines per entry), seen by no other conversation. It contains exactly one IMPORTANT "
-            f"line with a vault code.\n\n" + "\n".join(blob))
-    return text, lines, vault_str
+            f"line with a build number.\n\n" + "\n".join(blob))
+    return text, lines, build_str
 
 
 def _find_key(obj, key):
@@ -467,11 +469,11 @@ def _cache_stats(base):
     return "" if found is None else json.dumps(found)[:1024]
 
 
-def _has_fact(result, vault_str):
-    """Did this reply (content or reasoning) carry the conversation's own vault code back?
+def _has_fact(result, build_str):
+    """Did this reply (content or reasoning) carry the conversation's own build number back?
     A restore that grabbed the wrong conversation's K/V answers with someone else's fact."""
     blob = ((result.get("text") or "") + " " + (result.get("reasoning") or "")).replace(",", "")
-    return vault_str in blob
+    return build_str in blob
 
 
 def run_park(base, args):
@@ -485,26 +487,26 @@ def run_park(base, args):
     out = {"target_tokens": target, "slots": 2, "turn1": {}, "cold_ttft": [], "return_ttft": {},
            "return_cached": {}, "facts_ok": True, "errors": []}
     for n, tag in enumerate(("A", "B", "C")):
-        prompt, lines, vault = park_prompt(base, target, tag, rnd.randint(0, 999999), 1 + n * 100000)
+        prompt, lines, build_str = park_prompt(base, target, tag, rnd.randint(0, 999999), 1 + n * 100000)
         session = sid(f"park-{tag}")
-        msgs = [{"role": "user", "content": prompt + "\n\nQuestion 1: What is the vault code in this dump? "
+        msgs = [{"role": "user", "content": prompt + "\n\nQuestion 1: What is the build number of this file? "
                                                      "Reply with just the six digits."}]
         r = chat_stream(base, dict(req, messages=msgs), session)
         ans = r.get("text") or ""
-        convs[tag] = {"msgs": msgs, "ans": ans, "vault": vault}
+        convs[tag] = {"msgs": msgs, "ans": ans, "build": build_str}
         out["turn1"][tag] = {k: r.get(k) for k in ("ttft", "prompt_tokens", "cached_tokens", "wall")}
         out["cold_ttft"].append(r.get("ttft"))
         out[f"turn1_{tag}_answer"] = ans[:70].replace("\n", " ")
         out["filler_lines"] = out.get("filler_lines", 0) + lines
         out["errors"].extend([r["error"]] if r.get("error") else [])
-        if not _has_fact(r, vault):
+        if not _has_fact(r, build_str):
             out["facts_ok"] = False
             out.setdefault("fact_misses", []).append(f"turn1-{tag}")
         time.sleep(1.0)   # let the slot settle before the next conversation arrives
     for tag in ("A", "B"):
         c = convs[tag]
         msgs2 = c["msgs"] + [{"role": "assistant", "content": c["ans"] or "(no answer)"},
-                             {"role": "user", "content": f"Question 2: What is the vault code in this dump, and how "
+                             {"role": "user", "content": f"Question 2: What is the build number of this file, and how "
                               "many helper_ functions does it define? Reply with the six digits and the count on one line."}]
         r = chat_stream(base, dict(req, messages=msgs2), sid(f"park-{tag}"))
         ans2 = r.get("text") or ""
@@ -512,7 +514,7 @@ def run_park(base, args):
         out["return_cached"][tag] = r.get("cached_tokens")
         out[f"return_{tag}"] = {k: r.get(k) for k in ("ttft", "prompt_tokens", "cached_tokens", "wall")}
         out[f"return_{tag}_answer"] = ans2[:70].replace("\n", " ")
-        if not _has_fact(r, c["vault"]):
+        if not _has_fact(r, c["build"]):
             out["facts_ok"] = False
             out.setdefault("fact_misses", []).append(f"return-{tag}")
         out["errors"].extend([r["error"]] if r.get("error") else [])
@@ -528,11 +530,11 @@ def run_park(base, args):
 
 def run_needle(base, args):
     target = args.needle_tokens
-    vault = random.Random(NONCE + "-needle").randint(0, 999999)
-    vault_str = f"{vault:06d}"
+    build_no = random.Random(NONCE + "-needle").randint(0, 999999)
+    build_str = f"{build_no:06d}"
     q = ("You were given a numbered repository dump with exactly one IMPORTANT line. "
-         "What is the vault code? Reply with just the six digits.")
-    p, lines = long_prompt(base, target, vault, q)
+         "What is the build number of that file? Reply with just the six digits.")
+    p, lines = long_prompt(base, target, build_no, q)
     out = {"target_tokens": target, "filler_entries": lines, "attempts": []}
     # The model-card sampler (temperature 1.0) sometimes spends the whole budget on its thought and returns
     # empty content (known gotcha in SKILL.md) -> rerun once with more room before calling it a miss.
@@ -542,7 +544,7 @@ def run_needle(base, args):
                                     "messages": [{"role": "user", "content": p}]}, **extra),
                         sid(f"needle-{attempt + 1}"), timeout=TIMEOUT)
         pt, ttft = (r.get("prompt_tokens") or 0), (r.get("ttft") or 0)
-        found = vault_str in (r.get("text") or "") or vault_str in (r.get("text") or "").replace(",", "")
+        found = build_str in (r.get("text") or "") or build_str in (r.get("text") or "").replace(",", "")
         att = {"max_tokens": extra["max_tokens"], "reasoning_effort": extra["reasoning_effort"],
                "prompt_tokens": pt, "ttft_seconds": round(ttft, 2),
                "prefill_tps": round(pt / ttft, 1) if ttft else None,
@@ -557,7 +559,7 @@ def run_needle(base, args):
         out["pass"] = out.get("pass", False) or found
         if found or att["error"]:
             break
-    out["vault_code"] = vault_str
+    out["build_number"] = build_str
     out["pass"] = bool(out.get("pass"))
     return out
 
@@ -747,7 +749,7 @@ def summarize_line(name, r):
         return (f"{name:<10} prompt={g('turn1', 'prompt_tokens')} cached1={g('turn1', 'cached_tokens')} "
                 f"ttft t1={g('turn1', 'ttft')} t2={g('turn2_same_session', 'ttft')} "
                 f"t3={g('turn3_same_session', 'ttft')} new-session={g('turn3_different_session', 'ttft')} "
-                f"speedup={r.get('turn2_ttft_ratio_vs_turn1')}x vault_ok={r.get('answer_contains_vault')} "
+                f"speedup={r.get('turn2_ttft_ratio_vs_turn1')}x fact_ok={r.get('answer_contains_fact')} "
                 f"cross_session_reuse={r.get('cross_session_reuse')}")
     if name == "park":
         return (f"{name:<10} cold ttft A/B/C={r.get('cold_ttft')} -> return A={g('return_ttft', 'A')} "

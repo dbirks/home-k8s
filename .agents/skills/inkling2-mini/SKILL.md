@@ -9,8 +9,10 @@ description: Operate Thinking Machines Inkling 2 Mini on the eGPU laptop's RTX 5
 - `apps/inkling2-mini-models.yaml`: pinned + sha256-checked download onto talos-210-73x's HDD (source copy).
 - `apps/inkling2-mini-laptop-weights.yaml`: the laptop NVMe PVC `inkling2-mini-models-laptop`, plus an HTTP server
   (talos-210-73x) and a copy Job (laptop) that move the 20 GB over the LAN and verify `SHA256SUMS`.
-- `apps/inkling2-mini-vllm.yaml`: LIVE engine, the shared `inkling-2-mini` Service, and the ConfigMap
-  `inkling2-mini-vllm-patches` (vLLM PR #69096, applied with `patch` at container start).
+- `apps/inkling2-mini-basalt.yaml`: LIVE engine (see "Basalt engine" below) and the shared `inkling-2-mini` Service,
+  which every `inkling2-mini-*.yaml` pod template selects on `app.kubernetes.io/name: inkling-2-mini`. Run ONE engine.
+- `apps/inkling2-mini-vllm.yaml`: the rollback, parked at `replicas: 0`; the ConfigMap `inkling2-mini-vllm-patches`
+  (vLLM PR #69096, applied with `patch` at container start).
 - `apps/inkling2-mini-sglang.yaml.hold`: tuned SGLang alternative (faster decode, half the context).
 
 The model: 26.4B total / 3.4B active looped MoE, native NVFP4 + MXFP8 (~20 GB, no other "NVFP4 version" to pick),
@@ -18,14 +20,14 @@ bundled DSpark drafter in `mtp.safetensors`. Only 4 of 24 layers are full attent
 so 8 full-attention visits/token: about 32 KiB/token of BF16 KV. The 40 sliding-window visits are ~160 KiB/token but
 only the last 1024 tokens per request are needed.
 
-## Results (2026-11-21, measured in a lab pod)
+## Engine bake-off (2026-11-21, measured in a lab pod — Basalt has since won; see "Basalt engine" below)
 
 | Engine / config | KV | pool | max ctx | 1 stream | 2 streams | notes |
 |---|---|---|---|---|---|---|
 | SGLang cookbook 5090 DSpark | BF16 | 49K | 32K | 172 tok/s | 263 | as shipped |
 | SGLang tuned (held) | BF16 | 123K (0.85) / 141K (0.88) | ~pool | 176 | 283 | needle 120K/138K PASS |
 | vLLM, no DSpark (until 2026-11-21 pm) | FP8 | 277K | 256K | 158 | 233 | needle 245K PASS |
-| **vLLM + DSpark (live)** | **FP8** | **314K** | **256K** | 244 code / 151 prose | 340 / 265 (4: 620 / 440) | needle 250K PASS, 4 seqs |
+| **vLLM + DSpark (the rollback today)** | **FP8** | **314K** | **256K** | 244 code / 151 prose | 340 / 265 (4: 620 / 440) | needle 250K PASS, 4 seqs |
 
 Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cached, TTFT 3-5x lower). That is the
 "shared KV between sessions" lever; both engines have it on by default.
@@ -58,13 +60,31 @@ Prefix caching works in both (a repeated 23.5K-token system prompt: ~23.4K cache
 - **Never hold/remove a file that defines the weights PVC**: Flux prunes it and local-path deletes the data. That is
   why the PVC lives in its own file. A re-copy is ~15 min (set the weights server to 1, delete the copy Job if done).
 
-## Basalt engine (apps/inkling2-mini-basalt.yaml, lab 2026-11-21)
+## Basalt engine — LIVE (apps/inkling2-mini-basalt.yaml, since 2026-11-22)
 
-github.com/jesdga95/basalt (MIT, C++, sm_120 only). Image `ghcr.io/dbirks/basalt:<tag>` = release archive on
-`nvidia/cuda:13.0.2-runtime` (build/basalt/, `gh workflow run build-basalt.yaml -f version=vX -f sha256=<archive sha>`;
-the archive is CUDA 13.0.2 and the laptop driver is R580, so do not jump to a 13.4 base). Pack: `jesdga/Inkling-2-Mini-Basalt`
-(19.7 GB, apps/inkling2-mini-basalt-weights.yaml; single-connection curl from HF is 2-6 MB/s, `hf download` with xet ~12).
+github.com/jesdga95/basalt (MIT, C++, sm_120 only). Live image `ghcr.io/dbirks/basalt:main-8667cc8a` **built from
+source** at upstream commit `8667cc8abd68c2e9a7053bea2984b54e67799bca` (engine reports 0.5.6) on
+`nvidia/cuda:13.0.2-runtime` — the laptop's R580 (580.178) driver loads CUDA 13.0.x, not upstream's CUDA 13.4.3 default.
+Rebuild at a new upstream sha (`build/basalt-src/Dockerfile` + `.github/workflows/build-basalt-src.yaml`, manual
+trigger, inkling2-only because the all-models build blows the 120-min timeout):
+
+```bash
+SHA=$(gh api repos/jesdga95/basalt/commits/main --jq .sha)
+gh workflow run build-basalt-src.yaml -f ref=$SHA -f tag=main-${SHA:0:8}
+gh run watch   # then digest-pin in apps/inkling2-mini-basalt.yaml: image: ...:main-XXXXXXXX@sha256:...
+```
+
+We take `main` for fixes no tag has yet: the Inkling tool-call parser (#540), `--vision dynamic` holding no VRAM at
+rest (#541), prompt prefill (#555, #575) and Inkling prompt-lookup suffix drafts. `build/basalt` +
+`build-basalt.yaml` (`gh workflow run build-basalt.yaml -f version=vX -f sha256=<archive sha>`) stay the RELEASE path:
+when upstream tags these fixes, move back to an archive-based build. Pack: `jesdga/Inkling-2-Mini-Basalt` (19.7 GB,
+apps/inkling2-mini-basalt-weights.yaml; single-connection curl from HF is 2-6 MB/s, `hf download` with xet ~12).
 Starts in ~25 s once the image is cached (first pull 7 min over the laptop link). KV: only `fp16`/`fp8` for Inkling.
+
+Live flags: `--max-context 524288 --parallel 2` (two 262K slots), `--kv fp8`, the five `--conversation-cache-*`
+flags below, `--vision dynamic`, `--reasoning-effort medium`, `--ram-reserve-mib 2048`, `--allowed-host` the Service
+names. **Re-measure after every bump with the harness below — run-to-run variance at temp 1.0 is +-20%, so compare
+medians of 2-3 runs, never one number.**
 
 **The one thing to understand: expert spill.** Basalt sizes for the full `--max-context` (split across `--parallel` slots),
 plans the least-routed experts into pinned RAM to make room, then copies them back while caches are small. When a
@@ -73,8 +93,55 @@ PCIe Gen3 x4 Thunderbolt link (~3.5 GB/s). Even 0.7 GiB spilled halves decode; 2
 `elastic spill: the caches grow to N positions; X GiB ... go back to RAM` in `/data/.cache/basalt/*/engine.log`.
 Per-slot reservations cost VRAM even when idle, so 1 slot x 512K fits on-card while 2 x 256K plans some spill.
 
-Measured (fp8 KV, drafting on, vision on unless noted; short-chat code ~310-330 tok/s, prose ~255, 20/20 arithmetic,
-prefix reuse 23,526 of 23,539 in 0.4 s with an `x-session-id` header):
+### V1-V3 results (harness `scripts/inkling_eval.py` on the live endpoint, temp 1.0; ranges = repeat runs)
+
+| change | prose 1 stream (agg 2) tok/s | code 1 stream (agg 2) | temp-0 code / prose | tools valid t1.0 / t0 | 23K cold TTFT / new-session resend |
+|---|---|---|---|---|---|
+| v0.5.5 (previous image) | 137-144 (256-269) | 176-213 (345-391) | 459 / 296 | 57-67% / 95% | 2.05 s / 2.07 s (no cross-session reuse) |
+| **V1 = main-8667cc8a (live)** | **173-190 (337-350)** | **210-275 (400-452)** | ~400 / ~312 | 70-90% / 85% | 1.57 s / **0.07 s** (cross-session reuse works) |
+| V2 `--spec 4` | 177-190 | (agg 419-452) | 385 vs 404 | = V1 | a wash / slightly worse — REVERTED, keep default 8 |
+| V3 conversation cache | = V1 | = V1 | = V1 | = V1 | speed, tools and quality unchanged; see park below |
+
+- **V1 (the image bump) is the whole win**: +25% prose, +20-30% code, and cross-session prefix reuse — a brand-new
+  session resending the same conversation goes from a 2.07 s re-read to 0.07 s.
+- **V2 `--spec 4` did nothing**: Basalt's draft policy already sizes windows by expected tokens/ms. Don't re-try it;
+  read `/slots` `accept_pos` on real agent traffic instead — live is ~[0.67, 0.65, 0.69, 0.75, 0.83, 1.0, 1.0].
+- **V3 conversation cache: KEPT** (off by default at this commit). With 2 slots a third conversation evicts a slot's
+  K/V; these flags park the evicted conversation in RAM, then on disk, and restore it instead of re-reading the prompt:
+  `--conversation-cache-mib 4096` (RAM budget, 0 = off), `--conversation-cache-slots 8`,
+  `--conversation-cache-min-free-mib 4096` (the laptop has no swap; a 6144 guard once starved every request),
+  `--conversation-cache-disk-mib 65536` (tier in the /data emptyDir, so LOST on pod restart — an NVMe PVC is the
+  follow-up if it earns its keep), `--conversation-cache-min-tokens 4096` (a short chat is cheaper to re-read than to
+  copy back over the eGPU link). Park test (3 conversations through 2 slots, then return to the first two):
+  20K tokens cold 1.5-2.2 s -> return 0.65-0.95 s (2.3-3.4x; engine restores 24K tokens in ~250 ms); 100K tokens cold
+  11.5-15.1 s -> return 2.1-2.2 s (6.9-7.3x; restores 119K tokens in ~980 ms). Cost: a cold prompt that forces an
+  eviction is ~0.5 s slower at 20K (parking writes). Footprint: node 15.9 GiB available, pod ~7.9 GiB, disk tier 2.9 GB
+  after the tests. `/metrics` carries the counters (parked, bytes, evictions, restored, restored_ms).
+- **Tool calls**: 70-90% valid at temp 1.0, 85% at temp 0 (the temp-0 failures are the open upstream reasoning-loop
+  issue #577, empty or truncated replies, not the parser). Effort sweep at temp 1.0, N=30 each: low 63%, medium 80%,
+  high 73% -> keep `--reasoning-effort medium`. What is left is model-side: bare JSON (a name/args object, or only the
+  args) with no `content_invoke_tool_json` marker — a parser could recover these — a lone thinking or tool-call marker,
+  or prose like "I'll make the edit" with no call.
+- `--vision dynamic` no longer pins 1.37 GiB of the card at rest on `main` (#541); older notes saying "vision off frees
+  1.37 GiB" were measured on v0.5.5 and no longer buy anything — context room now comes only from `--max-context`.
+
+### How to test
+
+Port-forward first (`kubectl port-forward svc/inkling-2-mini 18100:8000`), then the stdlib harness — it self-caps at 2
+concurrent requests because the live endpoint serves real users; keep any run under ~10 minutes:
+
+```bash
+python3 -I scripts/inkling_eval.py --suite quick --label v1 --out a.json      # speed, tools, prefix, park, quality...
+python3 -I scripts/inkling_eval.py --only park --park-tokens 100000 --out b.json
+python3 -I scripts/inkling_eval.py --compare a.json b.json                    # per-metric delta table
+python3 -I scripts/inkling_eval.py --only speed,tools --label candidate --out c.json
+```
+
+Side channels worth reading while it runs: `/slots` (per-slot `accept_pos` drafter acceptance, `x-session-id` pins a
+conversation to a slot) and `/metrics` (conversation-cache stats). Keep the JSON outputs as the record.
+
+### Long-context sizing: the spill table (measured on the v0.5.5 image; same bench short-chat numbers: code ~310-330
+tok/s, prose ~255, 20/20 arithmetic, prefix reuse 23,526 of 23,539 in 0.4 s with an `x-session-id` header):
 
 | config | long prompt | both slots full |
 |---|---|---|
@@ -88,7 +155,7 @@ prefix reuse 23,526 of 23,539 in 0.4 s with an `x-session-id` header):
 Gotchas: `--ram-reserve-mib` above the host's free RAM makes EVERY request wait 30 s ("RAM low ... waits up to 30 s"):
 the pinned RAM copy of the experts (~14.4 GiB) stays allocated, leaving ~5.6 GiB free on the 31 GiB laptop; keep 2048.
 `--allowed-host` must list the Service names (Basalt checks Host). `pkill -f` the port-forward with a bracketed pattern
-in its OWN Bash call. Vision (`--vision dynamic`) keeps 1.37 GiB of the card.
+in its OWN Bash call.
 
 ## Strata engine (apps/inkling2-mini-strata.yaml.hold, lab 2026-11-22: HELD, lost to Basalt)
 
@@ -110,7 +177,7 @@ What we learned (full numbers in the .hold header):
   (`(sleep 40) | strata-inkling --serve ...`) and read nvidia-smi for the real footprint. Do not `pkill -f` a pattern
   that matches your own `sh -c` (use a bracket: `strata-inklin[g]`).
 
-## NVFP4 KV (our fork, LIVE since 2026-11-21: target + draft NVFP4, 576K context, block multiplier 1)
+## NVFP4 KV (our fork; the PARKED vLLM rollback — target + draft NVFP4, 576K context, block multiplier 1)
 - Code: github.com/dbirks/vllm branch `inkling2-mini-sm120` (PR #69028 head eb7981b + #69096 + NVFP4 KV). Image:
   `build/vllm-inkling/Dockerfile` = the pinned day-0 image + the 9 patched .py files fetched at a fork commit (one
   ~500 kB layer), built by `gh workflow run build-vllm-inkling.yaml -f tag=... -f vllm_ref=<fork sha>`.
@@ -135,7 +202,7 @@ What we learned (full numbers in the .hold header):
   at max-model-len 819200, prefix hits align to 64 tokens, 158 tok/s 1 stream (code = prose), 229 for 2, 20/20
   arithmetic, needles PASS at 500K (234 s) and 780K (531 s). The draft's BF16 full-attention cache (~12 KB/token) is
   bigger than the whole NVFP4 target cache (~9 KB/token).
-- NVFP4 DRAFT KV (image d, LIVE): `--speculative-config '{..., "kv_cache_dtype": "nvfp4"}'` +
+- NVFP4 DRAFT KV (image d, the vLLM-rollback config): `--speculative-config '{..., "kv_cache_dtype": "nvfp4"}'` +
   `INKLING_NVFP4_BLOCK_MULT=1` (no BF16 pages left, so no page mismatch). Pool 608,743 at max-model-len 589824 (vLLM's
   estimate at 1M said ~949K, but warmup at a long max-model-len reserves more; at 921600 the real max was ~605K), 64-token
   hit alignment, 20/20, needle PASS at 570K. DSpark acceptance drops a little (code ~206-246 tok/s vs ~264 with a BF16
@@ -157,12 +224,15 @@ What we learned (full numbers in the .hold header):
 5. Put the winner in git, delete the lab pod, set replicas back.
 
 ## Switching engines
-One commit: vLLM `replicas: 0` and rename the SGLang `.hold` to `.yaml` (or the reverse). Both pod templates carry
-`app.kubernetes.io/name=inkling-2-mini`, so the Service follows whichever runs.
+One commit: `replicas: 0` on the running engine and `1` on the other (Basalt is live, vLLM is the rollback; SGLang is
+`.yaml.hold` — rename it back first). Every pod template carries `app.kubernetes.io/name=inkling-2-mini`, so the Service
+follows whichever runs. One engine at a time: the card cannot hold two.
 
 ## Collective
 Model `inkling-2-mini` (backend `inkling-2-mini` in both `apps/llm-collective-contributor*.yaml`), concurrency prod 2 =
-vLLM `--max-num-seqs 2`, dev 1 on top (dev is rarely used; vLLM queues any overflow). If you change max-num-seqs (or
-switch to SGLang `--max-running-requests`), keep prod equal to it. Context 589824 (= max-model-len; on SGLang it would be ~123K: lower `limits.context`). openai + anthropic protocols, text +
-image. Reasoning: the template maps none/minimal/low/medium/high/xhigh/max to an effort number (default 0.9 = high); there is
-no off switch, so "none" still emits a short thought. Server default is medium (`--default-chat-template-kwargs`); request values override it.
+Basalt `--parallel 2` slots, dev 1 on top (dev is rarely used; the engine queues any overflow). If you change
+`--parallel` (or switch engines: vLLM `--max-num-seqs`, SGLang `--max-running-requests`), keep prod equal to it. Context
+262144 per slot on Basalt (589824 on the vLLM rollback, ~123K on SGLang — keep `limits.context` at the live engine's
+number). openai + anthropic protocols, text + image. Reasoning: the template maps none/minimal/low/medium/high/xhigh/max
+to an effort number (default 0.9 = high); there is no off switch, so "none" still emits a short thought. Server default is
+medium (`--reasoning-effort medium` on Basalt, `--default-chat-template-kwargs` on vLLM); request values override it.
