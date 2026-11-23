@@ -1,24 +1,55 @@
-# LIVE again 2026-11-05 (replicas 1, 6/24 slots, HiCache 10). Was PARKED 2026-11-02..11-05: Host-RAM boot failures (8/40 mamba slots, then 6/24 at HiCache 12 also failed the
-# host-memory check; HiCache 10 booted). Primary moved to Qwen3.8-27B on stock vLLM (apps/qwen38-27b-vllm.yaml) for
-# ~3x the KV pool. Rollback = qwen38-27b to 0 first, then this to 1, and swap the Collective backend back.
+# LIVE since 2026-11-05 (replicas 1, 6/24 slots, HiCache 10) — this IS the live primary; the LLM
+# Collective backend points here. Was PARKED 2026-11-02..11-05: Host-RAM boot failures (8/40 mamba slots,
+# then 6/24 at HiCache 12 also failed the host-memory check; HiCache 10 booted). If qwen38-27b
+# (apps/qwen38-27b-vllm.yaml) becomes primary again, scale it to 1 and this to 0 first, and swap the
+# Collective backend back.
 #
-# Pennyroyal v2.5.3 (SGLang fork, jpezzulli/sglang-rtxpro6000) serving Qwen3.8-Flash-Next NVFP4 with
-# NVMe-backed PLE + in-memory HiCache prefix reuse; NIXL disk persistence DISABLED (issue #135). A PARALLEL canary beside the
-# existing apps/flashnext-serve.yaml (Primitive/vLLM, the rollback): nothing routes here yet.
+# Upgrade 2026-11-23: v2.5.3 -> v3.1.7. From:
+#   ghcr.io/jpezzulli/sglang-rtxpro6000:v2.5.3@sha256:81d4d3d19b21e30b895f57e3628a8dd82c02a52c17e6234f5f3ea7836fd31fb3
+# Rollback = put the v2.5.3 digest back AND restore the old sed-strip args block (2.5.3 has no NIXL env),
+# exactly as pasted below (paste verbatim into args:, minus the leading "# " comment prefix):
+#   set -euo pipefail
+#   echo "[pennyroyal] memlock=$(ulimit -l) uid=$(id -u)"
+#   rm -rf /tmp/penny-recipe && cp -r /opt/pennyroyal/configs/pennyroyal /tmp/penny-recipe
+#   R=/tmp/penny-recipe/serve-flash-next-frspec.sh
+#   sed -i -e 's/ --hicache-storage-backend nixl//' \
+#          -e '/--hicache-storage-prefetch-policy timeout/d' \
+#          -e '/--hicache-storage-backend-extra-config/d' \
+#          -e 's/--enable-metrics /--enable-metrics --enable-cache-report /' \
+#          -e 's/--max-running-requests "\$MAX_RUNNING_REQUESTS"/& --schedule-policy lpm/' "$R"
+#   if grep -nE -- '--hicache-storage' "$R"; then
+#     echo "[pennyroyal] FATAL: storage-backend flags still present; refusing to persist to disk" >&2; exit 1
+#   fi
+#   grep -qF -- '--schedule-policy lpm' "$R" \
+#     || { echo "[pennyroyal] FATAL: --schedule-policy lpm not applied (recipe changed?)" >&2; exit 1; }
+#   grep -qF -- '--enable-cache-report' "$R" \
+#     || echo "[pennyroyal] WARN: --enable-cache-report not applied; cache stats stay invisible" >&2
+#   bash -n "$R"
+#   echo "[pennyroyal] NIXL disk tier disabled (GPU + host-RAM HiCache only)"
+#   exec /usr/local/bin/pennyroyal exec bash "$R"
+# Why: 3.1.3 hybrid-chunk state fix #109/#131; 3.1.6 +26-33% prefill on long cached prefixes;
+# 3.1.4/3.1.7 Claude Code/Codex fixes (nested tool_reference; namespaced/custom Responses
+# tools; thinking.display=updates); 3.0.2 page-aligned mamba host slots (~14 GiB host RAM back);
+# native NIXL=off. V1 measured: pending.
 #
-# PRECONDITIONS before unholding (see the PR for the ordered runbook):
+# Pennyroyal v3.1.7 (SGLang fork, jpezzulli/sglang-rtxpro6000) serving Qwen3.8-Flash-Next NVFP4 with
+# NVMe-backed PLE + in-memory HiCache prefix reuse; NIXL disk persistence DISABLED (issue #135).
+# Live primary: the LLM Collective backend points at this Service (no in-cluster gateway).
+#
+# PRECONDITIONS before unholding:
 #   - apps/pennyroyal-pvcs.yaml unheld and apps/pennyroyal-stage-model.yaml finished (source + overlay).
-#   - ninfer AND muse scaled to 0: this takes the WHOLE card (recipe --mem-fraction-static 0.981, upstream
-#     measured 95,817/97,887 MiB peak) and ~16Gi of node memory REQUESTS (booked at ~94% today).
+#   - ninfer AND muse scaled to 0: this takes the WHOLE card (recipe --mem-fraction-static 0.97, upstream
+#     measured 95,817/97,887 MiB peak at 0.981; 0.97 is the 3.1.x measured default) and ~16Gi of node
+#     memory REQUESTS.
 #   - apps/pennyroyal-cuda-smoke.yaml passed (CUDA 13.3 image on driver 580.167.08).
 #
 # HOST RAM (46GB, no swap) is the design constraint. Upstream's default profile pins a 47.68GiB PLE table
 # plus 32GB HiCache and cannot fit. So: PLE on NVMe (32MiB page pool + 2x16MiB staging + reclaimable
-# page cache), HiCache host tier 12GB (pinned; 8 until 2026-10-26).
+# page cache), HiCache host tier 10GB (pinned; 8 -> 12 on 2026-10-26, 12 -> 10 on 2026-11-02).
 #
 # 2026-10-26 tuning (see the pennyroyal-flashnext skill): several agents with 190K-410K contexts
 # (~1.17M total) overflowed GPU KV + host HiCache, and LRU evicted exactly the context needed next.
-# So: HiCache 8 -> 12GB, --schedule-policy lpm (was fcfs), contributor concurrency 12 -> 8.
+# So: HiCache 8 -> 12GB (now 10GB), --schedule-policy lpm (was fcfs), contributor concurrency 12 -> 8.
 # Concurrency: SGLang caps running requests at max_mamba_cache_size // 5 (3 slots/request + 2 extra_buffer
 # ping-pong with the overlap scheduler), so 6 / 24 really runs 4. 8 / 40 was tried 2026-11-02 and REVERTED:
 # the host HiCache mamba pool grows with the GPU slots (1.42 -> 2.36 GB of the 12 GB split) and failed the
@@ -29,8 +60,9 @@
 # --decode-attention-backend trtllm_mha. Details and the safer lever: the skill.
 #
 # Fixed by the upstream recipe (no env override): port 8001, --served-model-name pennyroyal, context
-# 524,288, FP8 KV, NEXTN 3/1/4 + FR-Spec, --reasoning-parser qwen3, --tool-call-parser qwen3_coder,
-# /metrics on the same port, no API key (auth stays at the gateway). Anthropic /v1/messages is native.
+# 524,288, FP8 KV, NEXTN adaptive (default tiered: W8 steps 7 at one running request, W4 steps 3 at
+# batch >=2) + FR-Spec, --reasoning-parser qwen3, --tool-call-parser qwen3_coder,
+# /metrics on the same port, no API key (auth stays at the Collective). Anthropic /v1/messages is native.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,11 +80,13 @@ spec:
     spec:
       runtimeClassName: nvidia
       enableServiceLinks: false
-      terminationGracePeriodSeconds: 120   # upstream stop_grace_period; lets NIXL flush pending writes
+      terminationGracePeriodSeconds: 120   # TODO: can be dropped after V1 is proven (was for NIXL io_uring)
       securityContext:
-        seccompProfile: { type: Unconfined }   # NIXL POSIX uses io_uring (upstream: seccomp=unconfined)
+        seccompProfile: { type: Unconfined }   # TODO: can be dropped after V1 is proven (was for NIXL io_uring)
       initContainers:
         # local-path volumes are hostPath-backed, so fsGroup is NOT applied: chown the writable dirs.
+        # /nixl is still required: the 3.1.7 entrypoint checks that CACHE_BASE and NIXL_STORAGE_BASE
+        # exist and are writable regardless of NIXL=off (only the namespace derivation is skipped).
         - name: chown
           image: busybox:1.37
           command: ["sh", "-c", "chown 1000:1000 /cache /nixl && ls -ld /cache /nixl"]
@@ -62,14 +96,15 @@ spec:
             - { name: nixl, mountPath: /nixl }
       containers:
         - name: sglang
-          image: ghcr.io/jpezzulli/sglang-rtxpro6000@sha256:81d4d3d19b21e30b895f57e3628a8dd82c02a52c17e6234f5f3ea7836fd31fb3
-          # NO PROMPT DATA ON DISK (user requirement, ZDR #98). The upstream recipe hard-codes
-          # `--hicache-storage-backend nixl`, which persists prompt-derived KV/state to /nixl across
-          # restarts; there is no env to turn it off. So run a copy of the recipe with exactly those
-          # three storage flags stripped. What remains: GPU radix prefix cache + a 12GB HOST-RAM HiCache
-          # tier (both in-memory, gone on restart) -> multi-turn prefix reuse still works within the
-          # process; only restart-survives-the-cache is given up. The patch FAILS CLOSED: if upstream
-          # renames a flag, the grep below stops startup instead of silently persisting to disk.
+          image: ghcr.io/jpezzulli/sglang-rtxpro6000:v3.1.7@sha256:135cd55bc1d399631c62365135338d8904cbf9734c1602b9787b90b19b847a8d
+          # NO PROMPT DATA ON DISK (user requirement, ZDR #98). v3.1.7 supports this EXPLICITLY:
+          # setting NIXL=off (below) makes the recipe drop the `--hicache-storage-backend nixl` /
+          # `--hicache-storage-prefetch-policy timeout` / `--hicache-storage-backend-extra-config`
+          # args natively and skip the /nixl namespace derivation entirely. What remains: GPU radix
+          # prefix cache + a 10GB HOST-RAM HiCache tier (both in-memory, gone on restart) ->
+          # multi-turn prefix reuse still works within the process; only restart-survives-the-cache
+          # is given up. The patch FAILS CLOSED: if NIXL is not explicitly "off" (env dropped,
+          # renamed, or typo'd), the guard below stops startup instead of silently persisting to disk.
           # (`pennyroyal exec` keeps the entrypoint's REPO_ROOT/PYTHONPATH/PLE exports but skips its
           # GPU autodetect, hence CUDA_VISIBLE_DEVICES=0.) Also logs memlock, which K8s cannot set.
           command: ["/bin/bash", "-c"]
@@ -77,16 +112,13 @@ spec:
             - |
               set -euo pipefail
               echo "[pennyroyal] memlock=$(ulimit -l) uid=$(id -u)"
+              if [[ "${NIXL:-}" != off ]]; then
+                echo "[pennyroyal] FATAL: NIXL must be explicitly 'off' (ZDR #98); refusing to persist to disk" >&2; exit 1
+              fi
               rm -rf /tmp/penny-recipe && cp -r /opt/pennyroyal/configs/pennyroyal /tmp/penny-recipe
               R=/tmp/penny-recipe/serve-flash-next-frspec.sh
-              sed -i -e 's/ --hicache-storage-backend nixl//' \
-                     -e '/--hicache-storage-prefetch-policy timeout/d' \
-                     -e '/--hicache-storage-backend-extra-config/d' \
-                     -e 's/--enable-metrics /--enable-metrics --enable-cache-report /' \
+              sed -i -e 's/--enable-metrics /--enable-metrics --enable-cache-report /' \
                      -e 's/--max-running-requests "\$MAX_RUNNING_REQUESTS"/& --schedule-policy lpm/' "$R"
-              if grep -nE -- '--hicache-storage' "$R"; then
-                echo "[pennyroyal] FATAL: storage-backend flags still present; refusing to persist to disk" >&2; exit 1
-              fi
               # lpm (2026-10-26): admit the waiting request with the longest cached prefix first, so an
               # agent whose context is still resident runs before one that would evict it. Fail closed.
               grep -qF -- '--schedule-policy lpm' "$R" \
@@ -113,10 +145,16 @@ spec:
             - { name: SGLANG_FORWARD_UNKNOWN_TOOLS, value: "true" }
             - { name: MAX_RUNNING_REQUESTS, value: "6" }               # effectively 4 (24 // 5); 8/40 failed 2026-11-02, see header
             - { name: MAX_MAMBA_CACHE_SIZE, value: "24" }              # caps running requests at this // 5 (extra_buffer + overlap)
-            # 2026-10-26: 1,000,000 fp8 tokens (was unset -> recipe CAP of 824,384, not a memory limit: boot left
-            # ~4 GB VRAM free after graphs; upstream qualified 1,000,000). The quality-neutral way to grow the
-            # shared prefix cache; costs ~2 GB of the post-boot VRAM headroom. Rollback = delete this line.
+            # 2026-10-26: 1,000,000 fp8 tokens (explicit cap; v3.1.7 recipe sizes the pool automatically
+            # from free memory when this is unset — keep the explicit cap anyway: boot left ~4 GB VRAM free
+            # after graphs at the v2.5.3 cap of 824,384, upstream qualified 1,000,000). The quality-neutral
+            # way to grow the shared prefix cache; costs ~2 GB of the post-boot VRAM headroom.
+            # Rollback = delete this line.
             - { name: MAX_TOTAL_TOKENS, value: "1000000" }
+            # V2 experiment: do NOT set PENNY_MTP_POLICY in V1 (the 3.1.7 default tiered =
+            # W8 steps 7 at one running request, W4 steps 3 at batch >=2). fixed-w4 / adaptive
+            # are the V2 experiment once V1 (V1 measured: pending) is proven.
+            - { name: NIXL, value: "off" }                             # native 3.1.x ZDR toggle: drops the storage flags, no /nixl persistence
             - { name: PENNY_REASONING_EFFORT, value: medium }
             - { name: HF_HUB_OFFLINE, value: "1" }
           ports:
@@ -149,8 +187,8 @@ spec:
       volumes:
         - { name: models, persistentVolumeClaim: { claimName: pennyroyal-models } }
         - { name: cache, persistentVolumeClaim: { claimName: pennyroyal-cache } }
-        # Tiny RAM emptyDir: the recipe still requires the dir and writes only namespace-identity.json
-        # (checkpoint/config hashes, no prompt data) there. No PVC: nothing prompt-derived hits disk.
+        # Tiny RAM emptyDir: the 3.1.7 entrypoint still requires the dir to exist/be writable even
+        # with NIXL=off (nothing is written when the storage tier is off). No PVC: nothing prompt-derived hits disk.
         - { name: nixl, emptyDir: { medium: Memory, sizeLimit: 64Mi } }
         - { name: dshm, emptyDir: { medium: Memory, sizeLimit: 16Gi } }   # upstream shm_size 16gb; counts toward the 40Gi limit only when used
 ---
