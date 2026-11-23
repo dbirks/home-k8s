@@ -28,7 +28,9 @@
 #   vLLM (NVFP4 KV) for comparison: prose ~151, code ~206-246, 570K needle ~300 s.
 #   V1 (main-8667cc8a, eval harness .agents/skills/inkling2-mini/scripts/inkling_eval.py, temp 1.0): prose 175-180 tok/s
 #     (v0.5.5 137-144), code 245-274 (176-213), 23K cold 1.57 s (2.05), cross-session prefix hit 0.07 s (was a miss),
-#     tool calls valid 70-87% at temp 1.0 (57-67%); medium effort beats low/high for tool calls. V2 (--spec 4): pending
+#     tool calls valid 70-87% at temp 1.0 (57-67%); medium effort beats low/high for tool calls. V2 (--spec 4): a wash
+#     vs default 8 (prose 177-190, code agg 419-452, temp-0 code 385 vs 404); reverted.
+#     V3 (conversation cache): pending
 # Why 2 x 256K and not more: Basalt plans for the full --max-context and spills the least-routed experts to pinned RAM
 #   when caches grow; over the eGPU's PCIe Gen3 x4 that collapses (2 x 512K: a 500K prompt took 24 min, 2.4 tok/s).
 #   Alternatives measured: 1 slot x 512K (--parallel 1): 500K needle 147 s, 104 tok/s, no spill; vision off frees
@@ -37,7 +39,21 @@
 # Flags and why:
 #   --max-context 524288 --parallel 2   two slots of 262,144 each (Basalt splits max-context between slots).
 #   --kv fp8                       E4M3 full-attention caches, 16 KiB/token (fp16 is 32). Window layers are fixed rings.
-#   --spec 4   V2 experiment: DSpark window cap 4 (default 8); see Measured.
+#   Conversation cache (V3, off by default at this commit): with 2 slots, a third conversation evicts a slot's K/V; these
+#   flags park the evicted conversation in RAM, then on disk, and restore it instead of re-reading the prompt.
+#     --conversation-cache-mib 4096        RAM budget for parked conversations (default 0 = off). The node has ~14 GiB
+#                                          free and the pod sits at ~9.4 GiB of its 24Gi limit, so 4 GiB of parking room.
+#     --conversation-cache-slots 8         most parked conversations (default 4); 3 live users + the eval's A/B/C fit.
+#     --conversation-cache-min-free-mib 4096  keep 4 GiB of physical RAM free while parking (default 2560) — the laptop
+#                                          has no swap and a 6144 guard already once starved requests (see --ram-reserve).
+#     --conversation-cache-disk-mib 65536  disk tier 64 GiB in ~/.cache/basalt/conversations = /data/... (default 0 =
+#                                          off). Only the system prompt + last three turns are stored, files are
+#                                          hash-checked, LRU-capped by the budget, and every write leaves 4 GiB of the
+#                                          volume free, so the tier tops out near 60 GiB inside the 80 GiB mount.
+#     --conversation-cache-min-tokens 4096 park only conversations >= 4K tokens (default 0): a short chat's K/V is cheaper
+#                                          to re-read than to copy out and back over the eGPU link.
+#   The disk tier lives in the /data emptyDir (80 GiB = 64 GiB tier + engine log + the 4 GiB a write keeps free), so it is
+#   LOST on pod restart — fine for now; a PVC on the laptop's NVMe is the follow-up if V3 earns its keep.
 #   --vision dynamic               the engine's own image encoder.
 #   --reasoning-effort medium      default when a request names none (the template's own default is high).
 #   --ram-reserve-mib 2048         host RAM the engine keeps free (its default). It holds a full RAM copy of the experts
@@ -95,8 +111,16 @@ spec:
             - "2"
             - "--kv"
             - "fp8"
-            - "--spec"
-            - "4"
+            - "--conversation-cache-mib"
+            - "4096"
+            - "--conversation-cache-slots"
+            - "8"
+            - "--conversation-cache-min-free-mib"
+            - "4096"
+            - "--conversation-cache-disk-mib"
+            - "65536"
+            - "--conversation-cache-min-tokens"
+            - "4096"
             - "--vision"
             - "dynamic"
             - "--reasoning-effort"
@@ -135,6 +159,6 @@ spec:
             claimName: inkling2-mini-basalt-pack
             readOnly: true
         - name: home
-          emptyDir: { sizeLimit: 4Gi }
+          emptyDir: { sizeLimit: 80Gi }   # V3: /data holds the conversation-cache disk tier (64 GiB budget + log + the 4 GiB a write keeps free); emptyDir = gone on pod restart
         - name: dshm
           emptyDir: { medium: Memory, sizeLimit: 2Gi }

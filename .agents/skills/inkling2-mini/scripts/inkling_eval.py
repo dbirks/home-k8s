@@ -22,6 +22,7 @@ Tests (each prints one summary line; --only speed,tools selects a subset):
   speed     single/2-stream decode tok/s (TTFT excluded) + TTFT, code & prose, temp 1.0 and temp 0
   tools     edit_file tool-call validity (temp 1.0 + temp 0) and a 2-tool "both calls" check
   prefix    23K-token prompt, same-session append (prefix hit) and a different-session reuse
+  park      3 x ~20K conversations vs 2 slots: does an evicted conversation come back from the conversation cache?
   needle    ~--needle-tokens prompt, needle at 50 %: prefill/decode tok/s (full suite only)
   quality   20 seeded 3x3-digit multiplications at reasoning_effort low
   effort    one math question at reasoning_effort none/low/medium/high -> reasoning size + correctness
@@ -53,7 +54,7 @@ RETRIES = 3
 RETRY_BACKOFF = 10.0
 RETRY_CODES = {429, 503}
 MAX_CONCURRENCY = 2
-SUITE_QUICK = ["speed", "tools", "prefix", "quality", "vision", "anthropic", "metrics"]
+SUITE_QUICK = ["speed", "tools", "prefix", "park", "quality", "vision", "anthropic", "metrics"]
 SUITE_FULL = ["speed", "tools", "prefix", "needle", "quality", "effort", "vision", "anthropic", "metrics"]
 
 _slots = threading.Semaphore(MAX_CONCURRENCY)
@@ -414,6 +415,115 @@ def run_prefix(base, args):
     return out
 
 
+# ---------------------------------------------------------------- 3b. park
+
+
+def park_line(i: int, tag: str) -> str:
+    """Code-ish filler unique per conversation tag: A/B/C must NOT share a prefix or the prompt cache serves
+    the later ones and nothing is ever evicted."""
+    return (f"{i:05d} def helper_{tag}_{i}(ctx):\n"
+            f"           return (ctx * {i} + {i * 7}) % 1009  # {tag} cached path {i}\n")
+
+
+def park_prompt(base, target_tokens, tag, vault, offset):
+    """~target_tokens of filler tagged `tag` with its own vault code buried at the midpoint."""
+    per = calibrate_tokens_per_line(base)
+    lines = max(50, int(target_tokens / per))
+    vault_str = f"{vault:06d}"
+    blob = "\n".join(park_line(i, tag) for i in range(offset, offset + lines)).split("\n")
+    mid = len(blob) // 2
+    blob.insert(mid, f"{offset + mid:05d} # IMPORTANT for conversation {tag}: "
+                     f"The vault code is {vault_str}. Do not lose it.")
+    text = (f"You are a coding agent. Below is a numbered repository dump, tag {tag} "
+            f"(two source lines per entry), seen by no other conversation. It contains exactly one IMPORTANT "
+            f"line with a vault code.\n\n" + "\n".join(blob))
+    return text, lines, vault_str
+
+
+def _find_key(obj, key):
+    """First value stored under `key` anywhere in a JSON tree (breadth-first), else None."""
+    queue = [obj]
+    while queue:
+        cur = queue.pop(0)
+        if isinstance(cur, dict):
+            if key in cur:
+                return cur[key]
+            queue.extend(cur.values())
+        elif isinstance(cur, list):
+            queue.extend(cur)
+    return None
+
+
+def _cache_stats(base):
+    """The engine's conversation-cache figures from /metrics, verbatim, truncated to 1 KB ('' if absent)."""
+    try:
+        with _slots:
+            resp = _open(base, "/metrics", None, sid("park-metrics"), 60)
+            with resp:
+                d = json.load(resp)
+    except Exception as e:  # noqa: BLE001
+        return f"unavailable: {e.__class__.__name__}"
+    found = _find_key(d, "conversation")
+    return "" if found is None else json.dumps(found)[:1024]
+
+
+def _has_fact(result, vault_str):
+    """Did this reply (content or reasoning) carry the conversation's own vault code back?
+    A restore that grabbed the wrong conversation's K/V answers with someone else's fact."""
+    blob = ((result.get("text") or "") + " " + (result.get("reasoning") or "")).replace(",", "")
+    return vault_str in blob
+
+
+def run_park(base, args):
+    """Basalt serves --parallel 2 slots. Send three distinct ~20K-token conversations one after another, so the
+    third must evict a slot's K/V, then ask two of them a follow-up. With the conversation cache on (V3) a return
+    is restored from RAM/disk in a few hundred ms; with it off the whole prompt is re-read (~cold TTFT)."""
+    target = args.park_tokens
+    req = {"model": MODEL, "max_tokens": 1200, "temperature": 0, "reasoning_effort": "none"}
+    rnd = random.Random(f"{NONCE}-park")
+    convs = {}
+    out = {"target_tokens": target, "slots": 2, "turn1": {}, "cold_ttft": [], "return_ttft": {},
+           "return_cached": {}, "facts_ok": True, "errors": []}
+    for n, tag in enumerate(("A", "B", "C")):
+        prompt, lines, vault = park_prompt(base, target, tag, rnd.randint(0, 999999), 1 + n * 100000)
+        session = sid(f"park-{tag}")
+        msgs = [{"role": "user", "content": prompt + "\n\nQuestion 1: What is the vault code in this dump? "
+                                                     "Reply with just the six digits."}]
+        r = chat_stream(base, dict(req, messages=msgs), session)
+        ans = r.get("text") or ""
+        convs[tag] = {"msgs": msgs, "ans": ans, "vault": vault}
+        out["turn1"][tag] = {k: r.get(k) for k in ("ttft", "prompt_tokens", "cached_tokens", "wall")}
+        out["cold_ttft"].append(r.get("ttft"))
+        out[f"turn1_{tag}_answer"] = ans[:70].replace("\n", " ")
+        out["filler_lines"] = out.get("filler_lines", 0) + lines
+        out["errors"].extend([r["error"]] if r.get("error") else [])
+        if not _has_fact(r, vault):
+            out["facts_ok"] = False
+            out.setdefault("fact_misses", []).append(f"turn1-{tag}")
+        time.sleep(1.0)   # let the slot settle before the next conversation arrives
+    for tag in ("A", "B"):
+        c = convs[tag]
+        msgs2 = c["msgs"] + [{"role": "assistant", "content": c["ans"] or "(no answer)"},
+                             {"role": "user", "content": f"Question 2: What is the vault code in this dump, and how "
+                              "many helper_ functions does it define? Reply with the six digits and the count on one line."}]
+        r = chat_stream(base, dict(req, messages=msgs2), sid(f"park-{tag}"))
+        ans2 = r.get("text") or ""
+        out["return_ttft"][tag] = r.get("ttft")
+        out["return_cached"][tag] = r.get("cached_tokens")
+        out[f"return_{tag}"] = {k: r.get(k) for k in ("ttft", "prompt_tokens", "cached_tokens", "wall")}
+        out[f"return_{tag}_answer"] = ans2[:70].replace("\n", " ")
+        if not _has_fact(r, c["vault"]):
+            out["facts_ok"] = False
+            out.setdefault("fact_misses", []).append(f"return-{tag}")
+        out["errors"].extend([r["error"]] if r.get("error") else [])
+    cold = max((t for t in out["cold_ttft"] if t), default=None)
+    out["cache_stats"] = _cache_stats(base)
+    out["return_speedup_vs_cold"] = {
+        tag: (round(cold / r, 2) if cold and r else None) for tag, r in out["return_ttft"].items()}
+    out["restored"] = any((r or 0) < 0.6 for r in out["return_ttft"].values())
+    return out
+
+
 # ---------------------------------------------------------------- 4. needle
 
 def run_needle(base, args):
@@ -602,7 +712,7 @@ def run_metrics(base, args):
     return out
 
 
-TESTS = {"speed": run_speed, "tools": run_tools, "prefix": run_prefix, "needle": run_needle,
+TESTS = {"speed": run_speed, "tools": run_tools, "prefix": run_prefix, "park": run_park, "needle": run_needle,
          "quality": run_quality, "effort": run_effort, "vision": run_vision, "anthropic": run_anthropic,
          "metrics": run_metrics}
 
@@ -639,6 +749,10 @@ def summarize_line(name, r):
                 f"t3={g('turn3_same_session', 'ttft')} new-session={g('turn3_different_session', 'ttft')} "
                 f"speedup={r.get('turn2_ttft_ratio_vs_turn1')}x vault_ok={r.get('answer_contains_vault')} "
                 f"cross_session_reuse={r.get('cross_session_reuse')}")
+    if name == "park":
+        return (f"{name:<10} cold ttft A/B/C={r.get('cold_ttft')} -> return A={g('return_ttft', 'A')} "
+                f"B={g('return_ttft', 'B')} speedup={r.get('return_speedup_vs_cold')} "
+                f"restored={r.get('restored')} facts_ok={r.get('facts_ok')} cache={r.get('cache_stats') or '-'}")
     if name == "needle":
         last = (r.get("attempts") or [{}])[-1]
         return (f"{name:<10} {'PASS' if r.get('pass') else 'FAIL'} prompt={r.get('prompt_tokens')} "
@@ -690,6 +804,11 @@ def headline_rows(r):
     rows.append(("prefix TTFT turn2 s (same session)", val("prefix", "turn2_same_session", "ttft")))
     rows.append(("prefix TTFT turn3 new session s", val("prefix", "turn3_different_session", "ttft")))
     rows.append(("prefix cached turn2", val("prefix", "turn2_same_session", "cached_tokens")))
+    rows.append(("park cold TTFT worst s", max([t for t in (val("park", "cold_ttft") or []) if t], default=None)
+                 if val("park", "cold_ttft") else None))
+    rows.append(("park return TTFT A s", val("park", "return_ttft", "A")))
+    rows.append(("park return TTFT B s", val("park", "return_ttft", "B")))
+    rows.append(("park facts ok", val("park", "facts_ok")))
     rows.append(("needle prefill tok/s", val("needle", "prefill_tps")))
     rows.append(("needle decode tok/s", val("needle", "decode_tps")))
     rows.append(("needle", "PASS" if val("needle", "pass") else ("FAIL" if "needle" in r else None)))
@@ -741,6 +860,7 @@ def main(argv=None):
     ap.add_argument("--only", help="comma list: " + ",".join(TESTS))
     ap.add_argument("--needle-tokens", type=int, default=120000)
     ap.add_argument("--prefix-tokens", type=int, default=23000)
+    ap.add_argument("--park-tokens", type=int, default=20000, help="filler per parked conversation (park test)")
     ap.add_argument("--tool-n-temp1", type=int, default=30, help="edit_file cases at temperature 1.0")
     ap.add_argument("--tool-n-temp0", type=int, default=20, help="edit_file cases at temperature 0")
     ap.add_argument("--multi-tool-n", type=int, default=10)
@@ -784,8 +904,8 @@ def main(argv=None):
     wall = round(time.time() - started, 1)
     payload = {"label": args.label or LABEL, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                "base": args.base, "suite": args.suite, "model": MODEL, "only": names,
-               "args": {k: getattr(args, k) for k in ("needle_tokens", "prefix_tokens", "tool_n_temp1",
-                                                      "tool_n_temp0", "multi_tool_n", "quality_n", "seed")},
+               "args": {k: getattr(args, k) for k in ("needle_tokens", "prefix_tokens", "park_tokens",
+                                                      "tool_n_temp1", "tool_n_temp0", "multi_tool_n", "quality_n", "seed")},
                "wall_seconds": wall, "results": results}
     if args.out:
         import os
