@@ -3,8 +3,22 @@
 # 2026-11-22, replacing apps/inkling2-mini-vllm.yaml (parked at 0, the rollback). Both carry
 # app.kubernetes.io/name: inkling-2-mini so the shared Service there routes to whichever runs. Run ONE at a time.
 # ============================================================================================
-# Image: ghcr.io/dbirks/basalt:<release> = upstream release archive on nvidia/cuda:13.0.2-runtime (build/basalt/,
-#   .github/workflows/build-basalt.yaml). Laptop driver R580 (580.178) meets the archive's 580.95 minimum.
+# Image: ghcr.io/dbirks/basalt:main-8667cc8a = Basalt built FROM SOURCE at upstream commit
+#   8667cc8abd68c2e9a7053bea2984b54e67799bca (build/basalt-src/, .github/workflows/build-basalt-src.yaml), on
+#   nvidia/cuda:13.0.2-runtime to match the laptop's R580 (580.178) driver — not upstream's CUDA 13.4.3 default, whose
+#   runtime that driver branch will not load. inkling2-only build (BASALT_MODELS=inkling2): this image serves nothing
+#   else and the all-models build is most of the compile time. We take main for fixes no tag has yet: the Inkling
+#   tool-call parser (#540, 433ce65: calls written as XML / with no header come back as tool_calls, not raw text),
+#   --vision dynamic holding no VRAM at rest (#541, the 1.37 GiB that the docs already promised back), prompt prefill
+#   (#555 +20-22%, #575 native MXFP8 layers 20-23), and Inkling prompt-lookup suffix drafts (--suffix-draft, default
+#   on). Upstream bills the decode movement as +2-3%.
+#   build/basalt + .github/workflows/build-basalt.yaml (release archive, ghcr tag <release>) REMAIN the release path:
+#   when upstream tags these fixes, move back to the archive tag and rebuild this one off a tag, not off main.
+#   `--gpu 0` below is accepted at this commit (serve/config.py declares --gpu; check_gpu/parse_gpu_spec read "0" as a
+#   one-card list) and is a no-op here: with unset or one number the engine narrows CUDA_VISIBLE_DEVICES to that one
+#   card either way. Upstream #567's "CUDA sees 0 of the 1 GPUs chosen" is an environment-specific runtime failure on
+#   that path, still open and unfixed at 8667cc8a — if the pod dies at GPU selection, dropping the --gpu 0 pair is the
+#   first thing to try, and it costs nothing on a single-card node.
 # Pack: apps/inkling2-mini-basalt-weights.yaml (Inkling-2-Mini-NVFP4-q8.basalt, 19.7 GB): the release's NVFP4 experts
 #   bit for bit, layers 20-23 + projections Q8_0, vision + DSpark drafter. Upstream: KLD 0.00305 vs the release.
 #
@@ -12,6 +26,7 @@
 #   each; 20/20 arithmetic; 23.5K prompt 2.7 s cold, 0.4 s on a prefix hit (send x-session-id for slot affinity);
 #   needle 250K PASS in 46 s (5,510 tok/s prefill, 152 tok/s decode); both slots at 250K at once: PASS, 235 s, 75/136 tok/s.
 #   vLLM (NVFP4 KV) for comparison: prose ~151, code ~206-246, 570K needle ~300 s.
+#   V1 (main-8667cc8a): pending
 # Why 2 x 256K and not more: Basalt plans for the full --max-context and spills the least-routed experts to pinned RAM
 #   when caches grow; over the eGPU's PCIe Gen3 x4 that collapses (2 x 512K: a 500K prompt took 24 min, 2.4 tok/s).
 #   Alternatives measured: 1 slot x 512K (--parallel 1): 500K needle 147 s, 104 tok/s, no spill; vision off frees
@@ -56,7 +71,7 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: main
-          image: ghcr.io/dbirks/basalt:v0.5.5@sha256:7009457f0026840e42200c54ed71d30dc850c29b3213d471602f69c950da4606
+          image: ghcr.io/dbirks/basalt:main-8667cc8a@sha256:de0bba48caaa600d8044eb8e9b88ecc260a049f11d9b9387af365c0c70d8ee52
           args:
             - "/models/Inkling-2-Mini-NVFP4-q8.basalt"
             - "--alias"
