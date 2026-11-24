@@ -129,7 +129,7 @@ spec:
             - "--gpu"
             - "0"
             - "--max-context"
-            - "614400"     # 2 x 307,200 (2026-11-24 trial, was 524288 = 2 x 256K, which left ~2.6 GiB VRAM free)
+            - "573440"     # 2 x 286,720 (2026-11-24 trial; 614400 planned 162 experts into RAM; 524288 left ~2.6 GiB free)
             - "--parallel"
             - "2"     # 2 x 262,144. 2026-11-24: 4 x 131,072 measured (+15-20% agg at 4 clients) but 128K/agent too small;
                       # --slot-full-context reserves N x max-context up front (4 x 320K failed to start). See inkling2-mini skill.
