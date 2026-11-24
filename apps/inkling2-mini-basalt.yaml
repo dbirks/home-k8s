@@ -129,9 +129,10 @@ spec:
             - "--gpu"
             - "0"
             - "--max-context"
-            - "524288"
+            - "327680"     # 2026-11-24 trial: with --slot-full-context EVERY slot may reach 320K (KV grows on demand)
             - "--parallel"
-            - "4"     # 2026-11-24 trial: 4 x 131,072 (was 2 x 262,144); 0.5.6+ batches slots together
+            - "4"     # 2026-11-24 trial (was 2 x 262,144); 0.5.6+ batches slots together
+            - "--slot-full-context"   # docs/running.md: each slot gets the whole max-context instead of max-context/N
             - "--kv"
             - "fp8"
             - "--conversation-cache-mib"
