@@ -1,0 +1,59 @@
+# Basalt's MX8 Inkling 2 Mini pack (jesdga/Inkling-2-Mini-Basalt, Inkling-2-Mini-NVFP4-MX8.basalt, 19.6 GB, Apache-2.0
+# weights) on the eGPU laptop's NVMe (talos-8me-tcy), for apps/inkling2-mini-basalt.yaml. Basalt 0.5.6+ default pack:
+# NVFP4 experts with the MXFP8 layers kept bit-for-bit, ~5% faster prompts, 0.00297 KLD / 97.83% top-1 (the old
+# NVFP4-q8 pack was 0.00305 / 97.76% and is no longer on Hugging Face). Needs an engine at 0.5.6 or later.
+# Own PVC beside the old q8 one (apps/inkling2-mini-basalt-weights.yaml) so the switch can roll back; delete the old
+# PVC only once MX8 has served for a while. Same xet download + sha256 check + .verified marker as the q8 Job.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inkling2-mini-basalt-pack-mx8
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 25Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inkling2-mini-basalt-pack-mx8
+  namespace: default
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      nodeSelector: { home-k8s/egpu: rtx5090 }
+      containers:
+        - name: download
+          image: python:3.12-slim
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              cd /models
+              F=Inkling-2-Mini-NVFP4-MX8.basalt
+              SUM=28ec70723feaa037942a02f55b9d5e898276f3e62a3b1fa083745f932a041b99
+              if [ -f .verified ]; then echo "already verified"; exit 0; fi
+              pip install --no-cache-dir -q "huggingface_hub[hf_xet]==0.35.3"
+              rm -f "$F"
+              HF_XET_HIGH_PERFORMANCE=1 hf download jesdga/Inkling-2-Mini-Basalt "$F" --local-dir /models
+              echo "$SUM  $F" | sha256sum -c -
+              rm -rf /models/.cache
+              touch .verified && echo verified && ls -l
+          env:
+            - { name: HOME, value: /tmp }
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits: { memory: 2Gi }
+          volumeMounts:
+            - { name: pack, mountPath: /models }
+      volumes:
+        - name: pack
+          persistentVolumeClaim: { claimName: inkling2-mini-basalt-pack-mx8 }
