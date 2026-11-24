@@ -108,7 +108,10 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: main
-          image: ghcr.io/dbirks/basalt:main-8667cc8a@sha256:de0bba48caaa600d8044eb8e9b88ecc260a049f11d9b9387af365c0c70d8ee52
+          # 2026-11-24 trial: 0.5.7 + #633 + #626 (Inkling tensor-core shared-KV full-attention decode). Rollback:
+          #   main-8667cc8a@sha256:de0bba48caaa600d8044eb8e9b88ecc260a049f11d9b9387af365c0c70d8ee52 (the image the header
+          #   describes); plain 0.5.7 from source: v0.5.7-src@sha256:bddee8e6cec806109046cfcfee33a256b4beb10b5502e9b066d985abf3c2b1a2
+          image: ghcr.io/dbirks/basalt:main-3ce7d52e@sha256:c31e2e680853dfa96500d04ecc190f688ca5c3d65f6d52d491598f17e864e06a
           args:
             - "/models/Inkling-2-Mini-NVFP4-q8.basalt"
             - "--alias"
