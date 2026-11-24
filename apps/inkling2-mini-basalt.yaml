@@ -108,12 +108,14 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: main
-          # 2026-11-24 trial: 0.5.7 + #633 + #626 (Inkling tensor-core shared-KV full-attention decode). Rollback:
-          #   main-8667cc8a@sha256:de0bba48caaa600d8044eb8e9b88ecc260a049f11d9b9387af365c0c70d8ee52 (the image the header
-          #   describes); plain 0.5.7 from source: v0.5.7-src@sha256:bddee8e6cec806109046cfcfee33a256b4beb10b5502e9b066d985abf3c2b1a2
+          # 2026-11-24: Basalt 0.5.7 built from the v0.5.7 tag (build-basalt-src.yaml, tag v0.5.7-src). Rollback image:
+          #   main-8667cc8a@sha256:de0bba48caaa600d8044eb8e9b88ecc260a049f11d9b9387af365c0c70d8ee52 (needs the q8 pack).
+          # A/B on the q8 pack at 575 W: 0.5.7 = old main within noise (code t0 430, prose t0 328, 247K decode 159 tok/s).
+          # REJECTED main-3ce7d52e (0.5.7 + #626 Inkling MMA decode kernel): no gain at 172K/247K (186/157 vs 190/159),
+          #   short-context t0 code/prose 8-10% slower (388/300), drafts accepted 39-41% vs 56-60% (FP16 MMA rounding).
           image: ghcr.io/dbirks/basalt:v0.5.7-src@sha256:bddee8e6cec806109046cfcfee33a256b4beb10b5502e9b066d985abf3c2b1a2
           args:
-            - "/models/Inkling-2-Mini-NVFP4-q8.basalt"
+            - "/models/Inkling-2-Mini-NVFP4-MX8.basalt"
             - "--alias"
             - "inkling-2-mini"
             - "--host"
@@ -177,7 +179,7 @@ spec:
       volumes:
         - name: pack
           persistentVolumeClaim:
-            claimName: inkling2-mini-basalt-pack
+            claimName: inkling2-mini-basalt-pack-mx8   # apps/inkling2-mini-basalt-mx8-pack.yaml; old q8 = inkling2-mini-basalt-pack
             readOnly: true
         - name: home
           emptyDir: { sizeLimit: 80Gi }   # V3: /data holds the conversation-cache disk tier (64 GiB budget + log + the 4 GiB a write keeps free); emptyDir = gone on pod restart
