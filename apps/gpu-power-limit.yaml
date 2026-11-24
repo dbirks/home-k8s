@@ -109,7 +109,9 @@ spec:
               # allowed range is 400-600 W, so the 300 W fallback is REJECTED ("not a valid power
               # limit") and the card ran uncapped at 600 W. 400 W = its minimum. The PRO 6000 has
               # no entry and keeps TARGET_WATTS (300). "RTX 5090" does not match "RTX PRO 6000".
-              value: "RTX 5090=400"
+              # 2026-11-24: 400 -> 575 W (the 5090's stock TGP), owner's call: Basalt prompt reading is
+              # power-bound (~14% at 400 W), decode is memory-bound. The PRO 6000 cap above is unrelated.
+              value: "RTX 5090=575"
             - name: INTERVAL
               value: "60"
             - name: HEARTBEAT_PASSES
