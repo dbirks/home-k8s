@@ -139,6 +139,11 @@ Per-slot reservations cost VRAM even when idle, so 1 slot x 512K fits on-card wh
 - **--parallel 4** (4 x 131,072, Collective prod 4 / context 131072): all on card (30.3 of 32.6 GB used, no spill), so
   no room for more total context. `conc.py`-style test, 1024-token code answers, temp 1.0: N=1 390, N=2 512, N=4 552-612
   agg tok/s (161-173 per stream). Trade: +~15-20% aggregate and no queueing for agents 3-4, but each agent gets 128K.
+- **Chosen: back to `--parallel 2` (2 x 262,144)** — 128K per agent was too small. All experts stay on the card
+  (`weights on the GPU: ... experts 14.59 GiB`, ~2.6 GiB VRAM free), so no speed hit.
+- **No shared KV pool in Basalt** (as of 0.5.7): `max-context` is split evenly and every slot is reserved at start.
+  `--slot-full-context` reserves N x max-context up front — 4 x 320K refused to start ("even with every expert in RAM the
+  card is 814 MiB short") and crash-looped the pod. A pooled / asymmetric-slot design is upstream issue 324 (open).
 
 ### How to test
 
