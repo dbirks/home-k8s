@@ -233,12 +233,12 @@ data:
       - name: inkling-2-mini
         url: http://inkling-2-mini.default.svc.cluster.local:8000
         protocols: [openai, anthropic]
-        concurrency: 2         # = Basalt --parallel 2; dev 1 on top is rarely used (Basalt queues any overflow)
+        concurrency: 4         # = Basalt --parallel 4 (2026-11-24 trial, was 2); dev 1 on top (Basalt queues overflow)
         models:
           - alias: inkling-2-mini
             model: inkling-2-mini
             limits:
-              context: 262144   # = Basalt slot size (--max-context 524288 / --parallel 2)
+              context: 131072   # = Basalt slot size (--max-context 524288 / --parallel 4)
             reasoning:
               levels:
                 - none

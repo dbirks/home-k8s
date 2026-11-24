@@ -131,7 +131,7 @@ spec:
             - "--max-context"
             - "524288"
             - "--parallel"
-            - "2"
+            - "4"     # 2026-11-24 trial: 4 x 131,072 (was 2 x 262,144); 0.5.6+ batches slots together
             - "--kv"
             - "fp8"
             - "--conversation-cache-mib"
