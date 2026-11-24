@@ -125,6 +125,21 @@ Per-slot reservations cost VRAM even when idle, so 1 slot x 512K fits on-card wh
 - `--vision dynamic` no longer pins 1.37 GiB of the card at rest on `main` (#541); older notes saying "vision off frees
   1.37 GiB" were measured on v0.5.5 and no longer buy anything — context room now comes only from `--max-context`.
 
+### 0.5.7 / MX8 / #626 / --parallel 4 (2026-11-24, 5090 at 575 W)
+
+- Images: `build-basalt-src.yaml` builds any upstream commit or tag in ~8 min on GitHub runners (`-f ref=<40-char sha>
+  -f tag=<tag>`); the release tag gets `v0.5.7-src`. Single-card configs need no change for 0.5.7's multi-GPU break
+  (`--gpu 0` is still valid; only `gpu auto` and the removed diag flags error).
+- 0.5.7 vs old main-8667cc8a (q8 pack): same speed (temp-0 code 430, prose 328; 247K-context decode ~159 tok/s engine-side).
+- **#626 (Inkling tensor-core full-attention decode) REJECTED here**: no gain at 172K/247K (186/157 vs 190/159 tok/s),
+  temp-0 code/prose 8-10% slower (388/300), draft acceptance 39-41% vs 56-60%. Its 1.7x headline started from 49.6 tok/s
+  at 256K on the author's box; ours is already ~160 there. Re-test only if a later commit fixes the short-context loss.
+- **MX8 pack** (`Inkling-2-Mini-NVFP4-MX8.basalt`, PVC `inkling2-mini-basalt-pack-mx8`): within noise of q8 (temp-0 code
+  430, prose 316, 23K cold 1.39 s), tools 83%/90%. Kept because the q8 pack is gone from Hugging Face.
+- **--parallel 4** (4 x 131,072, Collective prod 4 / context 131072): all on card (30.3 of 32.6 GB used, no spill), so
+  no room for more total context. `conc.py`-style test, 1024-token code answers, temp 1.0: N=1 390, N=2 512, N=4 552-612
+  agg tok/s (161-173 per stream). Trade: +~15-20% aggregate and no queueing for agents 3-4, but each agent gets 128K.
+
 ### How to test
 
 Port-forward first (`kubectl port-forward svc/inkling-2-mini 18100:8000`), then the stdlib harness — it self-caps at 2
