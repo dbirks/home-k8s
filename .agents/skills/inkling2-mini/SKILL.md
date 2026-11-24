@@ -139,8 +139,11 @@ Per-slot reservations cost VRAM even when idle, so 1 slot x 512K fits on-card wh
 - **--parallel 4** (4 x 131,072, Collective prod 4 / context 131072): all on card (30.3 of 32.6 GB used, no spill), so
   no room for more total context. `conc.py`-style test, 1024-token code answers, temp 1.0: N=1 390, N=2 512, N=4 552-612
   agg tok/s (161-173 per stream). Trade: +~15-20% aggregate and no queueing for agents 3-4, but each agent gets 128K.
-- **Chosen: back to `--parallel 2` (2 x 262,144)** — 128K per agent was too small. All experts stay on the card
-  (`weights on the GPU: ... experts 14.59 GiB`, ~2.6 GiB VRAM free), so no speed hit.
+- **Chosen: `--parallel 2 --max-context 573440` (2 x 286,720)**, Collective context 286720 — 128K per agent was too small.
+  Sizing on the 5090 (MX8, fp8 KV, vision dynamic): ~20 KiB VRAM per context position (fp8 KV + the drafter's fp16 layer),
+  and the planner keeps ~1.7 GiB free. 524288 = all experts on card, 2.6 GiB free; **573440 = all on card, 1.7 GiB free
+  (the ceiling)**; 614400 = 162 experts (0.87 GiB) planned into RAM (`experts: N of 3072 in RAM` in engine.log = too far).
+  Verified: a 278,662-token prompt read in 47 s, decode 151 tok/s, `hit=100% pcie=0%`.
 - **No shared KV pool in Basalt** (as of 0.5.7): `max-context` is split evenly and every slot is reserved at start.
   `--slot-full-context` reserves N x max-context up front — 4 x 320K refused to start ("even with every expert in RAM the
   card is 814 MiB short") and crash-looped the pod. A pooled / asymmetric-slot design is upstream issue 324 (open).
