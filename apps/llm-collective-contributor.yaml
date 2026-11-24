@@ -238,7 +238,7 @@ data:
           - alias: inkling-2-mini
             model: inkling-2-mini
             limits:
-              context: 262144   # = Basalt slot size (--max-context 524288 / --parallel 2)
+              context: 286720   # = Basalt slot size (--max-context 573440 / --parallel 2)
             reasoning:
               levels:
                 - none
