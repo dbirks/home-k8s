@@ -6,7 +6,7 @@
 #   - strata-k8s-serve: writes the run config from env and starts serve/server.py directly (no launcher, no TUI,
 #     no downloads), bound to 0.0.0.0 for the in-cluster Service.
 # Built by .github/workflows/build-strata.yaml.
-ARG STRATA_IMAGE=ghcr.io/niko1221/strata:0.2.19-cuda13@sha256:5cf423c2ad9d2f626da250ade74cb9b48087279bff636fca3c7c08eb4f786d26
+ARG STRATA_IMAGE=ghcr.io/niko1221/strata:0.2.23-cuda13@sha256:547f07819a53675a7b04f11a9440ad96d75a3218638a83ca0e508ccb293db7d1
 FROM ${STRATA_IMAGE}
 
 COPY patch_inkling_thinking.py /opt/strata/patch_inkling_thinking.py

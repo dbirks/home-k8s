@@ -2,7 +2,7 @@
 # Slim image: the upstream release archive (built with CUDA 13.0.2) on the matching CUDA runtime, plus the server's venv.
 # Upstream's own Dockerfile compiles from source on CUDA 13.4; the laptop's driver is R580 (580.178), so we stay on
 # 13.0.x, which the archive was built against. Built by .github/workflows/build-basalt.yaml.
-FROM nvidia/cuda:13.0.2-runtime-ubuntu24.04
+FROM nvidia/cuda:13.5.0-runtime-ubuntu24.04
 
 ARG BASALT_VERSION=v0.5.5
 ARG BASALT_SHA256=89da792322248de80d9866dea87f2869fe595ed8311008572405fd3cea5b9c08
