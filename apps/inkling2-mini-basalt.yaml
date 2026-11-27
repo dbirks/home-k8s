@@ -89,7 +89,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 0                     # PAUSED 2026-11-27 vision-intern GPU window 2 (auto-restore timer, max 60 min). LIVE 2026-11-22 (Strata lab 2026-11-22 lost on every axis: apps/inkling2-mini-strata.yaml.hold)
+  replicas: 1                     # LIVE 2026-11-22 (Strata lab 2026-11-22 lost on every axis: apps/inkling2-mini-strata.yaml.hold)
   strategy:
     type: Recreate
   selector:
