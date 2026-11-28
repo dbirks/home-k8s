@@ -954,7 +954,7 @@ data:
     PIN="${RECON_T7_PIN:-dda02ab5ecf45d6edb8c540d9bb65c7e451345a9}"
     CACHE="${RECON_CACHE:-/data/cache/recon}"
     DEST="$CACHE/t7/$PIN"
-    MARKER="$DEST/.ok"
+    MARKER="$DEST/.ok-v2"  # bump when the dependency set changes
     ARCH="${TORCH_CUDA_ARCH_LIST:-12.0}"
 
     if [ -f "$MARKER" ] && [ -x "$DEST/venv/bin/python" ]; then
@@ -986,7 +986,7 @@ data:
     rm -rf "$DEST/venv"  # a previous failed attempt leaves a half-built venv that uv refuses to reuse
     uv venv --system-site-packages "$DEST/venv"
     export VIRTUAL_ENV="$DEST/venv"
-    uv pip install --no-cache-dir plyfile tqdm open3d "numpy<2"
+    uv pip install --no-cache-dir plyfile tqdm open3d "numpy<2" "opencv-python-headless==4.10.0.84" matplotlib  # train.py imports cv2 (measured ModuleNotFoundError)
 
     export TORCH_CUDA_ARCH_LIST="$ARCH"
     export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
@@ -1122,7 +1122,7 @@ data:
     PIN="${RECON_T8_PIN:-f3e3b9fa67bbd1c75e05167ff37391d8dab2a678}"
     CACHE="${RECON_CACHE:-/data/cache/recon}"
     DEST="$CACHE/t8/$PIN"
-    MARKER="$DEST/.ok"
+    MARKER="$DEST/.ok-v2"  # bump when the dependency set changes
     ARCH="${TORCH_CUDA_ARCH_LIST:-12.0}"
     SURFEL_SHA="${RECON_T8_SURFEL_SHA:-e0ed0207b3e0669960cfad70852200a4a5847f61}"
     KNN_SHA="${RECON_T8_KNN_SHA:-f155ec04131cb579f53443a06879d37115f4612f}"
@@ -1166,7 +1166,7 @@ data:
     rm -rf "$DEST/venv"  # a previous failed attempt leaves a half-built venv that uv refuses to reuse
     uv venv --system-site-packages "$DEST/venv"
     export VIRTUAL_ENV="$DEST/venv"
-    uv pip install --no-cache-dir plyfile tqdm open3d "numpy<2"
+    uv pip install --no-cache-dir plyfile tqdm open3d "numpy<2" "opencv-python-headless==4.10.0.84" matplotlib  # train.py imports cv2 (measured ModuleNotFoundError)
 
     export TORCH_CUDA_ARCH_LIST="$ARCH"
     export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
