@@ -540,8 +540,17 @@ data:
         if [ -f "$RECON_VCPKG_ROOT/.git/shallow" ]; then git -C "$RECON_VCPKG_ROOT" fetch -q --unshallow; fi
       fi
       cp "/scripts/$id-setup.sh" "$D/setup.sh"; cp "/scripts/$id-train.sh" "$D/train.sh"; chmod +x "$D"/*.sh
-      RECON_DIR=$D RECON_VIEW_DIR=$VIEW RECON_OUT_DIR=$RUN/work RECON_STEPS=$STEPS RECON_MAX_RES=0 RECON_CACHE=$CACHE \
-        bash "$D/train.sh" 2>&1 | tee "$RUN/logs/train.log"
+      # In-cluster DNS lookups of github.com fail intermittently (measured twice for T1); vcpkg calls that
+      # non-transient and stops. Retry only network failures, a bounded number of times — finished packages are in
+      # the PVC binary cache, so each attempt resumes.
+      local attempt
+      for attempt in 1 2 3 4; do
+        RECON_DIR=$D RECON_VIEW_DIR=$VIEW RECON_OUT_DIR=$RUN/work RECON_STEPS=$STEPS RECON_MAX_RES=0 RECON_CACHE=$CACHE \
+          bash "$D/train.sh" 2>&1 | tee "$RUN/logs/train.log" || true
+        grep -q '^RECON_RESULT {"ok":true' "$RUN/logs/train.log" && break
+        grep -qE "Couldn't resolve host|Could not resolve host|Temporary failure in name resolution" "$RUN/logs/train.log" || break
+        echo "-- attempt $attempt hit a DNS failure; retrying in 30 s"; sleep 30
+      done
       grep -q '^RECON_RESULT {"ok":true' "$RUN/logs/train.log" || { echo "FATAL: $id train.sh did not report ok"; exit 7; }
       cp "$RUN/work/model.ply" "$RUN/artifacts/model.ply"
       ENGINE_VERSION="$id $(grep -m1 -oE 'pin[= ][^ ]+' "$RUN/logs/train.log" || echo '(see README pin)')"
@@ -707,7 +716,8 @@ data:
       rm -f "${PREFIX}/spirula.tar.gz"
       cmake -S "${SRC}" -B "${PREFIX}/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
-        -DSS_BUILD_GUI=OFF -DSS_BUILD_SFM=ON -DSS_BUILD_SAM=OFF
+        -DSS_BUILD_GUI=OFF -DSS_BUILD_SFM=ON -DSS_BUILD_SAM=OFF \
+        -DTORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0}"  # no GPU during docker build: nvidia-smi probe fails
       cmake --build "${PREFIX}/build" --target spirula -j "${MAX_JOBS:-4}"
       cmake --install "${PREFIX}/build" 2>/dev/null || cmake --install "${PREFIX}/build" || true
       find "${PREFIX}/build" -type f -name 'spirula' -exec cp -f {} "${BIN}" \;
