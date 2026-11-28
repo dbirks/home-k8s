@@ -1333,15 +1333,23 @@ data:
                 props.append((name, TYPES[typ]))
         data = np.fromfile(f, dtype=np.dtype(props), count=n)
     keep_names = [p for p, _ in props if not p.startswith("f_rest_")]
+    # 2DGS surfels carry two scales; viewers expect three. Add a near-zero normal axis (log scale -10) — the same
+    # flattening the common evaluator uses — so Spark can show the surfels. An approximation, labelled as such.
+    flatten = "scale_0" in keep_names and "scale_2" not in keep_names
     order = np.argsort(-data["opacity"])[: min(cap, n)]
-    out = np.empty(len(order), dtype=np.dtype([(k, "<f4") for k in keep_names]))
+    names = keep_names + (["scale_2"] if flatten else [])
+    out = np.empty(len(order), dtype=np.dtype([(k, "<f4") for k in names]))
     for k in keep_names:
         out[k] = data[k][order]
+    if flatten:
+        out["scale_2"] = -10.0
+    keep_names = names
     with open(dst, "wb") as f:
         f.write(("ply\nformat binary_little_endian 1.0\n" f"element vertex {len(out)}\n"
                  + "".join(f"property float {k}\n" for k in keep_names) + "end_header\n").encode())
         out.tofile(f)
-    print(f"{src}: {n} -> {len(out)} gaussians, SH0, {len(keep_names)} props -> {dst}", flush=True)
+    print(f"{src}: {n} -> {len(out)} gaussians, SH0, {len(keep_names)} props{' (2DGS flattened)' if flatten else ''} -> {dst}",
+          flush=True)
 kind: ConfigMap
 metadata:
   name: recon-scripts

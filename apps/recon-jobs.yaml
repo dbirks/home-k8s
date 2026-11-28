@@ -194,3 +194,24 @@ spec:
         - { name: data, persistentVolumeClaim: { claimName: recon-data } }
         - { name: scripts, configMap: { name: recon-scripts } }
         - { name: shm, emptyDir: { medium: Memory, sizeLimit: 4Gi } }
+---
+# CPU: browser-sized previews (top-1M Gaussians by opacity, SH degree 0) for runs trained before the runner made them.
+apiVersion: batch/v1
+kind: Job
+metadata: { name: recon-preview-t8flat, namespace: default, labels: { app: recon } }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector: { kubernetes.io/hostname: talos-8me-tcy }
+      containers:
+        - name: preview
+          image: python:3.13-slim@sha256:168d3a5d10f2152f8e8d77b6843ac82c22a846cfefeef7afdf9aa630404e82a7
+          command: [bash, -ec, "pip install -q numpy==2.3.5 && for r in run_truck_t8_e; do python3 /scripts/web_preview.py /data/runs/$r/artifacts/model.ply /data/runs/$r/artifacts/preview.ply 1000000; done"]
+          resources: { requests: { cpu: 500m, memory: 2Gi }, limits: { memory: 8Gi } }
+          volumeMounts: [{ name: data, mountPath: /data }, { name: scripts, mountPath: /scripts }]
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: recon-data } }
+        - { name: scripts, configMap: { name: recon-scripts } }
