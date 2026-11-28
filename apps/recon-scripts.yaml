@@ -523,6 +523,7 @@ data:
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends build-essential ninja-build \
             pkg-config zip unzip autoconf automake libtool libvulkan-dev libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libgl-dev libopencv-dev nasm yasm autoconf-archive bison flex gperf libltdl-dev \
+            libxxf86vm-dev libxext-dev libxfixes-dev libxrender-dev libxkbcommon-dev libxkbcommon-x11-dev \
             python3-jinja2 >/dev/null ;;  # vcpkg ports (x264 needs nasm; measured)
         t7|t8)  # INRIA rasterizers include <glm/glm.hpp> from a git submodule the source tarballs do not contain
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libglm-dev >/dev/null ;;
