@@ -21,6 +21,14 @@ Files: `apps/recon.yaml` (PVC `recon-data` on talos-8me-tcy + `recon-files` pod)
    (`replicas: 0` in `apps/inkling2-mini-basalt.yaml`) for recon runs; set it back to 1 afterwards. Never touch
    `pennyroyal-flashnext` (the RTX PRO 6000) without asking.
 
+## Never change a live Job block
+Jobs are immutable. Regenerating `apps/recon-jobs.yaml` with ANY change to a block whose Job still exists (an extra
+env var, a different limit) makes the Flux dry-run fail with `spec.template: ... field is immutable`, and that
+blocks the **whole `apps` kustomization** — every app in the cluster stops reconciling. It happened once
+(2026-11-28, ~15–20 min) when a generator change added `MAX_RES` to running Jobs. Re-runs always get a new Job name;
+after a generator change, `git diff` the file and confirm only new/removed blocks changed. Check health with
+`kubectl --context admin@home -n flux-system get kustomization apps`.
+
 ## Gotchas (each cost a failed Job)
 - `kubectl` on the laptop needs `--context admin@home`: current-context is blank and the fallback auth points at
   a dead mock-oidc host.
@@ -43,6 +51,11 @@ Files: `apps/recon.yaml` (PVC `recon-data` on talos-8me-tcy + `recon-files` pod)
 - gsplat `rasterization(..., backgrounds=...)` in 1.5.3 rejects a `[1, 3]` tensor for a single camera; omit it
   (black is the default).
 - Brush `RUST_LOG=info` writes megabytes of `load_scene_img` lines; use `warn`. Its progress bar is TTY-only.
+- C++/CUDA engines from source: LichtFeld (T1) needs vcpkg with FULL git history (manifest baselines; a
+  `--depth 1` clone fails "failed to unpack tree object") plus an explicit `CMAKE_TOOLCHAIN_FILE`, and CMake's
+  CUDA arch for 12.0 is `120`. OpenSplat (T6) must run without `--center` or its PLY leaves COLMAP coordinates
+  (held-out PSNR 9.6 dB). INRIA-derived trainers (T7/T8): simple-knn needs `#include <cfloat>` on CUDA 12.8,
+  diff-surfel-rasterization needs `libglm-dev`, both `train.py` import cv2; Spirula (T4) needs `libvulkan-dev`.
 - Keep `normalize_world_space` off (gsplat) and the identity dataparser transform (nerfstudio
   `--orientation-method none --center-method none --auto-scale-poses False
   --assume-colmap-world-coordinate-convention False`) so exported PLYs stay in COLMAP world coordinates for the
