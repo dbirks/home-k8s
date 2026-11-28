@@ -980,6 +980,10 @@ data:
     export TORCH_CUDA_ARCH_LIST="$ARCH"
     export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
     # The rasterizer is vendored in the tarball (mip-splatting has no .gitmodules).
+    KNN_CU="$DEST/src/submodules/simple-knn/simple_knn.cu"
+    # CUDA >= 12.x headers no longer pull in <cfloat> transitively: simple_knn.cu uses FLT_MAX (measured build failure
+    # on the RTX 5090 image, 2026-11-28). Idempotent.
+    grep -q '#include <cfloat>' "$KNN_CU" || sed -i '1i #include <cfloat>' "$KNN_CU"
     for ext in submodules/diff-gaussian-rasterization submodules/simple-knn; do
       uv pip install --no-cache-dir --no-build-isolation "$DEST/src/$ext" || {
         echo "[setup:t7] FATAL: failed to build $ext against torch $(python3 -c 'import torch;print(torch.__version__)') / CUDA arch $ARCH" >&2
@@ -1152,6 +1156,10 @@ data:
 
     export TORCH_CUDA_ARCH_LIST="$ARCH"
     export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
+    KNN_CU="$DEST/src/submodules/simple-knn/simple_knn.cu"
+    # CUDA >= 12.x headers no longer pull in <cfloat> transitively: simple_knn.cu uses FLT_MAX (measured build failure
+    # on the RTX 5090 image, 2026-11-28). Idempotent.
+    grep -q '#include <cfloat>' "$KNN_CU" || sed -i '1i #include <cfloat>' "$KNN_CU"
     for ext in diff-surfel-rasterization simple-knn; do
       uv pip install --no-cache-dir --no-build-isolation "$DEST/src/submodules/$ext" || {
         echo "[setup:t8] FATAL: failed to build $ext against torch $(python3 -c 'import torch;print(torch.__version__)') / CUDA arch $ARCH" >&2
