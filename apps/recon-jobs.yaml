@@ -215,3 +215,51 @@ spec:
       volumes:
         - { name: data, persistentVolumeClaim: { claimName: recon-data } }
         - { name: scripts, configMap: { name: recon-scripts } }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: recon-2c3f7324f18a, namespace: default, labels: { app: recon, recon/engine: t4 } }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 9000
+  template:
+    metadata: { labels: { app: recon, recon/engine: t4, recon/run: run_2c3f7324f18a } }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      nodeSelector: { kubernetes.io/hostname: talos-8me-tcy }
+      initContainers:
+        - name: wait-prep
+          image: python:3.13-slim@sha256:168d3a5d10f2152f8e8d77b6843ac82c22a846cfefeef7afdf9aa630404e82a7
+          command: [sh, -c, "until [ -f /data/captures/cap_tnt_truck/view/.prep_version ]; do sleep 10; done"]
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 64Mi } }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      containers:
+        - name: run
+          image: pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9
+          command: [bash, /scripts/run_engine.sh]
+          env:
+            - { name: RUN_ID, value: run_2c3f7324f18a }
+            - { name: ENGINE, value: t4 }
+            - { name: MODE, value: train }
+            - { name: CAPTURE, value: cap_tnt_truck }
+            - { name: STEPS, value: "30000" }
+            - { name: TORCH_CUDA_ARCH_LIST, value: "12.0" }
+            - { name: MAX_JOBS, value: "8" }
+            - { name: IMAGE_REF, value: "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9" }
+            - { name: NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }
+            - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
+            - { name: WGPU_BACKEND, value: vulkan }
+            - { name: HOME, value: /data/cache/recon/home }
+          resources:
+            requests: { cpu: "4", memory: 5Gi }
+            limits: { memory: 12Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "10000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: recon-data } }
+        - { name: scripts, configMap: { name: recon-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 4Gi } }
