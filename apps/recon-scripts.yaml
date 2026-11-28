@@ -469,6 +469,9 @@ data:
         touch "$V/.ok"
       fi
       flock -u 8
+      # Resume: a finished checkpoint from an earlier attempt of this run skips straight to export.
+      local DONE_CKPT; DONE_CKPT=$(ls "$RUN"/work/*/"$method"/*/nerfstudio_models/step-$(printf %09d $((STEPS - 1))).ckpt 2>/dev/null | head -1 || true)
+      if [ -n "$DONE_CKPT" ]; then echo "-- found finished checkpoint $DONE_CKPT: skip training"; else
       # Identity dataparser transform: exported splat stays in COLMAP world coordinates.
       "$V/bin/ns-train" "$method" --output-dir "$RUN/work" --max-num-iterations "$STEPS" --vis tensorboard \
         --viewer.quit-on-train-completion True --machine.seed "$SEED" --data "$VIEW" \
@@ -476,8 +479,11 @@ data:
         colmap --colmap-path sparse/0 --images-path images --downscale-factor 1 --eval-mode all \
         --orientation-method none --center-method none --auto-scale-poses False \
         --assume-colmap-world-coordinate-convention False --load-3D-points True 2>&1 | tee "$RUN/logs/train.log"
+      fi
       local CFG; CFG=$(ls -t "$RUN"/work/*/"$method"/*/config.yml | head -1)
-      "$V/bin/ns-export" gaussian-splat --load-config "$CFG" --output-dir "$RUN/work/export"
+      # torch>=2.6 defaults torch.load(weights_only=True); nerfstudio 1.1.5 checkpoints hold numpy scalars. The
+      # checkpoint was written by this same run, so loading it unrestricted is safe.
+      TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 "$V/bin/ns-export" gaussian-splat --load-config "$CFG" --output-dir "$RUN/work/export"
       cp "$RUN/work/export/splat.ply" "$RUN/artifacts/model.ply"
       ENGINE_VERSION="nerfstudio 1.1.5 $method"
     }
