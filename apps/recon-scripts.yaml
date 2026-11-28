@@ -526,6 +526,7 @@ data:
     EV=$(venv_gsplat | tail -1)
     export TORCH_EXTENSIONS_DIR=$CACHE/torch_ext/gsplat-1.5.3
     "$EV/bin/python" /scripts/eval_splat.py "$RUN/artifacts/model.ply" "$VIEW/test" "$RUN" 2>&1 | tee "$RUN/logs/eval.log"
+    python3 /scripts/web_preview.py "$RUN/artifacts/model.ply" "$RUN/artifacts/preview.ply" 1000000
 
     python3 - "$RUN" <<PY
     import hashlib, json, sys, os
@@ -541,6 +542,37 @@ data:
       open(os.path.join(run, "job.json"), "w"), indent=2)
     PY
     echo "RECON_RESULT {\"ok\":true,\"run\":\"$RUN_ID\",\"train_seconds\":$TRAIN_S}"
+  web_preview.py: |
+    #!/usr/bin/env python3
+    """Make a browser-sized preview of a 3DGS PLY: keep the N most opaque Gaussians, drop higher-order SH (degree 0).
+    usage: web_preview.py <model.ply> <preview.ply> [max_gaussians=1000000]   (numpy only)"""
+
+    import sys
+
+    import numpy as np
+
+    src, dst = sys.argv[1], sys.argv[2]
+    cap = int(sys.argv[3]) if len(sys.argv) > 3 else 1_000_000
+    TYPES = {"float": "<f4", "double": "<f8", "uchar": "u1", "int": "<i4"}
+    with open(src, "rb") as f:
+        props, n = [], 0
+        while (line := f.readline().decode("ascii").strip()) != "end_header":
+            if line.startswith("element vertex"):
+                n = int(line.split()[-1])
+            elif line.startswith("property") and n:
+                _, typ, name = line.split()
+                props.append((name, TYPES[typ]))
+        data = np.fromfile(f, dtype=np.dtype(props), count=n)
+    keep_names = [p for p, _ in props if not p.startswith("f_rest_")]
+    order = np.argsort(-data["opacity"])[: min(cap, n)]
+    out = np.empty(len(order), dtype=np.dtype([(k, "<f4") for k in keep_names]))
+    for k in keep_names:
+        out[k] = data[k][order]
+    with open(dst, "wb") as f:
+        f.write(("ply\nformat binary_little_endian 1.0\n" f"element vertex {len(out)}\n"
+                 + "".join(f"property float {k}\n" for k in keep_names) + "end_header\n").encode())
+        out.tofile(f)
+    print(f"{src}: {n} -> {len(out)} gaussians, SH0, {len(keep_names)} props -> {dst}", flush=True)
 kind: ConfigMap
 metadata:
   name: recon-scripts
