@@ -523,6 +523,8 @@ data:
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends build-essential ninja-build \
             pkg-config zip unzip autoconf automake libtool libvulkan-dev libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libgl-dev libopencv-dev >/dev/null ;;
+        t7|t8)  # INRIA rasterizers include <glm/glm.hpp> from a git submodule the source tarballs do not contain
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libglm-dev >/dev/null ;;
       esac
       if [ "$id" = t1 ]; then
         export RECON_VCPKG_ROOT=$CACHE/vcpkg-${VCPKG_TAG:-2026.10.16} VCPKG_DEFAULT_BINARY_CACHE=$CACHE/vcpkg-bincache
