@@ -1,0 +1,38 @@
+# recon (office-map issue #5, ADR-0007): storage for video -> 3D splat reconstruction runs on the RTX 5090 node.
+# Jobs live in apps/recon-jobs.yaml; scripts in apps/recon-scripts.yaml (generated from the office-map repo).
+# Only PUBLIC sample data is processed so far. Real office footage would stay on this PVC, never in git.
+# Results: kubectl --context admin@home exec deploy/recon-files -- ls /data/runs ; kubectl cp ... (see recon/k8s/README.md)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: recon-data
+  namespace: default
+  labels: { app: recon }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path        # binds on talos-8me-tcy (WaitForFirstConsumer via recon-files)
+  resources: { requests: { storage: 200Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recon-files
+  namespace: default
+  labels: { app: recon-files }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: recon-files } }
+  template:
+    metadata: { labels: { app: recon-files } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: talos-8me-tcy }
+      containers:
+        - name: files
+          image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+          command: [sh, -c, "mkdir -p /data/runs /data/captures /data/cache /data/datasets && exec sleep infinity"]
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 64Mi } }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: recon-data } }

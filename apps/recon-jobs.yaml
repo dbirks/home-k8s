@@ -1,0 +1,39 @@
+# recon Jobs (office-map issue #5). One Job per run; Jobs are immutable, so a re-run gets a new name and the old
+# block is deleted in the same commit (Flux prunes it). Never set ttlSecondsAfterFinished (Flux would recreate).
+# GPU: RTX 5090 on talos-8me-tcy, only while inkling-2-mini-basalt is parked (owner-approved window).
+---
+# CPU only: fetch the public Tanks and Temples truck sample (CC BY 4.0, pre-posed COLMAP) and build the
+# canonical capture: train view (219) / test view (32), LLFF every-8th split.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: recon-prep-truck-1
+  namespace: default
+  labels: { app: recon }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  template:
+    metadata: { labels: { app: recon, recon/stage: prep } }
+    spec:
+      restartPolicy: Never
+      nodeSelector: { kubernetes.io/hostname: talos-8me-tcy }
+      containers:
+        - name: prep
+          image: python:3.13-slim@sha256:168d3a5d10f2152f8e8d77b6843ac82c22a846cfefeef7afdf9aa630404e82a7
+          command:
+            - bash
+            - -ec
+            - |
+              python3 /scripts/fetch_hf.py nvs-bench/tanksandtemples truck /data/datasets/tnt/truck 8
+              python3 /scripts/prep_capture.py /data/datasets/tnt/truck /data/captures/cap_tnt_truck cap_tnt_truck 8
+              ls /data/captures/cap_tnt_truck /data/captures/cap_tnt_truck/view
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 2Gi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: recon-data } }
+        - { name: scripts, configMap: { name: recon-scripts } }
