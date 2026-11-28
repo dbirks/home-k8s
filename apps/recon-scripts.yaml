@@ -531,6 +531,14 @@ data:
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libglm-dev >/dev/null ;;
       esac
       if [ "$id" = t1 ]; then
+        # LichtFeld uses C++20 <format>: GCC >= 13 (the CUDA 12.8 image is Ubuntu 22.04 / GCC 11; measured
+        # "fatal error: format: No such file or directory"). nvcc 12.8 accepts GCC 13 as host compiler.
+        if ! command -v g++-13 >/dev/null; then
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends software-properties-common gpg-agent >/dev/null
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test >/dev/null && apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gcc-13 g++-13 >/dev/null
+        fi
+        export CC=gcc-13 CXX=g++-13 CUDAHOSTCXX=g++-13
         export RECON_VCPKG_ROOT=$CACHE/vcpkg-${VCPKG_TAG:-2026.10.16} VCPKG_DEFAULT_BINARY_CACHE=$CACHE/vcpkg-bincache
         mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
         if [ ! -x "$RECON_VCPKG_ROOT/vcpkg" ]; then

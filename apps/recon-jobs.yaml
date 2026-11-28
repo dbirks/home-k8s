@@ -5,12 +5,12 @@
 ---
 apiVersion: batch/v1
 kind: Job
-metadata: { name: recon-truck-t1-k, namespace: default, labels: { app: recon, recon/engine: t1 } }
+metadata: { name: recon-truck-t1-l, namespace: default, labels: { app: recon, recon/engine: t1 } }
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 9000
   template:
-    metadata: { labels: { app: recon, recon/engine: t1, recon/run: run_truck_t1_k } }
+    metadata: { labels: { app: recon, recon/engine: t1, recon/run: run_truck_t1_l } }
     spec:
       restartPolicy: Never
       runtimeClassName: nvidia
@@ -26,7 +26,7 @@ spec:
           image: pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9
           command: [bash, /scripts/run_engine.sh]
           env:
-            - { name: RUN_ID, value: run_truck_t1_k }
+            - { name: RUN_ID, value: run_truck_t1_l }
             - { name: ENGINE, value: t1 }
             - { name: MODE, value: train }
             - { name: CAPTURE, value: cap_tnt_truck }
