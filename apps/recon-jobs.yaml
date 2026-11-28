@@ -123,12 +123,12 @@ spec:
 ---
 apiVersion: batch/v1
 kind: Job
-metadata: { name: recon-truck-t2-b, namespace: default, labels: { app: recon, recon/engine: t2 } }
+metadata: { name: recon-truck-t2-c, namespace: default, labels: { app: recon, recon/engine: t2 } }
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 9000
   template:
-    metadata: { labels: { app: recon, recon/engine: t2, recon/run: run_truck_t2_b } }
+    metadata: { labels: { app: recon, recon/engine: t2, recon/run: run_truck_t2_c } }
     spec:
       restartPolicy: Never
       runtimeClassName: nvidia
@@ -144,7 +144,7 @@ spec:
           image: pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9
           command: [bash, /scripts/run_engine.sh]
           env:
-            - { name: RUN_ID, value: run_truck_t2_b }
+            - { name: RUN_ID, value: run_truck_t2_c }
             - { name: ENGINE, value: t2 }
             - { name: MODE, value: train }
             - { name: CAPTURE, value: cap_tnt_truck }
@@ -158,8 +158,8 @@ spec:
             - { name: WGPU_BACKEND, value: vulkan }
             - { name: HOME, value: /data/cache/recon/home }
           resources:
-            requests: { cpu: "2", memory: 5Gi }
-            limits: { memory: 12Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "10000" }
+            requests: { cpu: "2", memory: 8Gi }
+            limits: { memory: 20Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "10000" }
           volumeMounts:
             - { name: data, mountPath: /data }
             - { name: scripts, mountPath: /scripts }

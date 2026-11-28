@@ -472,6 +472,7 @@ data:
       # Identity dataparser transform: exported splat stays in COLMAP world coordinates.
       "$V/bin/ns-train" "$method" --output-dir "$RUN/work" --max-num-iterations "$STEPS" --vis tensorboard \
         --viewer.quit-on-train-completion True --machine.seed "$SEED" --data "$VIEW" \
+        --pipeline.datamanager.cache-images-type uint8 \
         colmap --colmap-path sparse/0 --images-path images --downscale-factor 1 --eval-mode all \
         --orientation-method none --center-method none --auto-scale-poses False \
         --assume-colmap-world-coordinate-convention False --load-3D-points True 2>&1 | tee "$RUN/logs/train.log"
