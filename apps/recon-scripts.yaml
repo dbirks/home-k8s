@@ -973,6 +973,7 @@ data:
     print(f"[setup:t7] fetched {url}")
     PY
     tar -xzf "$TMP/src.tar.gz" -C "$TMP"
+    rm -rf "$DEST/src"  # never nest a fresh tree inside leftovers from an interrupted attempt
     mv "$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)" "$DEST/src"
 
     # Venv on top of the base image's torch: --system-site-packages keeps torch 2.7.1+cu12x and only adds the
@@ -1139,7 +1140,8 @@ data:
 
     TMP="$(mktemp -d "${TMPDIR:-/tmp}/recon-t8-XXXXXX")"
     trap 'rm -rf "$TMP"' EXIT
-    mkdir -p "$DEST/src/submodules"
+    rm -rf "$DEST/src"  # leftovers from an interrupted attempt make the cross-device mv below fail
+    mkdir -p "$DEST"
 
     python3 - "https://codeload.github.com/hbb1/2d-gaussian-splatting/tar.gz/$PIN" "$TMP/src.tar.gz" <<'PY'
     import sys, urllib.request
@@ -1151,6 +1153,7 @@ data:
     PY
     tar -xzf "$TMP/src.tar.gz" -C "$TMP"
     mv "$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)" "$DEST/src"
+    mkdir -p "$DEST/src/submodules"
 
     clone_at https://github.com/hbb1/diff-surfel-rasterization.git "$SURFEL_SHA" "$DEST/src/submodules/diff-surfel-rasterization"
     clone_at https://gitlab.inria.fr/bkerbl/simple-knn.git "$KNN_SHA" "$DEST/src/submodules/simple-knn"
