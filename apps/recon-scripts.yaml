@@ -915,7 +915,6 @@ data:
       --refine-every "${RECON_REFINE_EVERY:-500}" \
       --densify-until "${RECON_DENSIFY_UNTIL:-$((STEPS * 3 / 4))}" \
       --val --val-render "$WORK/out/val" \
-      --center \
       > >(tee "$OUT/train.log") 2>&1; then
       :
     else
