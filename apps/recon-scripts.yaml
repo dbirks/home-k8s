@@ -524,6 +524,7 @@ data:
             pkg-config zip unzip autoconf automake libtool libvulkan-dev libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libgl-dev libopencv-dev nasm yasm autoconf-archive bison flex gperf libltdl-dev \
             libxxf86vm-dev libxext-dev libxfixes-dev libxrender-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxtst-dev libxss-dev libwayland-dev wayland-protocols libegl1-mesa-dev libgles2-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev libdrm-dev libgbm-dev libpulse-dev libasound2-dev libpipewire-0.3-dev libdecor-0-dev libusb-1.0-0-dev \
             python3-jinja2 >/dev/null ;;  # vcpkg ports (x264 needs nasm; measured)
         t7|t8)  # INRIA rasterizers include <glm/glm.hpp> from a git submodule the source tarballs do not contain
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libglm-dev >/dev/null ;;
