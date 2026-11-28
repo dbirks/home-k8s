@@ -613,8 +613,13 @@ data:
       tar -xzf "${PREFIX}/lfs.tar.gz" -C "${SRC}" --strip-components=1
       rm -f "${PREFIX}/lfs.tar.gz"
       : "${CUDA_PATH:=/usr/local/cuda}"
+      # Measured 2026-11-28: without an explicit toolchain the build looked for vcpkg under the script dir, and
+      # "12.0" must become CMake's "120" (not "12").
+      export VCPKG_ROOT="${RECON_VCPKG_ROOT:-$(dirname "$(command -v vcpkg)")}"
       cmake -S "${SRC}" -B "${PREFIX}/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CUDA_ARCHITECTURES="${TORCH_CUDA_ARCH_LIST%%.*}" \
+        -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+        -DCMAKE_CUDA_COMPILER="${CUDA_PATH}/bin/nvcc" \
+        -DCMAKE_CUDA_ARCHITECTURES="${TORCH_CUDA_ARCH_LIST//./}" \
         -DVCPKG_MANIFEST_MODE=ON
       cmake --build "${PREFIX}/build" --target LichtFeld-Studio -j "${MAX_JOBS:-4}"
       find "${PREFIX}/build" -name LichtFeld-Studio -type f -exec cp -f {} "${BIN}" \;
@@ -972,6 +977,7 @@ data:
 
     # Venv on top of the base image's torch: --system-site-packages keeps torch 2.7.1+cu12x and only adds the
     # small pure-python deps + the two CUDA extensions.
+    rm -rf "$DEST/venv"  # a previous failed attempt leaves a half-built venv that uv refuses to reuse
     uv venv --system-site-packages "$DEST/venv"
     export VIRTUAL_ENV="$DEST/venv"
     uv pip install --no-cache-dir plyfile tqdm open3d "numpy<2"
@@ -1149,6 +1155,7 @@ data:
     clone_at https://github.com/hbb1/diff-surfel-rasterization.git "$SURFEL_SHA" "$DEST/src/submodules/diff-surfel-rasterization"
     clone_at https://gitlab.inria.fr/bkerbl/simple-knn.git "$KNN_SHA" "$DEST/src/submodules/simple-knn"
 
+    rm -rf "$DEST/venv"  # a previous failed attempt leaves a half-built venv that uv refuses to reuse
     uv venv --system-site-packages "$DEST/venv"
     export VIRTUAL_ENV="$DEST/venv"
     uv pip install --no-cache-dir plyfile tqdm open3d "numpy<2"
