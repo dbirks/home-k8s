@@ -256,6 +256,45 @@ data:
                     f.write(struct.pack("<ddq", x, y, pid if pid in keep_points else -1))
 
 
+    # focal/principal params that scale with resolution, per COLMAP camera model id (distortion terms do not scale)
+    CAM_NPARAMS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 12, 6: 8}
+    CAM_NSCALED = {0: 3, 1: 4, 2: 3, 3: 3, 4: 4, 5: 4, 6: 4}
+
+
+    def jpeg_size(path):
+        """(width, height) from a JPEG's SOF marker, stdlib only."""
+        with open(path, "rb") as f:
+            if f.read(2) != b"\xff\xd8":
+                raise ValueError(f"not a JPEG: {path}")
+            while True:
+                marker, size = struct.unpack(">2sH", f.read(4))
+                if marker[1] in (0xC0, 0xC1, 0xC2):
+                    h, w = struct.unpack(">xHH", f.read(5))
+                    return w, h
+                f.seek(size - 2, 1)
+
+
+    def write_scaled_cameras(src, dst, actual):
+        """Copy cameras.bin, rescaling each camera to its real image size (pre-downscaled datasets ship full-res
+        cameras). Returns {camera_id: scale}."""
+        scales, out = {}, []
+        with open(src, "rb") as f:
+            (n,) = struct.unpack("<Q", f.read(8))
+            for _ in range(n):
+                cid, model, w, h = struct.unpack("<iiQQ", f.read(24))
+                params = list(struct.unpack(f"<{CAM_NPARAMS[model]}d", f.read(8 * CAM_NPARAMS[model])))
+                aw, ah = actual.get(cid, (w, h))
+                s = aw / w
+                if abs(ah / h - s) > 0.01:
+                    raise SystemExit(f"camera {cid}: non-uniform scale {aw}x{ah} vs {w}x{h}")
+                params[: CAM_NSCALED[model]] = [p * s for p in params[: CAM_NSCALED[model]]]
+                scales[cid] = s
+                out.append(struct.pack("<iiQQ", cid, model, aw, ah) + struct.pack(f"<{len(params)}d", *params))
+        with open(dst, "wb") as f:
+            f.write(struct.pack("<Q", len(out)) + b"".join(out))
+        return scales
+
+
     def read_points(path):
         out = {}
         with open(path, "rb") as f:
@@ -280,7 +319,12 @@ data:
         sp = os.path.join(dst, "sparse", "0")
         os.makedirs(sp, exist_ok=True)
         os.makedirs(os.path.join(dst, "images"), exist_ok=True)
-        shutil.copy(os.path.join(src_sparse, "cameras.bin"), sp)
+        actual = {}
+        for i in ids:  # one real image per camera tells its true size
+            actual.setdefault(images[i]["camera_id"], jpeg_size(os.path.join(src_images, images[i]["name"])))
+        scales = write_scaled_cameras(os.path.join(src_sparse, "cameras.bin"), os.path.join(sp, "cameras.bin"), actual)
+        images = {i: dict(images[i], pts=[(x * scales[images[i]["camera_id"]], y * scales[images[i]["camera_id"]], p)
+                                          for x, y, p in images[i]["pts"]]) for i in ids}
         keep = {}
         for pid, (xyz, rgb, err, track) in points.items():
             t = [e for e in track if e[0] in ids]
@@ -292,6 +336,7 @@ data:
             link = os.path.join(dst, "images", images[i]["name"])
             if not os.path.lexists(link):
                 os.symlink(os.path.join(src_images, images[i]["name"]), link)
+        print(f"view {dst}: camera scale {sorted(set(scales.values()))}", flush=True)
         return len(keep)
 
 
@@ -320,6 +365,7 @@ data:
         dump("splits.json", {"capture_id": cap_id, "policy": f"every-{every}th sorted name (LLFF convention)",
                              "test_every": every, "train_ids": sorted(stem(i) for i in train),
                              "test_ids": sorted(stem(i) for i in test)})
+        open(os.path.join(cap, "view", ".prep_version"), "w").write("2\n")  # engine Jobs wait for this marker
         print(f"capture {cap_id}: {len(images)} images -> train {len(train)} / test {len(test)}; "
               f"points {len(points)} -> train-view {n_pts}", flush=True)
 
@@ -333,8 +379,9 @@ data:
     #   env: RUN_ID ENGINE(t2|t3|t3-mcmc|t5) CAPTURE STEPS [MAX_RES=1600] [SEED=7]
     # Writes /data/runs/$RUN_ID/{logs/job.log,logs/train.log,artifacts/model.ply,renders/,metrics/quality.json,job.json}
     set -euo pipefail
+    shopt -s inherit_errexit   # errors inside $(...) must fail the job (a broken venv was once marked ok)
     : "${RUN_ID:?}" "${ENGINE:?}" "${CAPTURE:?}" "${STEPS:?}"
-    : "${MAX_RES:=1600}" "${SEED:=7}"
+    : "${MAX_RES:=1600}" "${SEED:=7}" "${MODE:=train}"   # MODE=eval: score an existing artifacts/model.ply
     CACHE=/data/cache/recon
     RUN=/data/runs/$RUN_ID
     VIEW=/data/captures/$CAPTURE/view
@@ -345,7 +392,7 @@ data:
     GPU_LINE=$(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || echo "unknown,unknown,0")
     echo "gpu: $GPU_LINE"
     [ -s "$VIEW/sparse/0/images.bin" ] || { echo "FATAL: no train view at $VIEW (run the prep job)"; exit 2; }
-    export PIP_CACHE_DIR=$CACHE/pip XDG_CACHE_HOME=$CACHE/xdg
+    export PIP_CACHE_DIR=$CACHE/pip XDG_CACHE_HOME=$CACHE/xdg PIP_RETRIES=10 PIP_DEFAULT_TIMEOUT=120
     export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.0}" MAX_JOBS="${MAX_JOBS:-8}"
 
     : > "$RUN/nvsmi.csv"
@@ -375,8 +422,8 @@ data:
           "git+https://github.com/nerfstudio-project/nerfview@4538024fe0d15fd1a0e4d760f3695fc44ca72787" \
           "git+https://github.com/rahul-goel/fused-ssim@328dc9836f513d00c4b5bc38fe30478b4435cbb5" \
           "git+https://github.com/harry7557558/fused-bilagrid@90f9788e57d3545e3a033c1038bb9986549632fe"
-        "$V/bin/python" -c "import torch, gsplat; from gsplat.cuda._backend import _C; print('gsplat', gsplat.__version__, 'cuda ok', _C is not None, torch.cuda.get_device_name(0))"
-        touch "$V/.ok"
+        "$V/bin/python" -c "import torch, gsplat, torchmetrics; from gsplat.cuda._backend import _C; assert _C is not None; print('gsplat', gsplat.__version__, 'cuda ok', torch.cuda.get_device_name(0))"
+        touch "$V/.ok"   # only reached when every step above succeeded (inherit_errexit)
       } >&2; fi
       flock -u 9
       echo "$V"
@@ -418,7 +465,8 @@ data:
       if [ ! -f "$V/.ok" ]; then
         rm -rf "$V"; python -m venv --system-site-packages "$V"
         "$V/bin/pip" install -q ninja "nerfstudio==1.1.5"
-        "$V/bin/ns-train" --help >/dev/null && touch "$V/.ok"
+        "$V/bin/ns-train" --help >/dev/null
+        touch "$V/.ok"
       fi
       flock -u 8
       # Identity dataparser transform: exported splat stays in COLMAP world coordinates.
@@ -443,7 +491,7 @@ data:
         cp "$(find "$RUN/dl" -type f \( -name brush_app -o -name brush-app \) | head -1)" "$B"; chmod 755 "$B"; rm -rf "$RUN/dl"
       fi
       mkdir -p "$RUN/work" "$CACHE/brush-home"; cd "$CACHE/brush-home"
-      RUST_LOG=info "$B" "$VIEW" --total-steps "$STEPS" --max-resolution "$MAX_RES" --seed "$SEED" \
+      RUST_LOG=warn "$B" "$VIEW" --total-steps "$STEPS" --max-resolution "$MAX_RES" --seed "$SEED" \
         --export-every "$STEPS" --export-path "$RUN/work" --export-name "model_{iter}.ply" 2>&1 | tee "$RUN/logs/train.log"
       cp "$(ls -t "$RUN"/work/model_*.ply | head -1)" "$RUN/artifacts/model.ply"
       ENGINE_VERSION="brush v0.3.0"
@@ -451,14 +499,17 @@ data:
 
     apt_deps
     TT=$(date +%s)
-    case "$ENGINE" in
+    if [ "$MODE" = eval ]; then
+      [ -s "$RUN/artifacts/model.ply" ] || { echo "FATAL: MODE=eval but no $RUN/artifacts/model.ply"; exit 2; }
+      ENGINE_VERSION=$(cat "$RUN/engine_version" 2>/dev/null || echo "$ENGINE (re-evaluated)")
+    else case "$ENGINE" in
       t2) train_nerfstudio splatfacto ;;
       t2-big) train_nerfstudio splatfacto-big ;;
       t3) train_gsplat default ;;
       t3-mcmc) train_gsplat mcmc ;;
       t5) train_brush ;;
       *) echo "FATAL: engine $ENGINE has no in-cluster recipe yet"; exit 2 ;;
-    esac
+    esac; echo "$ENGINE_VERSION" > "$RUN/engine_version"; fi
     TRAIN_S=$(( $(date +%s) - TT ))
     echo "-- trained in ${TRAIN_S}s: $(ls -la "$RUN/artifacts/model.ply")"
     kill $SAMPLER 2>/dev/null || true
