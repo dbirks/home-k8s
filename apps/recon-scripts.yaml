@@ -518,6 +518,21 @@ data:
     train_generic() {  # T1/T4/T6/T7/T8: the adapter's own recon/engines/<id>/{setup,train}.sh (shipped in the ConfigMap)
       local id=$1 D=/tmp/recon-engine/$1
       mkdir -p "$D" "$RUN/work"
+      case "$id" in  # per-engine build dependencies (measured failures: T4 "Could NOT find Vulkan", T1 "needs vcpkg")
+        t1|t4|t6)
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends build-essential ninja-build \
+            pkg-config zip unzip autoconf automake libtool libvulkan-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libgl-dev libopencv-dev >/dev/null ;;
+      esac
+      if [ "$id" = t1 ]; then
+        export RECON_VCPKG_ROOT=$CACHE/vcpkg-${VCPKG_TAG:-2026.10.16} VCPKG_DEFAULT_BINARY_CACHE=$CACHE/vcpkg-bincache
+        mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+        if [ ! -x "$RECON_VCPKG_ROOT/vcpkg" ]; then
+          rm -rf "$RECON_VCPKG_ROOT"
+          git clone -q --depth 1 --branch "${VCPKG_TAG:-2026.10.16}" https://github.com/microsoft/vcpkg "$RECON_VCPKG_ROOT"
+          "$RECON_VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+        fi
+      fi
       cp "/scripts/$id-setup.sh" "$D/setup.sh"; cp "/scripts/$id-train.sh" "$D/train.sh"; chmod +x "$D"/*.sh
       RECON_DIR=$D RECON_VIEW_DIR=$VIEW RECON_OUT_DIR=$RUN/work RECON_STEPS=$STEPS RECON_MAX_RES=0 RECON_CACHE=$CACHE \
         bash "$D/train.sh" 2>&1 | tee "$RUN/logs/train.log"
