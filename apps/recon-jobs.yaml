@@ -37,3 +37,138 @@ spec:
       volumes:
         - { name: data, persistentVolumeClaim: { claimName: recon-data } }
         - { name: scripts, configMap: { name: recon-scripts } }
+---
+# brush v0.3.0 (Vulkan; HAMi does not meter it) on cap_tnt_truck, 30k steps, scored by the common evaluator on the 32 held-out views.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: recon-t5-truck-a
+  namespace: default
+  labels: { app: recon, recon/engine: t5 }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 9000
+  template:
+    metadata: { labels: { app: recon, recon/engine: t5, recon/run: run_truck_t5_a } }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      nodeSelector: { kubernetes.io/hostname: talos-8me-tcy }
+      containers:
+        - name: run
+          image: pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9
+          command: [bash, /scripts/run_engine.sh]
+          env:
+            - { name: RUN_ID, value: run_truck_t5_a }
+            - { name: ENGINE, value: t5 }
+            - { name: CAPTURE, value: cap_tnt_truck }
+            - { name: STEPS, value: "30000" }
+            - { name: TORCH_CUDA_ARCH_LIST, value: "12.0" }
+            - { name: MAX_JOBS, value: "4" }
+            - { name: IMAGE_REF, value: "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9" }
+            - { name: NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }
+            - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
+            - { name: WGPU_BACKEND, value: vulkan }
+            - { name: HOME, value: /data/cache/recon/home }
+          resources:
+            requests: { cpu: "3", memory: 5Gi }
+            limits: { memory: 12Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "1000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: recon-data } }
+        - { name: scripts, configMap: { name: recon-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 4Gi } }
+---
+# gsplat 1.5.3 default on cap_tnt_truck, 30k steps, scored by the common evaluator on the 32 held-out views.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: recon-t3-truck-a
+  namespace: default
+  labels: { app: recon, recon/engine: t3 }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 9000
+  template:
+    metadata: { labels: { app: recon, recon/engine: t3, recon/run: run_truck_t3_a } }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      nodeSelector: { kubernetes.io/hostname: talos-8me-tcy }
+      containers:
+        - name: run
+          image: pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9
+          command: [bash, /scripts/run_engine.sh]
+          env:
+            - { name: RUN_ID, value: run_truck_t3_a }
+            - { name: ENGINE, value: t3 }
+            - { name: CAPTURE, value: cap_tnt_truck }
+            - { name: STEPS, value: "30000" }
+            - { name: TORCH_CUDA_ARCH_LIST, value: "12.0" }
+            - { name: MAX_JOBS, value: "4" }
+            - { name: IMAGE_REF, value: "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9" }
+            - { name: NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }
+            - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
+            - { name: WGPU_BACKEND, value: vulkan }
+            - { name: HOME, value: /data/cache/recon/home }
+          resources:
+            requests: { cpu: "3", memory: 5Gi }
+            limits: { memory: 12Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "11000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: recon-data } }
+        - { name: scripts, configMap: { name: recon-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 4Gi } }
+---
+# nerfstudio 1.1.5 splatfacto on cap_tnt_truck, 30k steps, scored by the common evaluator on the 32 held-out views.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: recon-t2-truck-a
+  namespace: default
+  labels: { app: recon, recon/engine: t2 }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 9000
+  template:
+    metadata: { labels: { app: recon, recon/engine: t2, recon/run: run_truck_t2_a } }
+    spec:
+      restartPolicy: Never
+      runtimeClassName: nvidia
+      nodeSelector: { kubernetes.io/hostname: talos-8me-tcy }
+      containers:
+        - name: run
+          image: pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9
+          command: [bash, /scripts/run_engine.sh]
+          env:
+            - { name: RUN_ID, value: run_truck_t2_a }
+            - { name: ENGINE, value: t2 }
+            - { name: CAPTURE, value: cap_tnt_truck }
+            - { name: STEPS, value: "30000" }
+            - { name: TORCH_CUDA_ARCH_LIST, value: "12.0" }
+            - { name: MAX_JOBS, value: "4" }
+            - { name: IMAGE_REF, value: "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9" }
+            - { name: NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+            - { name: NVIDIA_DRIVER_CAPABILITIES, value: "all" }
+            - { name: VK_ICD_FILENAMES, value: /etc/vulkan/icd.d/nvidia_icd.json }
+            - { name: WGPU_BACKEND, value: vulkan }
+            - { name: HOME, value: /data/cache/recon/home }
+          resources:
+            requests: { cpu: "3", memory: 5Gi }
+            limits: { memory: 12Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "11000" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: scripts, mountPath: /scripts }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: recon-data } }
+        - { name: scripts, configMap: { name: recon-scripts } }
+        - { name: shm, emptyDir: { medium: Memory, sizeLimit: 4Gi } }

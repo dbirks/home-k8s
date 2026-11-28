@@ -89,7 +89,7 @@ metadata:
   labels:
     app.kubernetes.io/name: inkling-2-mini
 spec:
-  replicas: 1                     # LIVE 2026-11-22 (Strata lab 2026-11-22 lost on every axis: apps/inkling2-mini-strata.yaml.hold)
+  replicas: 0                     # PAUSED 2026-11-28 for recon GPU window (office-map #5, owner-approved; restore to 1). LIVE 2026-11-22 (Strata lab 2026-11-22 lost on every axis: apps/inkling2-mini-strata.yaml.hold)
   strategy:
     type: Recreate
   selector:
