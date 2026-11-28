@@ -529,9 +529,12 @@ data:
         mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
         if [ ! -x "$RECON_VCPKG_ROOT/vcpkg" ]; then
           rm -rf "$RECON_VCPKG_ROOT"
-          git clone -q --depth 1 --branch "${VCPKG_TAG:-2026.10.16}" https://github.com/microsoft/vcpkg "$RECON_VCPKG_ROOT"
+          # Full history: manifest mode resolves the project's builtin-baseline through git objects (a --depth 1
+          # clone failed with "failed to unpack tree object", measured 2026-11-28).
+          git clone -q --branch "${VCPKG_TAG:-2026.10.16}" https://github.com/microsoft/vcpkg "$RECON_VCPKG_ROOT"
           "$RECON_VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
         fi
+        if [ -f "$RECON_VCPKG_ROOT/.git/shallow" ]; then git -C "$RECON_VCPKG_ROOT" fetch -q --unshallow; fi
       fi
       cp "/scripts/$id-setup.sh" "$D/setup.sh"; cp "/scripts/$id-train.sh" "$D/train.sh"; chmod +x "$D"/*.sh
       RECON_DIR=$D RECON_VIEW_DIR=$VIEW RECON_OUT_DIR=$RUN/work RECON_STEPS=$STEPS RECON_MAX_RES=0 RECON_CACHE=$CACHE \
