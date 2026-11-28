@@ -1035,7 +1035,7 @@ data:
     gpu() { nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv 2>&1 || echo "[t7] nvidia-smi unavailable"; }
     fail() { echo "[t7] FAILED: $1" >&2; gpu; echo "RECON_RESULT {\"ok\":false,\"engine\":\"t7\",\"reason\":\"$1\",\"steps\":${2:-0},\"seconds\":$(( $(date +%s) - T0 ))}"; exit 1; }
 
-    mkdir -p "$WORK/data/sparse/0" "$WORK/out"
+    mkdir -p "$WORK/data/sparse" "$WORK/out"  # not sparse/0: ln -sfn would nest the link inside an existing dir
     VIEW_ABS="$(cd "$VIEW" && pwd)"
     ln -sfn "$VIEW_ABS/images" "$WORK/data/images"
     ln -sfn "$VIEW_ABS/sparse/0" "$WORK/data/sparse/0"
@@ -1213,7 +1213,7 @@ data:
     gpu() { nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv 2>&1 || echo "[t8] nvidia-smi unavailable"; }
     fail() { echo "[t8] FAILED: $1" >&2; gpu; echo "RECON_RESULT {\"ok\":false,\"engine\":\"t8\",\"reason\":\"$1\",\"steps\":${2:-0},\"seconds\":$(( $(date +%s) - T0 ))}"; exit 1; }
 
-    mkdir -p "$WORK/data/sparse/0" "$WORK/out"
+    mkdir -p "$WORK/data/sparse" "$WORK/out"  # not sparse/0: ln -sfn would nest the link inside an existing dir
     VIEW_ABS="$(cd "$VIEW" && pwd)"
     ln -sfn "$VIEW_ABS/images" "$WORK/data/images"
     ln -sfn "$VIEW_ABS/sparse/0" "$WORK/data/sparse/0"
