@@ -626,10 +626,13 @@ data:
         exit 1
       fi
       SRC="${PREFIX}/src"
-      mkdir -p "${SRC}"
-      curl -fsSL "https://codeload.github.com/MrNeRF/LichtFeld-Studio/tar.gz/${PIN}" -o "${PREFIX}/lfs.tar.gz"
-      tar -xzf "${PREFIX}/lfs.tar.gz" -C "${SRC}" --strip-components=1
-      rm -f "${PREFIX}/lfs.tar.gz"
+      # git clone, not the codeload tarball: the build needs git submodules (external/libvterm, measured
+      # "libvterm sources are missing"). Pinned to the release tag.
+      if [[ ! -d "${SRC}/.git" ]]; then
+        rm -rf "${SRC}"
+        git clone -q --depth 1 --branch "${PIN}" --recurse-submodules --shallow-submodules \
+          https://github.com/MrNeRF/LichtFeld-Studio "${SRC}"
+      fi
       : "${CUDA_PATH:=/usr/local/cuda}"
       # Measured 2026-11-28: without an explicit toolchain the build looked for vcpkg under the script dir, and
       # "12.0" must become CMake's "120" (not "12").
