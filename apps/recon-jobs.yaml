@@ -27,7 +27,7 @@ spec:
 ---
 apiVersion: batch/v1
 kind: Job
-metadata: { name: recon-truck-t5-a, namespace: default, labels: { app: recon, recon/engine: t5 } }
+metadata: { name: recon-truck-t5-a-e2, namespace: default, labels: { app: recon, recon/engine: t5 } }
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 9000
@@ -63,7 +63,7 @@ spec:
             - { name: HOME, value: /data/cache/recon/home }
           resources:
             requests: { cpu: "2", memory: 5Gi }
-            limits: { memory: 12Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "1000" }
+            limits: { memory: 12Gi, nvidia.com/gpu: "1", nvidia.com/gpumem: "6000" }
           volumeMounts:
             - { name: data, mountPath: /data }
             - { name: scripts, mountPath: /scripts }

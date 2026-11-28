@@ -117,7 +117,7 @@ data:
             vm = torch.eye(4, device=dev); vm[:3, :3] = torch.from_numpy(R).float(); vm[:3, 3] = torch.from_numpy(tv).float()
             with torch.no_grad():
                 img, _, _ = rasterization(t["means"], quats, torch.exp(t["scales"]), torch.sigmoid(t["opac"]), t["sh"],
-                                          vm[None], K[None], W, H, sh_degree=g["deg"], backgrounds=torch.zeros(1, 3, device=dev))
+                                          vm[None], K[None], W, H, sh_degree=g["deg"])  # default background is black
                 pred = img[0].clamp(0, 1)
                 gt = torch.from_numpy(np.asarray(gt_img, np.float32) / 255.0).to(dev)
                 mse = torch.mean((pred - gt) ** 2).item()
